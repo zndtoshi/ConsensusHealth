@@ -7,6 +7,7 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import { Pool } from "pg";
 import { v4 as uuidv4 } from "uuid";
+import { getXRedirectUri, logConfig } from "./config/appUrl.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
@@ -19,10 +20,6 @@ const DIST_PATH = path.resolve(process.cwd(), "dist");
 const DATABASE_URL = (process.env.DATABASE_URL || "").trim();
 const TWITTER_CLIENT_ID = process.env.X_CLIENT_ID || process.env.TWITTER_CLIENT_ID || "";
 const TWITTER_CLIENT_SECRET = process.env.X_CLIENT_SECRET || process.env.TWITTER_CLIENT_SECRET || "";
-const TWITTER_REDIRECT_URI =
-  process.env.X_REDIRECT_URI ||
-  process.env.TWITTER_REDIRECT_URI ||
-  "http://localhost:8787/auth/x/callback";
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 30);
 const SESSION_SECRET = process.env.SESSION_SECRET || "";
 if (!SESSION_SECRET) {
@@ -257,15 +254,18 @@ app.get("/auth/x", async (req, res) => {
     maxAge: 10 * 60 * 1000,
   });
 
+  const redirectUri = getXRedirectUri();
   const url = new URL("https://x.com/i/oauth2/authorize");
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", TWITTER_CLIENT_ID);
-  url.searchParams.set("redirect_uri", TWITTER_REDIRECT_URI);
+  url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set("scope", "users.read tweet.read");
   url.searchParams.set("state", state);
   url.searchParams.set("code_challenge", challenge);
   url.searchParams.set("code_challenge_method", "S256");
 
+  console.log("[OAuth] authorize redirect_uri:", redirectUri);
+  console.log("[OAuth] authorize url:", url.toString());
   res.redirect(url.toString());
 });
 
@@ -342,11 +342,12 @@ app.get("/auth/x/callback", async (req, res, next) => {
       return;
     }
 
+    const redirectUri = getXRedirectUri();
     const tokenBody = new URLSearchParams({
       code,
       grant_type: "authorization_code",
       client_id: TWITTER_CLIENT_ID,
-      redirect_uri: TWITTER_REDIRECT_URI,
+      redirect_uri: redirectUri,
       code_verifier: pending.code_verifier,
     });
 
@@ -637,6 +638,7 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 
 await initDb();
 await cleanupExpiredSessions();
+logConfig();
 
 app.listen(PORT, () => {
   console.log("ConsensusHealth API running");

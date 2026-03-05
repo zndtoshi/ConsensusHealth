@@ -54,6 +54,9 @@ Required/important variables:
 
 - `DATABASE_URL` - Postgres connection string (with password)
 - `PORT` - server listen port (Render sets this automatically)
+- `APP_URL` - canonical public base URL used for OAuth redirect URI generation
+  - local: `http://localhost:8787`
+  - Render/prod: `https://consensus.health`
 - `APP_ORIGIN` - allowed CORS origin (dev default: `http://localhost:5173`)
 - `FRONTEND_BASE_URL` - OAuth post-login redirect base
   - dev: `http://localhost:5173`
@@ -68,5 +71,6 @@ Typical Render settings:
 - Build command: `npm install && npm run build`
 - Start command: `npm run start`
 - Add env vars from `server/env.example` (except local-only defaults)
+- Ensure `APP_URL` is set (for example: `https://consensus.health`)
 
 After deploy, opening the service URL should load the frontend app, and API routes remain available under the same origin.
