@@ -19,6 +19,10 @@ function safeLower(s) {
   return (s ?? "").toString().toLowerCase();
 }
 
+function normalizeHandleToken(s) {
+  return safeLower(s).trim().replace(/^@+/, "");
+}
+
 const STANCE = {
   AGAINST: "against",
   NEUTRAL: "neutral",
@@ -392,6 +396,30 @@ export default function App() {
 
   const meStance = me?.stance ? normalizedStance(me.stance) : "";
   const meHandleLower = safeLower(me?.handle);
+  const pillActiveStyle = (stance) => {
+    if (stance === "against") {
+      return {
+        borderColor: "rgba(220,38,38,0.9)",
+        opacity: 1,
+        background: "rgba(220,38,38,0.18)",
+        boxShadow: "0 0 0 1px rgba(220,38,38,0.34), 0 0 16px rgba(220,38,38,0.52), 0 0 26px rgba(220,38,38,0.34)",
+      };
+    }
+    if (stance === "neutral") {
+      return {
+        borderColor: "rgba(156,163,175,0.9)",
+        opacity: 1,
+        background: "rgba(156,163,175,0.18)",
+        boxShadow: "0 0 0 1px rgba(156,163,175,0.32), 0 0 16px rgba(156,163,175,0.44), 0 0 24px rgba(156,163,175,0.28)",
+      };
+    }
+    return {
+      borderColor: "rgba(34,197,94,0.9)",
+      opacity: 1,
+      background: "rgba(34,197,94,0.18)",
+      boxShadow: "0 0 0 1px rgba(34,197,94,0.34), 0 0 16px rgba(34,197,94,0.52), 0 0 26px rgba(34,197,94,0.34)",
+    };
+  };
   const donateAvatarSrc = useMemo(() => {
     const baseNoSlash = getBase().replace(/\/$/, "");
     const account = accounts.find((a) => safeLower(a.handle) === "zndtoshi");
@@ -474,26 +502,21 @@ export default function App() {
   }, [accounts, mentionsByHandle]);
 
   const filteredHandlesSet = useMemo(() => {
-    const q = safeLower(search).trim();
+    const q = normalizeHandleToken(search);
     if (!q) return null;
     const s = new Set();
     for (const a of accounts) {
-      if (safeLower(a.handle).includes(q)) s.add(a.handle);
-      else if (safeLower(a.name).includes(q)) s.add(a.handle);
-      else if (safeLower(a.bio_snippet).includes(q)) s.add(a.handle);
+      if (normalizeHandleToken(a.handle).includes(q)) s.add(a.handle);
     }
     return s;
   }, [accounts, search]);
 
   const searchDropdownResults = useMemo(() => {
-    const q = safeLower(search).trim();
+    const q = normalizeHandleToken(search);
     if (!q) return [];
     const out = [];
     for (const a of accounts) {
-      const hasMatch =
-        safeLower(a.handle).includes(q) ||
-        safeLower(a.name).includes(q) ||
-        safeLower(a.bio_snippet).includes(q);
+      const hasMatch = normalizeHandleToken(a.handle).includes(q);
       const inBlob =
         (tweetCountByHandle.get(a.handle) || 0) > 0 ||
         Boolean(getStanceForHandle(labels, a.handle)) ||
@@ -1084,7 +1107,7 @@ export default function App() {
     return (
       <div style={styles.page}>
         <div style={styles.header}>
-          <div style={styles.title}>ConsensusHealth</div>
+          <div style={styles.title}>Consensus Health</div>
           <div style={styles.sub}>Loading data…</div>
         </div>
       </div>
@@ -1095,7 +1118,7 @@ export default function App() {
     return (
       <div style={styles.page}>
         <div style={styles.header}>
-          <div style={styles.title}>ConsensusHealth</div>
+          <div style={styles.title}>Consensus Health</div>
           <div style={styles.sub}>(local)</div>
         </div>
         <div style={styles.errBox}>
@@ -1116,11 +1139,14 @@ export default function App() {
     <div style={styles.page}>
       <div style={styles.header}>
         <div style={styles.headerLeft}>
-          <div style={styles.title}>ConsensusHealth</div>
+          <div style={styles.brandWrap}>
+            <div style={styles.title}>Consensus Health</div>
+            <span style={styles.bipTag}>bip110</span>
+          </div>
           <div style={styles.searchWrap}>
             <input
               style={styles.search}
-              placeholder="Search handle / name / bio…"
+              placeholder="Search @handle..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -1202,21 +1228,36 @@ export default function App() {
                 <span style={styles.stanceLabel}>@{me.handle}</span>
               </div>
               <button
-                style={{ ...styles.pill, borderColor: "rgba(220,38,38,0.55)", opacity: meStance === "against" ? 1 : 0.75 }}
+                style={{
+                  ...styles.pill,
+                  borderColor: "rgba(220,38,38,0.55)",
+                  opacity: meStance === "against" ? 1 : 0.72,
+                  ...(meStance === "against" ? pillActiveStyle("against") : null),
+                }}
                 onClick={() => setMyStance("against")}
                 disabled={authBusy}
               >
                 Against
               </button>
               <button
-                style={{ ...styles.pill, borderColor: "rgba(156,163,175,0.65)", opacity: meStance === "neutral" ? 1 : 0.75 }}
+                style={{
+                  ...styles.pill,
+                  borderColor: "rgba(156,163,175,0.65)",
+                  opacity: meStance === "neutral" ? 1 : 0.72,
+                  ...(meStance === "neutral" ? pillActiveStyle("neutral") : null),
+                }}
                 onClick={() => setMyStance("neutral")}
                 disabled={authBusy}
               >
                 Neutral
               </button>
               <button
-                style={{ ...styles.pill, borderColor: "rgba(34,197,94,0.55)", opacity: meStance === "approve" ? 1 : 0.75 }}
+                style={{
+                  ...styles.pill,
+                  borderColor: "rgba(34,197,94,0.55)",
+                  opacity: meStance === "approve" ? 1 : 0.72,
+                  ...(meStance === "approve" ? pillActiveStyle("support") : null),
+                }}
                 onClick={() => setMyStance("support")}
                 disabled={authBusy}
               >
@@ -1303,6 +1344,18 @@ const styles = {
     borderBottom: "1px solid rgba(255,255,255,0.08)",
   },
   headerLeft: { display: "flex", alignItems: "center", gap: 16 },
+  brandWrap: { display: "flex", alignItems: "center", gap: 8 },
+  bipTag: {
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: 0.2,
+    padding: "3px 7px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.2)",
+    background: "rgba(30,41,59,0.72)",
+    color: "#cbd5e1",
+    textTransform: "lowercase",
+  },
   searchWrap: { position: "relative" },
   searchDropdown: {
     position: "absolute",
