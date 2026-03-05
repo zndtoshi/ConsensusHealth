@@ -1263,7 +1263,7 @@ export default function App() {
                 onClick={() => setMyStance("support")}
                 disabled={authBusy}
               >
-                Support
+                Approve
               </button>
               <button style={styles.btn} onClick={logout} disabled={authBusy}>Logout</button>
             </>
