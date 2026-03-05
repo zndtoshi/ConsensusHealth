@@ -7,15 +7,15 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import { Pool } from "pg";
 import { v4 as uuidv4 } from "uuid";
-import { getXRedirectUri, logConfig } from "./config/appUrl.js";
+import { logConfig } from "./config/appUrl.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
 const PORT = Number(process.env.PORT || 8787);
 const NODE_ENV = process.env.NODE_ENV || "development";
 const IS_PROD = NODE_ENV === "production";
-const APP_ORIGIN = process.env.APP_ORIGIN || process.env.CLIENT_URL || "http://localhost:5173";
-const FRONTEND_BASE_URL = (process.env.FRONTEND_BASE_URL ?? APP_ORIGIN).trim();
+const APP_ORIGIN_ENV = (process.env.APP_ORIGIN || "").trim();
+const APP_URL_ENV = (process.env.APP_URL || "").trim();
 const DIST_PATH = path.resolve(process.cwd(), "dist");
 const DATABASE_URL = (process.env.DATABASE_URL || "").trim();
 const TWITTER_CLIENT_ID = process.env.X_CLIENT_ID || process.env.TWITTER_CLIENT_ID || "";
@@ -71,11 +71,50 @@ try {
 const pool = new Pool({ connectionString });
 console.log("[ConsensusHealth server] DB:", connectionString.replace(/:(?:[^@]*)@/, ":***@"));
 
+function withWwwVariant(origin: string): string[] {
+  try {
+    const url = new URL(origin);
+    const host = url.hostname.toLowerCase();
+    if (host.startsWith("www.")) {
+      const noWww = host.slice(4);
+      return [origin, `${url.protocol}//${noWww}${url.port ? `:${url.port}` : ""}`];
+    }
+    return [origin, `${url.protocol}//www.${host}${url.port ? `:${url.port}` : ""}`];
+  } catch {
+    return [origin];
+  }
+}
+
+function buildAllowedOrigins(): Set<string> {
+  const set = new Set<string>();
+  const add = (value: string): void => {
+    const v = value.trim();
+    if (!v) return;
+    for (const item of withWwwVariant(v)) set.add(item);
+  };
+  add(APP_ORIGIN_ENV);
+  add(APP_URL_ENV);
+  set.add("http://localhost:5173");
+  return set;
+}
+
+const allowedOrigins = buildAllowedOrigins();
+
 const app = express();
 app.set("trust proxy", 1);
 app.use(
   cors({
-    origin: APP_ORIGIN,
+    origin(origin, callback) {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      if (allowedOrigins.has(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error("Not allowed by CORS"));
+    },
     credentials: true,
   })
 );
@@ -124,20 +163,45 @@ function cookieSecure(req: Request): boolean {
   return req.secure || proto.includes("https");
 }
 
-function frontendRedirect(targetPath = "/"): string {
-  if (!FRONTEND_BASE_URL) return targetPath;
+function computeFrontendBase(req: Request): string {
+  if (APP_ORIGIN_ENV) return APP_ORIGIN_ENV;
+  if (APP_URL_ENV) return APP_URL_ENV;
+  const protoHeader = String(req.header("x-forwarded-proto") || "").split(",")[0].trim();
+  const proto = protoHeader || req.protocol || "http";
+  const hostHeader = String(req.header("x-forwarded-host") || "").split(",")[0].trim();
+  const host = hostHeader || req.get("host") || "";
+  if (host) return `${proto}://${host}`.replace(/\/+$/, "");
+  return "http://localhost:5173";
+}
+
+function frontendRedirect(req: Request, targetPath = "/"): string {
+  const base = computeFrontendBase(req);
   try {
-    const url = new URL(FRONTEND_BASE_URL);
+    const url = new URL(base);
     url.pathname = targetPath;
     url.search = "";
     url.hash = "";
     return url.toString();
   } catch {
-    if (FRONTEND_BASE_URL.startsWith("http://") || FRONTEND_BASE_URL.startsWith("https://")) {
-      return `${FRONTEND_BASE_URL.replace(/\/$/, "")}${targetPath.startsWith("/") ? targetPath : `/${targetPath}`}`;
+    if (base.startsWith("http://") || base.startsWith("https://")) {
+      return `${base.replace(/\/$/, "")}${targetPath.startsWith("/") ? targetPath : `/${targetPath}`}`;
     }
     return targetPath;
   }
+}
+
+function computeOAuthBase(req: Request): string {
+  const appUrl = (process.env.APP_URL || "").trim().replace(/\/+$/, "");
+  if (appUrl) return appUrl;
+
+  const proto = String(req.header("x-forwarded-proto") || "http").split(",")[0].trim();
+  const host = String(req.header("x-forwarded-host") || req.header("host") || "").split(",")[0].trim();
+  const baseFromReq = `${proto}://${host}`.replace(/\/+$/, "");
+  return baseFromReq;
+}
+
+function computeOAuthRedirectUri(req: Request): string {
+  return `${computeOAuthBase(req)}/auth/x/callback`;
 }
 
 async function initDb(): Promise<void> {
@@ -237,7 +301,7 @@ function getDevCookieUser(req: Request): DevCookieUser | null {
   };
 }
 
-app.get("/auth/x", async (req, res) => {
+async function startXAuth(req: Request, res: Response): Promise<void> {
   if (!TWITTER_CLIENT_ID || !TWITTER_CLIENT_SECRET) {
     res.status(500).json({ error: "Twitter OAuth env vars are missing" });
     return;
@@ -254,7 +318,8 @@ app.get("/auth/x", async (req, res) => {
     maxAge: 10 * 60 * 1000,
   });
 
-  const redirectUri = getXRedirectUri();
+  const base = computeOAuthBase(req);
+  const redirectUri = `${base}/auth/x/callback`;
   const url = new URL("https://x.com/i/oauth2/authorize");
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", TWITTER_CLIENT_ID);
@@ -264,10 +329,13 @@ app.get("/auth/x", async (req, res) => {
   url.searchParams.set("code_challenge", challenge);
   url.searchParams.set("code_challenge_method", "S256");
 
-  console.log("[OAuth] authorize redirect_uri:", redirectUri);
+  console.log("[oauth] base=%s redirect_uri=%s", base, redirectUri);
   console.log("[OAuth] authorize url:", url.toString());
   res.redirect(url.toString());
-});
+}
+
+app.get("/auth/x/login", startXAuth);
+app.get("/auth/x", startXAuth);
 
 if (process.env.NODE_ENV !== "production") {
   // DEV ONLY - REMOVE AFTER OAUTH
@@ -342,7 +410,7 @@ app.get("/auth/x/callback", async (req, res, next) => {
       return;
     }
 
-    const redirectUri = getXRedirectUri();
+    const redirectUri = computeOAuthRedirectUri(req);
     const tokenBody = new URLSearchParams({
       code,
       grant_type: "authorization_code",
@@ -514,7 +582,7 @@ app.get("/auth/x/callback", async (req, res, next) => {
       maxAge: SESSION_TTL_DAYS * 24 * 60 * 60 * 1000,
       signed: true,
     });
-    res.redirect(frontendRedirect("/"));
+    res.redirect(frontendRedirect(req, "/"));
   } catch (err) {
     console.error("[OAuth] callback exception:", err);
     next(err);
