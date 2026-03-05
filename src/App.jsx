@@ -3,6 +3,7 @@ import Papa from "papaparse";
 import { forceCollide, forceManyBody, forceCenter, forceSimulation, forceX, forceY } from "d3-force";
 import { getAvatar } from "./utils/avatarCache";
 import { fetchCommunityUsers } from "./api/community";
+import { BitcoinQr } from "./components/BitcoinQr";
 
 function toInt(v) {
   const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -396,6 +397,7 @@ export default function App() {
 
   const meStance = me?.stance ? normalizedStance(me.stance) : "";
   const meHandleLower = safeLower(me?.handle);
+  const donationAddress = String(me?.donation_btc_address || "bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7").trim();
   const pillActiveStyle = (stance) => {
     if (stance === "against") {
       return {
@@ -576,7 +578,7 @@ export default function App() {
         ? `${baseNoSlash}${a.avatar_path}?v=${AVATAR_REV}`
         : (a.avatar_url || a.profile_image_url || missingSrc);
       const img = getAvatar(src);
-      if ("loading" in img) img.loading = "eager";
+      if ("loading" in img) img.loading = "lazy";
     }
   }, [accounts]);
 
@@ -666,7 +668,8 @@ export default function App() {
       urlToHandles.get(n.avatarUrl).push(n.handle);
     }
     const missingImg = getAvatar(missingSrc);
-    if ("loading" in missingImg) missingImg.loading = "eager";
+    if ("decoding" in missingImg) missingImg.decoding = "async";
+    if ("loading" in missingImg) missingImg.loading = "lazy";
     if (!hooked.has(missingImg)) {
       hooked.add(missingImg);
       missingImg.addEventListener("load", () => drawRef.current());
@@ -675,7 +678,7 @@ export default function App() {
     urls.forEach((url) => {
       const img = getAvatar(url);
       if ("decoding" in img) img.decoding = "async";
-      if ("loading" in img) img.loading = "eager";
+      if ("loading" in img) img.loading = "lazy";
       cache.set(url, img);
       if (!hooked.has(img)) {
         hooked.add(img);
@@ -1223,11 +1226,16 @@ export default function App() {
                 <img
                   src={me.avatar_url || `${getBase()}/avatars/_missing.svg`}
                   alt={`@${me.handle}`}
+                  loading="lazy"
+                  decoding="async"
+                  width={24}
+                  height={24}
                   style={styles.userChipAvatar}
                 />
                 <span style={styles.stanceLabel}>@{me.handle}</span>
               </div>
               <button
+                className={`stance-btn ${meStance === "against" ? "aura stanceAura" : ""}`}
                 style={{
                   ...styles.pill,
                   borderColor: "rgba(220,38,38,0.55)",
@@ -1240,6 +1248,7 @@ export default function App() {
                 Against
               </button>
               <button
+                className={`stance-btn ${meStance === "neutral" ? "aura stanceAura" : ""}`}
                 style={{
                   ...styles.pill,
                   borderColor: "rgba(156,163,175,0.65)",
@@ -1252,6 +1261,7 @@ export default function App() {
                 Neutral
               </button>
               <button
+                className={`stance-btn ${meStance === "approve" ? "aura stanceAura" : ""}`}
                 style={{
                   ...styles.pill,
                   borderColor: "rgba(34,197,94,0.55)",
@@ -1287,7 +1297,7 @@ export default function App() {
             onClick={onClick}
             style={{ ...styles.canvas, touchAction: "none" }}
           />
-          <div ref={tooltipRef} style={{ ...styles.tooltip, display: "none" }}>
+          <div ref={tooltipRef} className="tooltip" style={{ ...styles.tooltip, display: "none" }}>
             <div ref={tooltipHandleRef} style={{ fontWeight: 700 }} />
             <div ref={tooltipSelfRef} style={styles.tooltipSelf}>You</div>
             <div ref={tooltipFollowersRef} style={{ opacity: 0.9 }} />
@@ -1301,17 +1311,25 @@ export default function App() {
       <button style={styles.donateBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
       {showDonateModal && (
         <div style={styles.modalBackdrop} onClick={() => setShowDonateModal(false)}>
-          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
-            <img src={donateAvatarSrc} alt="@zndtoshi" style={styles.donateProfileAvatar} />
+          <div className="modal" style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+            <img
+              src={donateAvatarSrc}
+              alt="@zndtoshi"
+              loading="lazy"
+              decoding="async"
+              width={64}
+              height={64}
+              style={styles.donateProfileAvatar}
+            />
             <a href="https://x.com/zndtoshi" target="_blank" rel="noreferrer" style={styles.donateHandleLink}>
               @zndtoshi
             </a>
-            <img
-              src={`${getBase()}/donate.png`}
-              alt="Donate Bitcoin QR"
-              style={styles.donateQr}
-            />
-            <div style={styles.donateAddr}>bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7</div>
+            {donationAddress ? (
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
+                <BitcoinQr value={`bitcoin:${donationAddress}`} size={220} />
+              </div>
+            ) : null}
+            <div style={styles.donateAddr}>{donationAddress}</div>
             <button style={{ ...styles.btn, marginTop: 10 }} onClick={() => setShowDonateModal(false)}>
               Close
             </button>
