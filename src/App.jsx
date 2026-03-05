@@ -4,6 +4,7 @@ import { forceCollide, forceManyBody, forceCenter, forceSimulation, forceX, forc
 import { getAvatar } from "./utils/avatarCache";
 import { fetchCommunityUsers } from "./api/community";
 import { BitcoinQr } from "./components/BitcoinQr";
+import { StatisticsModal } from "./components/StatisticsModal";
 
 function toInt(v) {
   const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -455,6 +456,67 @@ export default function App() {
     return `${baseNoSlash}/avatars/zndtoshi.jpg?v=${AVATAR_REV}`;
   }, [accounts]);
   const donationAddress = String(me?.donation_btc_address || "bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7").trim();
+  const statisticsData = useMemo(() => {
+    if (!statsData) return null;
+    const num = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+    const flowNorm = (s) => {
+      const v = String(s ?? "").toLowerCase();
+      if (v === "against" || v === "neutral" || v === "approve") return v;
+      if (v === "support") return "approve";
+      return null;
+    };
+    const top = statsData.top_account || {};
+    const mapTop = (k) =>
+      top?.[k]?.handle
+        ? {
+            handle: String(top[k].handle),
+            followers: num(top[k].followers_count),
+          }
+        : null;
+    return {
+      totalUsersWithStance: num(statsData.total_users_with_stance),
+      counts: {
+        against: num(statsData.counts?.against),
+        neutral: num(statsData.counts?.neutral),
+        approve: num(statsData.counts?.approve),
+      },
+      percentages: {
+        against: num(statsData.percentages?.against),
+        neutral: num(statsData.percentages?.neutral),
+        approve: num(statsData.percentages?.approve),
+      },
+      totalFollowersByStance: {
+        against: num(statsData.followers_total?.against),
+        neutral: num(statsData.followers_total?.neutral),
+        approve: num(statsData.followers_total?.approve),
+      },
+      avgFollowersByStance: {
+        against: num(statsData.followers_avg?.against),
+        neutral: num(statsData.followers_avg?.neutral),
+        approve: num(statsData.followers_avg?.approve),
+      },
+      topAccountByFollowers: {
+        against: mapTop("against"),
+        neutral: mapTop("neutral"),
+        approve: mapTop("approve"),
+      },
+      usersChangedStanceAtLeastOnce: num(statsData.changed_ever),
+      totalStanceChangesLast7Days: num(statsData.changes_last_7d),
+      topFlowsLast7Days: Array.isArray(statsData.flows_last_7d)
+        ? statsData.flows_last_7d
+            .map((f) => ({
+              from: flowNorm(f.from),
+              to: flowNorm(f.to),
+              count: num(f.count),
+            }))
+            .filter((f) => (f.from === null || f.from) && (f.to === "against" || f.to === "neutral" || f.to === "approve"))
+        : [],
+      generatedAtISO: String(statsData.generated_at || ""),
+    };
+  }, [statsData]);
 
   // Load canonical accounts and mentions CSV from public/data
   useEffect(() => {
@@ -1331,47 +1393,13 @@ export default function App() {
       </div>
       <button style={styles.statsBtn} onClick={() => setShowStatsModal(true)}>Statistics</button>
       <button style={styles.donateBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
-      {showStatsModal && (
-        <div style={styles.modalBackdrop} onClick={() => setShowStatsModal(false)}>
-          <div style={{ ...styles.modalCard, width: "min(760px, 94vw)", alignItems: "stretch" }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ fontWeight: 900, fontSize: 18, marginBottom: 6 }}>Statistics</div>
-            {statsLoading ? (
-              <div style={{ opacity: 0.85 }}>Loading statistics...</div>
-            ) : statsError ? (
-              <div style={{ color: "#fda4af" }}>{statsError}</div>
-            ) : !statsData ? (
-              <div style={{ opacity: 0.85 }}>No statistics available.</div>
-            ) : (
-              <div style={{ display: "grid", gap: 8, fontSize: 13 }}>
-                <div>1. Total users with stance: <b>{statsData.total_users_with_stance ?? 0}</b></div>
-                <div>2. Counts: Against {statsData.counts?.against ?? 0} / Neutral {statsData.counts?.neutral ?? 0} / Approve {statsData.counts?.approve ?? 0}</div>
-                <div>3. Percentages: Against {statsData.percentages?.against ?? 0}% / Neutral {statsData.percentages?.neutral ?? 0}% / Approve {statsData.percentages?.approve ?? 0}%</div>
-                <div>4. Total followers by stance: Against {formatNum(statsData.followers_total?.against ?? 0)} / Neutral {formatNum(statsData.followers_total?.neutral ?? 0)} / Approve {formatNum(statsData.followers_total?.approve ?? 0)}</div>
-                <div>5. Average followers by stance: Against {formatNum(statsData.followers_avg?.against ?? 0)} / Neutral {formatNum(statsData.followers_avg?.neutral ?? 0)} / Approve {formatNum(statsData.followers_avg?.approve ?? 0)}</div>
-                <div>6. Top account by followers: Against {statsData.top_account?.against?.handle ? `@${statsData.top_account.against.handle} (${formatNum(statsData.top_account.against.followers_count ?? 0)})` : "n/a"} / Neutral {statsData.top_account?.neutral?.handle ? `@${statsData.top_account.neutral.handle} (${formatNum(statsData.top_account.neutral.followers_count ?? 0)})` : "n/a"} / Approve {statsData.top_account?.approve?.handle ? `@${statsData.top_account.approve.handle} (${formatNum(statsData.top_account.approve.followers_count ?? 0)})` : "n/a"}</div>
-                <div>7. Users who changed stance at least once: {statsData.changed_ever ?? 0}</div>
-                <div>8. Total stance changes in last 7 days: {statsData.changes_last_7d ?? 0}</div>
-                <div>
-                  9. Top flows last 7 days:
-                  <div style={{ marginTop: 4, opacity: 0.95 }}>
-                    {Array.isArray(statsData.flows_last_7d) && statsData.flows_last_7d.length > 0
-                      ? statsData.flows_last_7d.map((f, i) => (
-                          <div key={`${f.from ?? "unset"}-${f.to}-${i}`}>
-                            {(f.from ?? "unset")} {"\u2192"} {f.to}: {f.count}
-                          </div>
-                        ))
-                      : <div>None</div>}
-                  </div>
-                </div>
-                <div>10. Generated at: {statsData.generated_at ?? "n/a"}</div>
-              </div>
-            )}
-            <div style={{ marginTop: 12 }}>
-              <button style={styles.btn} onClick={() => setShowStatsModal(false)}>Close</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <StatisticsModal
+        open={showStatsModal}
+        onClose={() => setShowStatsModal(false)}
+        data={statisticsData}
+        loading={statsLoading}
+        error={statsError}
+      />
       {showDonateModal && (
         <div style={styles.modalBackdrop} onClick={() => setShowDonateModal(false)}>
           <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
