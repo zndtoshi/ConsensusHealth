@@ -25,6 +25,25 @@ function normalizeHandleToken(s) {
   return safeLower(s).trim().replace(/^@+/, "");
 }
 
+function normalizeHandle(handle) {
+  return String(handle ?? "").trim().toLowerCase().replace(/^@+/, "");
+}
+
+function toFiniteNumber(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function getFollowersFromUser(user) {
+  const fromProfile = toFiniteNumber(user?.profile?.followers_count);
+  if (fromProfile != null) return { followers: Math.max(0, fromProfile), source: "profile" };
+  const fromTwitterProfile = toFiniteNumber(user?.twitterProfile?.followers_count);
+  if (fromTwitterProfile != null) return { followers: Math.max(0, fromTwitterProfile), source: "twitterProfile" };
+  const fromStored = toFiniteNumber(user?.followers_count);
+  if (fromStored != null) return { followers: Math.max(0, fromStored), source: "followers_count" };
+  return { followers: 0, source: "none" };
+}
+
 const STANCE = {
   AGAINST: "against",
   NEUTRAL: "neutral",
@@ -457,7 +476,6 @@ export default function App() {
   }, [accounts]);
   const donationAddress = String(me?.donation_btc_address || "bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7").trim();
   const statisticsData = useMemo(() => {
-    if (!statsData) return null;
     const num = (v) => {
       const n = Number(v);
       return Number.isFinite(n) ? n : 0;
@@ -468,44 +486,106 @@ export default function App() {
       if (v === "support") return "approve";
       return null;
     };
-    const top = statsData.top_account || {};
-    const mapTop = (k) =>
-      top?.[k]?.handle
-        ? {
-            handle: String(top[k].handle),
-            followers: num(top[k].followers_count),
-          }
-        : null;
+
+    const canonicalById = new Map();
+    const canonicalByHandle = new Map();
+
+    for (const a of accounts) {
+      const handle =
+        normalizeHandle(a?.handle) ||
+        normalizeHandle(a?.username) ||
+        normalizeHandle(a?.screen_name);
+      const xId = String(a?.x_user_id ?? a?.xUserId ?? "").trim();
+      const stance = normalizedStance(getStanceForHandle(labels, handle) || a?.stance || a?.position || "neutral");
+      const followersInfo = getFollowersFromUser(a);
+      const candidate = {
+        raw: a,
+        handle,
+        xId: xId || null,
+        stance,
+        followers: followersInfo.followers,
+        followersSource: followersInfo.source,
+      };
+
+      let existing = null;
+      if (candidate.xId && canonicalById.has(candidate.xId)) existing = canonicalById.get(candidate.xId);
+      else if (candidate.handle && canonicalByHandle.has(candidate.handle)) existing = canonicalByHandle.get(candidate.handle);
+
+      if (existing) {
+        const sourceRank = (src) => (src === "profile" || src === "twitterProfile" ? 3 : src === "followers_count" ? 2 : 0);
+        const shouldReplaceFollowers =
+          sourceRank(candidate.followersSource) > sourceRank(existing.followersSource) ||
+          (sourceRank(candidate.followersSource) === sourceRank(existing.followersSource) && candidate.followers > existing.followers);
+
+        if (shouldReplaceFollowers) {
+          existing.followers = candidate.followers;
+          existing.followersSource = candidate.followersSource;
+          existing.raw = candidate.raw;
+        }
+        if (candidate.stance) existing.stance = candidate.stance;
+        if (!existing.handle && candidate.handle) existing.handle = candidate.handle;
+        if (!existing.xId && candidate.xId) existing.xId = candidate.xId;
+      } else {
+        existing = candidate;
+      }
+
+      if (existing.xId) canonicalById.set(existing.xId, existing);
+      if (existing.handle) canonicalByHandle.set(existing.handle, existing);
+    }
+
+    const uniqueUsers = new Set([...canonicalById.values(), ...canonicalByHandle.values()]);
+    const rows = [...uniqueUsers];
+
+    const counts = { against: 0, neutral: 0, approve: 0 };
+    const followersTotal = { against: 0, neutral: 0, approve: 0 };
+    const topAccountByFollowers = { against: null, neutral: null, approve: null };
+    for (const u of rows) {
+      const stance = u.stance;
+      if (!(stance === "against" || stance === "neutral" || stance === "approve")) continue;
+      counts[stance] += 1;
+      followersTotal[stance] += u.followers;
+      const prevTop = topAccountByFollowers[stance];
+      if (!prevTop || u.followers > prevTop.followers) {
+        topAccountByFollowers[stance] = {
+          handle: u.handle || "(unknown)",
+          followers: u.followers,
+        };
+      }
+    }
+    const totalUsersWithStance = counts.against + counts.neutral + counts.approve;
+    const denom = totalUsersWithStance || 1;
+    const percentages = {
+      against: Math.round((counts.against / denom) * 1000) / 10,
+      neutral: Math.round((counts.neutral / denom) * 1000) / 10,
+      approve: Math.round((counts.approve / denom) * 1000) / 10,
+    };
+    const avgFollowersByStance = {
+      against: counts.against ? Math.round(followersTotal.against / counts.against) : 0,
+      neutral: counts.neutral ? Math.round(followersTotal.neutral / counts.neutral) : 0,
+      approve: counts.approve ? Math.round(followersTotal.approve / counts.approve) : 0,
+    };
+
+    const adam = rows.find((u) => normalizeHandle(u.handle) === "adam3us");
+    const isProd =
+      (typeof process !== "undefined" &&
+        process.env &&
+        process.env.NODE_ENV === "production") ||
+      (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.PROD);
+    if (!isProd && adam) {
+      // eslint-disable-next-line no-console
+      console.log("[stats] adam3us", { stance: adam.stance, followers: adam.followers, raw: adam.raw });
+    }
+
     return {
-      totalUsersWithStance: num(statsData.total_users_with_stance),
-      counts: {
-        against: num(statsData.counts?.against),
-        neutral: num(statsData.counts?.neutral),
-        approve: num(statsData.counts?.approve),
-      },
-      percentages: {
-        against: num(statsData.percentages?.against),
-        neutral: num(statsData.percentages?.neutral),
-        approve: num(statsData.percentages?.approve),
-      },
-      totalFollowersByStance: {
-        against: num(statsData.followers_total?.against),
-        neutral: num(statsData.followers_total?.neutral),
-        approve: num(statsData.followers_total?.approve),
-      },
-      avgFollowersByStance: {
-        against: num(statsData.followers_avg?.against),
-        neutral: num(statsData.followers_avg?.neutral),
-        approve: num(statsData.followers_avg?.approve),
-      },
-      topAccountByFollowers: {
-        against: mapTop("against"),
-        neutral: mapTop("neutral"),
-        approve: mapTop("approve"),
-      },
-      usersChangedStanceAtLeastOnce: num(statsData.changed_ever),
-      totalStanceChangesLast7Days: num(statsData.changes_last_7d),
-      topFlowsLast7Days: Array.isArray(statsData.flows_last_7d)
+      totalUsersWithStance,
+      counts,
+      percentages,
+      totalFollowersByStance: followersTotal,
+      avgFollowersByStance,
+      topAccountByFollowers,
+      usersChangedStanceAtLeastOnce: num(statsData?.changed_ever),
+      totalStanceChangesLast7Days: num(statsData?.changes_last_7d),
+      topFlowsLast7Days: Array.isArray(statsData?.flows_last_7d)
         ? statsData.flows_last_7d
             .map((f) => ({
               from: flowNorm(f.from),
@@ -514,9 +594,9 @@ export default function App() {
             }))
             .filter((f) => (f.from === null || f.from) && (f.to === "against" || f.to === "neutral" || f.to === "approve"))
         : [],
-      generatedAtISO: String(statsData.generated_at || ""),
+      generatedAtISO: String(statsData?.generated_at || new Date().toISOString()),
     };
-  }, [statsData]);
+  }, [statsData, accounts, labels]);
 
   // Load canonical accounts and mentions CSV from public/data
   useEffect(() => {
