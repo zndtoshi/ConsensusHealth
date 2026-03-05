@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import { forceCollide, forceManyBody, forceCenter, forceSimulation, forceX, forceY } from "d3-force";
 import { getAvatar } from "./utils/avatarCache";
+import { fetchCommunityUsers } from "./api/community";
 
 function toInt(v) {
   const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -44,23 +45,23 @@ function getStanceForHandle(map, handle) {
   return map[h] ?? map[h.toLowerCase()];
 }
 
-function normalizeStance(value) {
+function normalizedStance(value) {
   const v = String(value ?? "").trim().toLowerCase();
   if (v === STANCE.AGAINST) return STANCE.AGAINST;
   if (v === STANCE.NEUTRAL) return STANCE.NEUTRAL;
   if (v === "support" || v === STANCE.APPROVE) return STANCE.APPROVE;
-  return "";
+  return STANCE.NEUTRAL;
 }
 
 function getNodeStance(node, labelsMap) {
-  return normalizeStance(getStanceForHandle(labelsMap, node.handle) || node.seedStance);
+  return normalizedStance(getStanceForHandle(labelsMap, node.handle) || node.seedStance);
 }
 
 const LABELS_STORAGE_KEY = "consensushealth:bip110:labels:v1";
 const GLOW_CACHE_VERSION = 3;
 const AVATAR_REV = "20260305d";
 const DATA_REV = "20260305d";
-const API_BASE = ((import.meta.env && import.meta.env.VITE_API_BASE) || "http://localhost:8787").replace(/\/$/, "");
+const API_BASE = ((import.meta.env && import.meta.env.VITE_API_BASE) || "").replace(/\/$/, "");
 
 /** Compute stance weights (sum of sqrt(followers)) and region layout. Neutral at width/2; all three in a tight band so islands stay cohesive. */
 function computeStanceRegions(nodes, labels, width) {
@@ -220,12 +221,11 @@ function getBase() {
 /** Load canonical seeded accounts + community accounts and merge by handle. */
 async function loadAccounts() {
   const base = getBase();
-  const [seededRes, communityRes] = await Promise.all([
+  const [seededRes, community] = await Promise.all([
     fetch(`${base}/data/accounts_stanced.json?v=${DATA_REV}`),
-    fetch(`${API_BASE}/api/community`, { credentials: "include" }).catch(() => null),
+    fetchCommunityUsers(),
   ]);
   const seeded = seededRes.ok ? await seededRes.json() : [];
-  const community = communityRes && communityRes.ok ? await communityRes.json() : [];
   const map = new Map();
   for (const a of Array.isArray(seeded) ? seeded : []) {
     const handle = String(a.handle ?? "").trim().toLowerCase();
@@ -235,19 +235,27 @@ async function loadAccounts() {
   for (const c of Array.isArray(community) ? community : []) {
     const handle = String(c.handle ?? "").trim().toLowerCase();
     if (!handle) continue;
-    const prev = map.get(handle) ?? {};
-    map.set(handle, {
-      ...prev,
-      handle,
-      name: c.name ?? prev.name ?? "",
-      followers_count: toInt(c.followers_count ?? prev.followers_count),
-      avatar_url: c.avatar_url ?? prev.avatar_url ?? "",
-      stance: c.stance ?? prev.stance ?? "",
-      x_user_id: c.x_user_id ?? prev.x_user_id,
-      is_community: true,
-    });
+    if (map.has(handle)) {
+      const prev = map.get(handle);
+      map.set(handle, {
+        ...prev,
+        stance: normalizedStance(c.stance ?? prev.stance),
+      });
+    } else {
+      map.set(handle, {
+        handle,
+        name: c.name ?? "",
+        followers_count:
+          c.followers_count == null ? 1000 : toInt(c.followers_count),
+        stance: normalizedStance(c.stance),
+        avatar_url: c.avatar_url ?? null,
+        x_user_id: c.x_user_id ?? null,
+      });
+    }
   }
-  return Array.from(map.values());
+  const merged = Array.from(map.values());
+  console.log("[ConsensusHealth] loaded seeded:", Array.isArray(seeded) ? seeded.length : 0, "community:", community.length, "merged:", merged.length);
+  return merged;
 }
 
 function useContainerSize(containerRef) {
@@ -299,9 +307,9 @@ export default function App() {
   const [mentions, setMentions] = useState([]); // tweet rows
   const [selectedHandle, setSelectedHandle] = useState(null);
   const [search, setSearch] = useState("");
-  const [reloadKey, setReloadKey] = useState(0);
   const [me, setMe] = useState(null);
   const [authBusy, setAuthBusy] = useState(false);
+  const [showDonateModal, setShowDonateModal] = useState(false);
   const [labels, setLabels] = useState(() => {
     try {
       const raw = localStorage.getItem(LABELS_STORAGE_KEY);
@@ -331,9 +339,10 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/me`, { credentials: "include" });
       if (!res.ok) return;
       const data = await res.json();
-      setMe(data);
-      if (data?.authenticated && data?.handle && data?.stance) {
-        setLabels((prev) => ({ ...prev, [String(data.handle).toLowerCase()]: normalizeStance(data.stance) }));
+      const authenticated = Boolean(data && data.x_user_id);
+      setMe(authenticated ? { authenticated: true, ...data } : { authenticated: false });
+      if (authenticated && data?.handle && data?.stance) {
+        setLabels((prev) => ({ ...prev, [String(data.handle).toLowerCase()]: normalizedStance(data.stance) }));
       }
     } catch {
       // ignore auth failures in local dev
@@ -342,6 +351,17 @@ export default function App() {
 
   function beginLogin() {
     window.location.href = `${API_BASE}/auth/x`;
+  }
+
+  async function logout() {
+    try {
+      await fetch(`${API_BASE}/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
+    } finally {
+      setMe(null);
+    }
   }
 
   async function setMyStance(stance) {
@@ -357,10 +377,9 @@ export default function App() {
       if (!res.ok) return;
       const data = await res.json();
       if (data?.handle && data?.stance) {
-        setLabels((prev) => ({ ...prev, [String(data.handle).toLowerCase()]: normalizeStance(data.stance) }));
+        setLabels((prev) => ({ ...prev, [String(data.handle).toLowerCase()]: normalizedStance(data.stance) }));
       }
       await loadMe();
-      setReloadKey((k) => k + 1);
     } finally {
       setAuthBusy(false);
     }
@@ -370,6 +389,16 @@ export default function App() {
     loadMe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const meStance = me?.stance ? normalizedStance(me.stance) : "";
+  const meHandleLower = safeLower(me?.handle);
+  const donateAvatarSrc = useMemo(() => {
+    const baseNoSlash = getBase().replace(/\/$/, "");
+    const account = accounts.find((a) => safeLower(a.handle) === "zndtoshi");
+    if (account?.avatar_path) return `${baseNoSlash}${account.avatar_path}?v=${AVATAR_REV}`;
+    if (account?.avatar_url) return account.avatar_url;
+    return `${baseNoSlash}/avatars/zndtoshi.jpg?v=${AVATAR_REV}`;
+  }, [accounts]);
 
   // Load canonical accounts and mentions CSV from public/data
   useEffect(() => {
@@ -420,7 +449,7 @@ export default function App() {
     return () => {
       dead = true;
     };
-  }, [reloadKey]);
+  }, []);
 
   // Index mentions by handle, plus counts
   const mentionsByHandle = useMemo(() => {
@@ -468,7 +497,7 @@ export default function App() {
       const inBlob =
         (tweetCountByHandle.get(a.handle) || 0) > 0 ||
         Boolean(getStanceForHandle(labels, a.handle)) ||
-        Boolean(normalizeStance(a.stance ?? a.position));
+        Boolean(String(a.stance ?? a.position ?? "").trim());
       if (hasMatch && inBlob) {
         out.push(a.handle);
         if (out.length >= 12) break;
@@ -550,6 +579,7 @@ export default function App() {
   const tooltipRef = useRef(null);
   const tooltipHandleRef = useRef(null);
   const tooltipFollowersRef = useRef(null);
+  const tooltipSelfRef = useRef(null);
   const avatarWarnedHandlesRef = useRef(new Set());
   const avatarHookedRef = useRef(new WeakSet());
   labelsRef.current = labels;
@@ -573,7 +603,9 @@ export default function App() {
     const nodes = accounts
       .map((a) => {
         const tweetCount = tweetCountByHandle.get(a.handle) || 0;
-        const seedStance = normalizeStance(a.stance ?? a.position);
+        const seedStance = String(a.stance ?? a.position ?? "").trim()
+          ? normalizedStance(a.stance ?? a.position)
+          : "";
         const hasManualStance = Boolean(getStanceForHandle(labelsRef.current, a.handle) || seedStance);
         return { a, tweetCount, hasManualStance, seedStance };
       })
@@ -745,9 +777,13 @@ export default function App() {
     tip.style.display = "block";
     tip.style.left = `${left}px`;
     tip.style.top = `${top}px`;
+    const isSelfHover = safeLower(nextHover.handle) === meHandleLower;
     if (tooltipHandleRef.current) tooltipHandleRef.current.textContent = `@${nextHover.handle}`;
     if (tooltipFollowersRef.current) {
       tooltipFollowersRef.current.textContent = `followers: ${formatNum(nextHover.followers)}`;
+    }
+    if (tooltipSelfRef.current) {
+      tooltipSelfRef.current.style.display = isSelfHover ? "inline-block" : "none";
     }
   }
 
@@ -909,6 +945,7 @@ export default function App() {
         ctx.rect(drawX, drawY, drawSide, drawSide);
       }
       ctx.stroke();
+
     };
 
     const curHover = hoverRef.current;
@@ -1116,10 +1153,17 @@ export default function App() {
             <>
               <div style={styles.selectedMetaBlock}>
                 <span
-                  style={{ ...styles.selectedHandle, pointerEvents: "auto", userSelect: "text" }}
-                  title="Double-click to select"
+                  style={{ pointerEvents: "auto", userSelect: "text" }}
+                  title="Open profile on X"
                 >
-                  @{selectedHandle}
+                  <a
+                    href={`https://x.com/${encodeURIComponent(selectedHandle)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={styles.selectedHandleLink}
+                  >
+                    @{selectedHandle}
+                  </a>
                 </span>
                 <span
                   style={{
@@ -1136,31 +1180,52 @@ export default function App() {
         </div>
         <div style={styles.controls}>
           {!me?.authenticated ? (
-            <button style={styles.btn} onClick={beginLogin}>Login with X</button>
+            <button style={styles.btn} onClick={beginLogin}>
+              <span style={styles.btnInline}>
+                <span>Login with</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true" style={styles.xLogoIcon}>
+                  <path
+                    fill="currentColor"
+                    d="M18.244 2h3.308l-7.227 8.26L22.82 22h-6.648l-5.204-6.807L4.99 22H1.68l7.73-8.835L1 2h6.816l4.704 6.231L18.244 2Zm-1.16 18h1.833L6.82 3.894H4.853L17.084 20Z"
+                  />
+                </svg>
+              </span>
+            </button>
           ) : (
             <>
-              <span style={styles.stanceLabel}>@{me.handle}</span>
+              <div style={styles.userChip}>
+                <img
+                  src={me.avatar_url || `${getBase()}/avatars/_missing.svg`}
+                  alt={`@${me.handle}`}
+                  style={styles.userChipAvatar}
+                />
+                <span style={styles.stanceLabel}>@{me.handle}</span>
+                <span style={styles.userChipStance}>
+                  {meStance ? meStance.toUpperCase() : "UNSET"}
+                </span>
+              </div>
               <button
-                style={{ ...styles.pill, borderColor: "rgba(220,38,38,0.55)", opacity: me.stance === "against" ? 1 : 0.75 }}
+                style={{ ...styles.pill, borderColor: "rgba(220,38,38,0.55)", opacity: meStance === "against" ? 1 : 0.75 }}
                 onClick={() => setMyStance("against")}
                 disabled={authBusy}
               >
                 Against
               </button>
               <button
-                style={{ ...styles.pill, borderColor: "rgba(156,163,175,0.65)", opacity: me.stance === "neutral" ? 1 : 0.75 }}
+                style={{ ...styles.pill, borderColor: "rgba(156,163,175,0.65)", opacity: meStance === "neutral" ? 1 : 0.75 }}
                 onClick={() => setMyStance("neutral")}
                 disabled={authBusy}
               >
                 Neutral
               </button>
               <button
-                style={{ ...styles.pill, borderColor: "rgba(34,197,94,0.55)", opacity: me.stance === "support" ? 1 : 0.75 }}
+                style={{ ...styles.pill, borderColor: "rgba(34,197,94,0.55)", opacity: meStance === "approve" ? 1 : 0.75 }}
                 onClick={() => setMyStance("support")}
                 disabled={authBusy}
               >
                 Support
               </button>
+              <button style={styles.btn} onClick={logout} disabled={authBusy}>Logout</button>
             </>
           )}
         </div>
@@ -1186,10 +1251,35 @@ export default function App() {
           />
           <div ref={tooltipRef} style={{ ...styles.tooltip, display: "none" }}>
             <div ref={tooltipHandleRef} style={{ fontWeight: 700 }} />
+            <div ref={tooltipSelfRef} style={styles.tooltipSelf}>You</div>
             <div ref={tooltipFollowersRef} style={{ opacity: 0.9 }} />
           </div>
         </div>
       </div>
+      <div style={styles.footerNote}>
+        <div>Stances are self-reported or curated.</div>
+        <div>Size of avatars is proportional to number of followers.</div>
+      </div>
+      <button style={styles.donateBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
+      {showDonateModal && (
+        <div style={styles.modalBackdrop} onClick={() => setShowDonateModal(false)}>
+          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+            <img src={donateAvatarSrc} alt="@zndtoshi" style={styles.donateProfileAvatar} />
+            <a href="https://x.com/zndtoshi" target="_blank" rel="noreferrer" style={styles.donateHandleLink}>
+              @zndtoshi
+            </a>
+            <img
+              src={`${getBase()}/donate.png`}
+              alt="Donate Bitcoin QR"
+              style={styles.donateQr}
+            />
+            <div style={styles.donateAddr}>bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7</div>
+            <button style={{ ...styles.btn, marginTop: 10 }} onClick={() => setShowDonateModal(false)}>
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1258,11 +1348,51 @@ const styles = {
     gap: 10,
   },
   selectedHandle: { fontWeight: 800, fontSize: 14, color: "#e2e8f0" },
+  selectedHandleLink: {
+    ...{
+      fontWeight: 800,
+      fontSize: 14,
+      color: "#e2e8f0",
+    },
+    textDecoration: "none",
+    cursor: "pointer",
+  },
   selectedStanceBadge: { fontWeight: 900, fontSize: 24, letterSpacing: 0.4, lineHeight: 1, textTransform: "capitalize" },
   title: { fontSize: 16, fontWeight: 900, letterSpacing: 0.2, color: "#e2e8f0" },
   stanceRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
   stanceLabel: { fontSize: 12, opacity: 0.9, marginRight: 4 },
-  controls: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
+  userChip: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "4px 8px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.2)",
+    background: "rgba(30,41,59,0.65)",
+  },
+  userChipAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: 999,
+    objectFit: "cover",
+    border: "1px solid rgba(255,255,255,0.28)",
+  },
+  userChipStance: {
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: 0.3,
+    color: "#cbd5e1",
+  },
+  controls: {
+    position: "absolute",
+    right: 16,
+    top: 8,
+    zIndex: 30,
+    display: "flex",
+    gap: 8,
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
   search: {
     width: 260,
     padding: "8px 10px",
@@ -1281,6 +1411,16 @@ const styles = {
     cursor: "pointer",
     fontWeight: 700,
     fontSize: 12,
+  },
+  btnInline: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+  },
+  xLogoIcon: {
+    width: 12,
+    height: 12,
+    display: "inline-block",
   },
   main: {
     flex: 1,
@@ -1313,6 +1453,18 @@ const styles = {
     border: "1px solid rgba(255,255,255,0.15)",
     pointerEvents: "none",
     fontSize: 12,
+  },
+  tooltipSelf: {
+    display: "none",
+    marginTop: 4,
+    marginBottom: 2,
+    fontSize: 11,
+    fontWeight: 800,
+    color: "#ffffff",
+    padding: "2px 6px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.75)",
+    background: "rgba(255,255,255,0.12)",
   },
   side: {
     borderLeft: "1px solid rgba(0,0,0,0.08)",
@@ -1377,5 +1529,75 @@ const styles = {
     resize: "vertical",
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
     fontSize: 12,
+  },
+  footerNote: {
+    position: "fixed",
+    left: 12,
+    bottom: 10,
+    fontSize: 11,
+    opacity: 0.65,
+    pointerEvents: "none",
+    zIndex: 20,
+  },
+  donateBtn: {
+    position: "fixed",
+    right: 12,
+    bottom: 10,
+    zIndex: 40,
+    padding: "8px 12px",
+    borderRadius: 8,
+    border: "1px solid rgba(255,255,255,0.25)",
+    background: "rgba(30,41,59,0.86)",
+    color: "#e2e8f0",
+    cursor: "pointer",
+    fontWeight: 700,
+    fontSize: 12,
+  },
+  modalBackdrop: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(0,0,0,0.55)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 200,
+  },
+  modalCard: {
+    width: "min(380px, 92vw)",
+    padding: 14,
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.2)",
+    background: "rgba(15,23,42,0.97)",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    gap: 8,
+  },
+  donateProfileAvatar: {
+    width: 64,
+    height: 64,
+    borderRadius: 999,
+    objectFit: "cover",
+    border: "1px solid rgba(255,255,255,0.3)",
+  },
+  donateHandleLink: {
+    color: "#93c5fd",
+    fontWeight: 800,
+    textDecoration: "none",
+    fontSize: 13,
+  },
+  donateQr: {
+    width: 260,
+    maxWidth: "86vw",
+    borderRadius: 8,
+    border: "1px solid rgba(255,255,255,0.2)",
+    background: "#fff",
+  },
+  donateAddr: {
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    fontSize: 12,
+    textAlign: "center",
+    wordBreak: "break-all",
+    color: "#e2e8f0",
   },
 };
