@@ -66,3 +66,50 @@ button:focus-visible {
     background-color: #f9f9f9;
   }
 }
+
+/* ================================
+   Firefox perf-lite: cheaper aura
+   ================================ */
+html[data-browser="firefox"] .aura,
+html[data-browser="firefox"] .avatarAura,
+html[data-browser="firefox"] .glow,
+html[data-browser="firefox"] .stanceGlow {
+  filter: none !important;
+  box-shadow:
+    0 0 10px rgba(255, 255, 255, 0.22),
+    0 0 18px rgba(255, 255, 255, 0.16) !important;
+}
+
+html[data-browser="firefox"] .glow-red,
+html[data-browser="firefox"] .aura-red,
+html[data-browser="firefox"] .stance-red {
+  filter: none !important;
+  box-shadow:
+    0 0 10px rgba(255, 80, 80, 0.28),
+    0 0 18px rgba(255, 80, 80, 0.18) !important;
+}
+
+html[data-browser="firefox"] .glow-green,
+html[data-browser="firefox"] .aura-green,
+html[data-browser="firefox"] .stance-green {
+  filter: none !important;
+  box-shadow:
+    0 0 10px rgba(80, 255, 160, 0.26),
+    0 0 18px rgba(80, 255, 160, 0.16) !important;
+}
+
+html[data-browser="firefox"] .glow-gray,
+html[data-browser="firefox"] .aura-gray,
+html[data-browser="firefox"] .stance-gray {
+  filter: none !important;
+  box-shadow:
+    0 0 10px rgba(200, 200, 200, 0.22),
+    0 0 18px rgba(200, 200, 200, 0.14) !important;
+}
+
+html[data-browser="firefox"] .aura,
+html[data-browser="firefox"] .avatarAura,
+html[data-browser="firefox"] .glow,
+html[data-browser="firefox"] .stanceGlow {
+  transition: box-shadow 120ms linear !important;
+}

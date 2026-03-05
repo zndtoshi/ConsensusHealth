@@ -1230,6 +1230,7 @@ export default function App() {
                 <span style={styles.stanceLabel}>@{me.handle}</span>
               </div>
               <button
+                className={`stanceGlow stance-red ${meStance === "against" ? "aura aura-red" : ""}`}
                 style={{
                   ...styles.pill,
                   borderColor: "rgba(220,38,38,0.55)",
@@ -1242,6 +1243,7 @@ export default function App() {
                 Against
               </button>
               <button
+                className={`stanceGlow stance-gray ${meStance === "neutral" ? "aura aura-gray" : ""}`}
                 style={{
                   ...styles.pill,
                   borderColor: "rgba(156,163,175,0.65)",
@@ -1254,6 +1256,7 @@ export default function App() {
                 Neutral
               </button>
               <button
+                className={`stanceGlow stance-green ${meStance === "approve" ? "aura aura-green" : ""}`}
                 style={{
                   ...styles.pill,
                   borderColor: "rgba(34,197,94,0.55)",
