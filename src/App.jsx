@@ -314,6 +314,10 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [me, setMe] = useState(null);
   const [authBusy, setAuthBusy] = useState(false);
+  const [showStatsModal, setShowStatsModal] = useState(false);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState("");
+  const [statsData, setStatsData] = useState(null);
   const [showDonateModal, setShowDonateModal] = useState(false);
   const [labels, setLabels] = useState(() => {
     try {
@@ -389,6 +393,28 @@ export default function App() {
       setAuthBusy(false);
     }
   }
+
+  useEffect(() => {
+    if (!showStatsModal) return;
+    let dead = false;
+    (async () => {
+      try {
+        setStatsLoading(true);
+        setStatsError("");
+        const res = await fetch(`${API_BASE}/api/stats`, { credentials: "include" });
+        if (!res.ok) throw new Error(`Failed to load stats (${res.status})`);
+        const data = await res.json();
+        if (!dead) setStatsData(data);
+      } catch (e) {
+        if (!dead) setStatsError(String(e?.message || e));
+      } finally {
+        if (!dead) setStatsLoading(false);
+      }
+    })();
+    return () => {
+      dead = true;
+    };
+  }, [showStatsModal]);
 
   useEffect(() => {
     loadMe();
@@ -1303,7 +1329,49 @@ export default function App() {
         <div>Stances are self-reported or curated.</div>
         <div>Size of avatars is proportional to number of followers.</div>
       </div>
+      <button style={styles.statsBtn} onClick={() => setShowStatsModal(true)}>Statistics</button>
       <button style={styles.donateBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
+      {showStatsModal && (
+        <div style={styles.modalBackdrop} onClick={() => setShowStatsModal(false)}>
+          <div style={{ ...styles.modalCard, width: "min(760px, 94vw)", alignItems: "stretch" }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 900, fontSize: 18, marginBottom: 6 }}>Statistics</div>
+            {statsLoading ? (
+              <div style={{ opacity: 0.85 }}>Loading statistics...</div>
+            ) : statsError ? (
+              <div style={{ color: "#fda4af" }}>{statsError}</div>
+            ) : !statsData ? (
+              <div style={{ opacity: 0.85 }}>No statistics available.</div>
+            ) : (
+              <div style={{ display: "grid", gap: 8, fontSize: 13 }}>
+                <div>1. Total users with stance: <b>{statsData.total_users_with_stance ?? 0}</b></div>
+                <div>2. Counts: Against {statsData.counts?.against ?? 0} / Neutral {statsData.counts?.neutral ?? 0} / Approve {statsData.counts?.approve ?? 0}</div>
+                <div>3. Percentages: Against {statsData.percentages?.against ?? 0}% / Neutral {statsData.percentages?.neutral ?? 0}% / Approve {statsData.percentages?.approve ?? 0}%</div>
+                <div>4. Total followers by stance: Against {formatNum(statsData.followers_total?.against ?? 0)} / Neutral {formatNum(statsData.followers_total?.neutral ?? 0)} / Approve {formatNum(statsData.followers_total?.approve ?? 0)}</div>
+                <div>5. Average followers by stance: Against {formatNum(statsData.followers_avg?.against ?? 0)} / Neutral {formatNum(statsData.followers_avg?.neutral ?? 0)} / Approve {formatNum(statsData.followers_avg?.approve ?? 0)}</div>
+                <div>6. Top account by followers: Against {statsData.top_account?.against?.handle ? `@${statsData.top_account.against.handle} (${formatNum(statsData.top_account.against.followers_count ?? 0)})` : "n/a"} / Neutral {statsData.top_account?.neutral?.handle ? `@${statsData.top_account.neutral.handle} (${formatNum(statsData.top_account.neutral.followers_count ?? 0)})` : "n/a"} / Approve {statsData.top_account?.approve?.handle ? `@${statsData.top_account.approve.handle} (${formatNum(statsData.top_account.approve.followers_count ?? 0)})` : "n/a"}</div>
+                <div>7. Users who changed stance at least once: {statsData.changed_ever ?? 0}</div>
+                <div>8. Total stance changes in last 7 days: {statsData.changes_last_7d ?? 0}</div>
+                <div>
+                  9. Top flows last 7 days:
+                  <div style={{ marginTop: 4, opacity: 0.95 }}>
+                    {Array.isArray(statsData.flows_last_7d) && statsData.flows_last_7d.length > 0
+                      ? statsData.flows_last_7d.map((f, i) => (
+                          <div key={`${f.from ?? "unset"}-${f.to}-${i}`}>
+                            {(f.from ?? "unset")} {"\u2192"} {f.to}: {f.count}
+                          </div>
+                        ))
+                      : <div>None</div>}
+                  </div>
+                </div>
+                <div>10. Generated at: {statsData.generated_at ?? "n/a"}</div>
+              </div>
+            )}
+            <div style={{ marginTop: 12 }}>
+              <button style={styles.btn} onClick={() => setShowStatsModal(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
       {showDonateModal && (
         <div style={styles.modalBackdrop} onClick={() => setShowDonateModal(false)}>
           <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
@@ -1597,6 +1665,20 @@ const styles = {
   donateBtn: {
     position: "fixed",
     right: 12,
+    bottom: 10,
+    zIndex: 40,
+    padding: "8px 12px",
+    borderRadius: 8,
+    border: "1px solid rgba(255,255,255,0.25)",
+    background: "rgba(30,41,59,0.86)",
+    color: "#e2e8f0",
+    cursor: "pointer",
+    fontWeight: 700,
+    fontSize: 12,
+  },
+  statsBtn: {
+    position: "fixed",
+    right: 92,
     bottom: 10,
     zIndex: 40,
     padding: "8px 12px",

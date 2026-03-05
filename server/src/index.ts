@@ -239,6 +239,17 @@ async function initDb(): Promise<void> {
       expires_at TIMESTAMPTZ NOT NULL
     );
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stance_events (
+      id SERIAL PRIMARY KEY,
+      x_user_id TEXT NOT NULL,
+      from_stance TEXT,
+      to_stance TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_stance_events_x_user_id ON stance_events (x_user_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_stance_events_created_at ON stance_events (created_at);`);
 }
 
 async function cleanupExpiredSessions(): Promise<void> {
@@ -633,7 +644,29 @@ app.post("/api/stance", async (req, res, next) => {
       res.status(400).json({ error: "invalid_stance" });
       return;
     }
-    const normalized = stance === "support" ? "support" : stance;
+    const normalized = stance === "support" ? "approve" : stance;
+
+    const prevRes = await pool.query(
+      "SELECT stance FROM community_users WHERE x_user_id = $1 LIMIT 1",
+      [user.x_user_id]
+    );
+    const prevRaw = String(prevRes.rows[0]?.stance ?? "").toLowerCase();
+    const prevNormalized =
+      prevRaw === "support"
+        ? "approve"
+        : ["against", "neutral", "approve"].includes(prevRaw)
+          ? prevRaw
+          : null;
+
+    if (prevNormalized !== normalized) {
+      await pool.query(
+        `
+        INSERT INTO stance_events (x_user_id, from_stance, to_stance)
+        VALUES ($1, $2, $3)
+      `,
+        [user.x_user_id, prevNormalized, normalized]
+      );
+    }
 
     const result = await pool.query(
       `
@@ -666,6 +699,156 @@ app.post("/api/stance", async (req, res, next) => {
     );
 
     res.json(result.rows[0]);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/api/stats", async (_req, res, next) => {
+  try {
+    const aggRes = await pool.query(`
+      WITH normalized AS (
+        SELECT
+          CASE
+            WHEN lower(coalesce(stance, '')) = 'support' THEN 'approve'
+            WHEN lower(coalesce(stance, '')) IN ('against', 'neutral', 'approve') THEN lower(stance)
+            ELSE NULL
+          END AS stance_norm,
+          COALESCE(followers_count, 0) AS followers_count
+        FROM community_users
+      )
+      SELECT
+        COUNT(*) FILTER (WHERE stance_norm IS NOT NULL)::int AS total_users_with_stance,
+        COUNT(*) FILTER (WHERE stance_norm = 'against')::int AS against_count,
+        COUNT(*) FILTER (WHERE stance_norm = 'neutral')::int AS neutral_count,
+        COUNT(*) FILTER (WHERE stance_norm = 'approve')::int AS approve_count,
+        COALESCE(SUM(followers_count) FILTER (WHERE stance_norm = 'against'), 0)::bigint AS against_followers_total,
+        COALESCE(SUM(followers_count) FILTER (WHERE stance_norm = 'neutral'), 0)::bigint AS neutral_followers_total,
+        COALESCE(SUM(followers_count) FILTER (WHERE stance_norm = 'approve'), 0)::bigint AS approve_followers_total,
+        COALESCE(ROUND(AVG(followers_count) FILTER (WHERE stance_norm = 'against')), 0)::int AS against_followers_avg,
+        COALESCE(ROUND(AVG(followers_count) FILTER (WHERE stance_norm = 'neutral')), 0)::int AS neutral_followers_avg,
+        COALESCE(ROUND(AVG(followers_count) FILTER (WHERE stance_norm = 'approve')), 0)::int AS approve_followers_avg
+      FROM normalized
+    `);
+    const agg = aggRes.rows[0] || {};
+    const toNum = (v: unknown): number => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    const counts = {
+      against: toNum(agg.against_count),
+      neutral: toNum(agg.neutral_count),
+      approve: toNum(agg.approve_count),
+    };
+    const totalUsersWithStance = toNum(agg.total_users_with_stance);
+    const denom = totalUsersWithStance || 1;
+    const percentages = {
+      against: Math.round((counts.against / denom) * 1000) / 10,
+      neutral: Math.round((counts.neutral / denom) * 1000) / 10,
+      approve: Math.round((counts.approve / denom) * 1000) / 10,
+    };
+    const followersTotal = {
+      against: toNum(agg.against_followers_total),
+      neutral: toNum(agg.neutral_followers_total),
+      approve: toNum(agg.approve_followers_total),
+    };
+    const followersAvg = {
+      against: toNum(agg.against_followers_avg),
+      neutral: toNum(agg.neutral_followers_avg),
+      approve: toNum(agg.approve_followers_avg),
+    };
+
+    const topRowsRes = await pool.query(`
+      WITH ranked AS (
+        SELECT
+          handle,
+          followers_count,
+          CASE
+            WHEN lower(coalesce(stance, '')) = 'support' THEN 'approve'
+            WHEN lower(coalesce(stance, '')) IN ('against', 'neutral', 'approve') THEN lower(stance)
+            ELSE NULL
+          END AS stance_norm,
+          ROW_NUMBER() OVER (
+            PARTITION BY
+              CASE
+                WHEN lower(coalesce(stance, '')) = 'support' THEN 'approve'
+                WHEN lower(coalesce(stance, '')) IN ('against', 'neutral', 'approve') THEN lower(stance)
+                ELSE NULL
+              END
+            ORDER BY COALESCE(followers_count, 0) DESC, handle ASC
+          ) AS rn
+        FROM community_users
+      )
+      SELECT stance_norm, handle, followers_count
+      FROM ranked
+      WHERE stance_norm IN ('against', 'neutral', 'approve') AND rn = 1
+    `);
+    const topAccount: {
+      against: { handle: string | null; followers_count: number | null };
+      neutral: { handle: string | null; followers_count: number | null };
+      approve: { handle: string | null; followers_count: number | null };
+    } = {
+      against: { handle: null, followers_count: null },
+      neutral: { handle: null, followers_count: null },
+      approve: { handle: null, followers_count: null },
+    };
+    for (const r of topRowsRes.rows) {
+      const stance = String(r.stance_norm || "");
+      if (stance === "against" || stance === "neutral" || stance === "approve") {
+        topAccount[stance] = {
+          handle: r.handle ? String(r.handle) : null,
+          followers_count: r.followers_count == null ? null : toNum(r.followers_count),
+        };
+      }
+    }
+
+    const changedEverRes = await pool.query(
+      "SELECT COUNT(DISTINCT x_user_id)::int AS changed_ever FROM stance_events"
+    );
+    const changes7dRes = await pool.query(
+      "SELECT COUNT(*)::int AS changes_last_7d FROM stance_events WHERE created_at >= now() - interval '7 days'"
+    );
+    const flowsRes = await pool.query(`
+      WITH norm AS (
+        SELECT
+          CASE
+            WHEN lower(coalesce(from_stance, '')) = 'support' THEN 'approve'
+            WHEN lower(coalesce(from_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(from_stance)
+            ELSE NULL
+          END AS from_norm,
+          CASE
+            WHEN lower(coalesce(to_stance, '')) = 'support' THEN 'approve'
+            WHEN lower(coalesce(to_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(to_stance)
+            ELSE NULL
+          END AS to_norm
+        FROM stance_events
+        WHERE created_at >= now() - interval '7 days'
+      )
+      SELECT from_norm AS "from", to_norm AS "to", COUNT(*)::int AS count
+      FROM norm
+      WHERE to_norm IN ('against', 'neutral', 'approve')
+      GROUP BY from_norm, to_norm
+      HAVING COUNT(*) > 0
+      ORDER BY count DESC, from_norm NULLS FIRST, to_norm
+    `);
+
+    res.json({
+      generated_at: new Date().toISOString(),
+      total_users_with_stance: totalUsersWithStance,
+      counts,
+      percentages,
+      followers_total: followersTotal,
+      followers_avg: followersAvg,
+      top_account: topAccount,
+      changed_ever: toNum(changedEverRes.rows[0]?.changed_ever),
+      changes_last_7d: toNum(changes7dRes.rows[0]?.changes_last_7d),
+      flows_last_7d: flowsRes.rows.map((r) => ({
+        from: r.from === null ? null : String(r.from),
+        to: String(r.to),
+        count: toNum(r.count),
+      })),
+    });
   } catch (err) {
     next(err);
   }
