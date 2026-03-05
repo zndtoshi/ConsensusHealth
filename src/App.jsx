@@ -350,7 +350,7 @@ export default function App() {
   }
 
   function beginLogin() {
-    window.location.href = `${API_BASE}/auth/x`;
+    window.location.assign("/auth/x/login");
   }
 
   async function logout() {
@@ -1200,9 +1200,6 @@ export default function App() {
                   style={styles.userChipAvatar}
                 />
                 <span style={styles.stanceLabel}>@{me.handle}</span>
-                <span style={styles.userChipStance}>
-                  {meStance ? meStance.toUpperCase() : "UNSET"}
-                </span>
               </div>
               <button
                 style={{ ...styles.pill, borderColor: "rgba(220,38,38,0.55)", opacity: meStance === "against" ? 1 : 0.75 }}
