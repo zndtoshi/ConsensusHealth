@@ -66,38 +66,3 @@ button:focus-visible {
     background-color: #f9f9f9;
   }
 }
-
-/* -----------------------------
-   Perf-lite mode (Firefox)
-   ----------------------------- */
-
-html.perf-lite .modal,
-html.perf-lite .tooltip {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-}
-
-html.perf-lite .aura,
-html.perf-lite .avatarAura,
-html.perf-lite .stanceAura {
-  filter: none !important;
-  box-shadow: 0 0 10px rgba(255, 255, 255, 0.08) !important;
-}
-
-html.perf-lite .square,
-html.perf-lite .blobSquare,
-html.perf-lite .nodeSquare,
-html.perf-lite .stance-btn {
-  box-shadow: 0 0 10px rgba(255, 255, 255, 0.06) !important;
-}
-
-html.perf-lite .square:hover,
-html.perf-lite .blobSquare:hover,
-html.perf-lite .nodeSquare:hover,
-html.perf-lite .stance-btn:hover {
-  box-shadow: 0 0 14px rgba(255, 255, 255, 0.10) !important;
-}
-
-html.perf-lite * {
-  transition-duration: 0.08s !important;
-}

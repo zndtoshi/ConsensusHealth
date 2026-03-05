@@ -4,7 +4,6 @@ export function getAvatar(src: string) {
   if (!avatarCache.has(src)) {
     const img = new Image();
     img.decoding = "async";
-    img.loading = "lazy";
     img.src = src;
     avatarCache.set(src, img);
   }
