@@ -1,16 +1,72 @@
-# React + Vite
+# ConsensusHealth
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+ConsensusHealth is a Vite frontend + Node/Express backend service with Postgres and X OAuth.
 
-Currently, two official plugins are available:
+## Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Install dependencies:
 
-## React Compiler
+```bash
+npm install
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Run frontend + backend:
 
-## Expanding the ESLint configuration
+```bash
+npm run dev
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- Frontend (Vite): `http://localhost:5173`
+- API server: `http://localhost:8787`
+
+## Production Build
+
+Build frontend and compiled server output:
+
+```bash
+npm run build
+```
+
+This generates:
+
+- Frontend: `dist/`
+- Server JS: `server/dist/`
+
+## Production Start
+
+Start as one Node service:
+
+```bash
+npm run start
+```
+
+The server will:
+
+- serve API routes (`/api/*`, `/auth/*`, `/dev/*`)
+- serve static frontend files from `dist/`
+- return `dist/index.html` for non-API SPA routes
+
+## Environment Variables
+
+Use `server/env.example` as the template for local and deploy env config.
+
+Required/important variables:
+
+- `DATABASE_URL` - Postgres connection string (with password)
+- `PORT` - server listen port (Render sets this automatically)
+- `APP_ORIGIN` - allowed CORS origin (dev default: `http://localhost:5173`)
+- `FRONTEND_BASE_URL` - OAuth post-login redirect base
+  - dev: `http://localhost:5173`
+  - same-origin production: set to your site origin (or leave unset to use `APP_ORIGIN`)
+- `SESSION_SECRET` - signed cookie secret
+- `X_CLIENT_ID`, `X_CLIENT_SECRET`, `X_REDIRECT_URI` - X OAuth settings
+
+## Render Deployment (single web service)
+
+Typical Render settings:
+
+- Build command: `npm install && npm run build`
+- Start command: `npm run start`
+- Add env vars from `server/env.example` (except local-only defaults)
+
+After deploy, opening the service URL should load the frontend app, and API routes remain available under the same origin.

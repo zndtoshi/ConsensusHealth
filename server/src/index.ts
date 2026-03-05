@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import express, { type Request, type Response, type NextFunction } from "express";
 import cors from "cors";
@@ -10,7 +11,11 @@ import { v4 as uuidv4 } from "uuid";
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
 const PORT = Number(process.env.PORT || 8787);
-const CLIENT_URL = process.env.APP_ORIGIN || process.env.CLIENT_URL || "http://localhost:5173";
+const NODE_ENV = process.env.NODE_ENV || "development";
+const IS_PROD = NODE_ENV === "production";
+const APP_ORIGIN = process.env.APP_ORIGIN || process.env.CLIENT_URL || "http://localhost:5173";
+const FRONTEND_BASE_URL = (process.env.FRONTEND_BASE_URL ?? APP_ORIGIN).trim();
+const DIST_PATH = path.resolve(process.cwd(), "dist");
 const DATABASE_URL = (process.env.DATABASE_URL || "").trim();
 const TWITTER_CLIENT_ID = process.env.X_CLIENT_ID || process.env.TWITTER_CLIENT_ID || "";
 const TWITTER_CLIENT_SECRET = process.env.X_CLIENT_SECRET || process.env.TWITTER_CLIENT_SECRET || "";
@@ -70,9 +75,10 @@ const pool = new Pool({ connectionString });
 console.log("[ConsensusHealth server] DB:", connectionString.replace(/:(?:[^@]*)@/, ":***@"));
 
 const app = express();
+app.set("trust proxy", 1);
 app.use(
   cors({
-    origin: process.env.APP_ORIGIN || "http://localhost:5173",
+    origin: APP_ORIGIN,
     credentials: true,
   })
 );
@@ -113,6 +119,28 @@ function createCodeChallenge(verifier: string): string {
 
 function getBearerTokenBasicAuthHeader(clientId: string, clientSecret: string): string {
   return `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
+}
+
+function cookieSecure(req: Request): boolean {
+  if (!IS_PROD) return false;
+  const proto = String(req.headers["x-forwarded-proto"] || "").toLowerCase();
+  return req.secure || proto.includes("https");
+}
+
+function frontendRedirect(targetPath = "/"): string {
+  if (!FRONTEND_BASE_URL) return targetPath;
+  try {
+    const url = new URL(FRONTEND_BASE_URL);
+    url.pathname = targetPath;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    if (FRONTEND_BASE_URL.startsWith("http://") || FRONTEND_BASE_URL.startsWith("https://")) {
+      return `${FRONTEND_BASE_URL.replace(/\/$/, "")}${targetPath.startsWith("/") ? targetPath : `/${targetPath}`}`;
+    }
+    return targetPath;
+  }
 }
 
 async function initDb(): Promise<void> {
@@ -212,7 +240,7 @@ function getDevCookieUser(req: Request): DevCookieUser | null {
   };
 }
 
-app.get("/auth/x", async (_req, res) => {
+app.get("/auth/x", async (req, res) => {
   if (!TWITTER_CLIENT_ID || !TWITTER_CLIENT_SECRET) {
     res.status(500).json({ error: "Twitter OAuth env vars are missing" });
     return;
@@ -224,7 +252,7 @@ app.get("/auth/x", async (_req, res) => {
   res.cookie("consensushealth_oauth_state", state, {
     httpOnly: true,
     sameSite: "lax",
-    secure: false,
+    secure: cookieSecure(req),
     path: "/",
     maxAge: 10 * 60 * 1000,
   });
@@ -480,12 +508,12 @@ app.get("/auth/x/callback", async (req, res, next) => {
     res.cookie("consensushealth_session", sessionPayload, {
       httpOnly: true,
       sameSite: "lax",
-      secure: false,
+      secure: cookieSecure(req),
       path: "/",
       maxAge: SESSION_TTL_DAYS * 24 * 60 * 60 * 1000,
       signed: true,
     });
-    res.redirect(CLIENT_URL);
+    res.redirect(frontendRedirect("/"));
   } catch (err) {
     console.error("[OAuth] callback exception:", err);
     next(err);
@@ -583,17 +611,28 @@ app.post("/auth/logout", async (req, res, next) => {
   }
 });
 
-app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  console.error("UNHANDLED_ERROR:", err);
-  res.status(500).json({ error: "Internal server error" });
-});
-
 app.get("/api/health", (_req, res) => {
   res.status(200).json({
     ok: true,
     service: "consensushealth-api",
     time: new Date().toISOString(),
   });
+});
+
+if (IS_PROD) {
+  if (!fs.existsSync(DIST_PATH)) {
+    console.warn(`[ConsensusHealth server] dist folder not found at ${DIST_PATH}. Run: npm run build`);
+  } else {
+    app.use(express.static(DIST_PATH, { index: false }));
+    app.get(/^(?!\/(?:api|auth|dev)(?:\/|$)).*$/, (_req, res) => {
+      res.sendFile(path.join(DIST_PATH, "index.html"));
+    });
+  }
+}
+
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  console.error("UNHANDLED_ERROR:", err);
+  res.status(500).json({ error: "Internal server error" });
 });
 
 await initDb();
@@ -603,4 +642,7 @@ app.listen(PORT, () => {
   console.log("ConsensusHealth API running");
   console.log("Using database:", connectionString.replace(/:(?:[^@]*)@/, ":***@"));
   console.log(`ConsensusHealth server listening on http://localhost:${PORT}`);
+  if (IS_PROD) {
+    console.log(`[ConsensusHealth server] Serving frontend from: ${DIST_PATH}`);
+  }
 });
