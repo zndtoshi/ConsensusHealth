@@ -3,6 +3,7 @@ import Papa from "papaparse";
 import { forceCollide, forceManyBody, forceCenter, forceSimulation, forceX, forceY } from "d3-force";
 import { getAvatar } from "./utils/avatarCache";
 import { fetchCommunityUsers } from "./api/community";
+import { BitcoinQr } from "./components/BitcoinQr";
 
 function toInt(v) {
   const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -427,6 +428,7 @@ export default function App() {
     if (account?.avatar_url) return account.avatar_url;
     return `${baseNoSlash}/avatars/zndtoshi.jpg?v=${AVATAR_REV}`;
   }, [accounts]);
+  const donationAddress = String(me?.donation_btc_address || "bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7").trim();
 
   // Load canonical accounts and mentions CSV from public/data
   useEffect(() => {
@@ -1306,12 +1308,12 @@ export default function App() {
             <a href="https://x.com/zndtoshi" target="_blank" rel="noreferrer" style={styles.donateHandleLink}>
               @zndtoshi
             </a>
-            <img
-              src={`${getBase()}/donate.png`}
-              alt="Donate Bitcoin QR"
-              style={styles.donateQr}
-            />
-            <div style={styles.donateAddr}>bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7</div>
+            {donationAddress ? (
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
+                <BitcoinQr value={`bitcoin:${donationAddress}`} size={220} />
+              </div>
+            ) : null}
+            <div style={styles.donateAddr}>{donationAddress}</div>
             <button style={{ ...styles.btn, marginTop: 10 }} onClick={() => setShowDonateModal(false)}>
               Close
             </button>
