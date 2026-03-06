@@ -50,6 +50,24 @@ function normalizeTwitterAvatarUrl(url) {
   return u.includes("_normal") ? u.replace("_normal", "") : u;
 }
 
+function isTwitterAvatarHost(hostname) {
+  const h = String(hostname ?? "").toLowerCase();
+  return h === "pbs.twimg.com" || h.endsWith(".twimg.com");
+}
+
+function maybeProxyAvatarUrl(url) {
+  const raw = String(url ?? "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (!isTwitterAvatarHost(parsed.hostname)) return raw;
+    const apiBase = (API_BASE || "").replace(/\/$/, "");
+    return `${apiBase}/api/avatar-proxy?url=${encodeURIComponent(raw)}`;
+  } catch {
+    return raw;
+  }
+}
+
 function firstNonEmptyAvatarField(obj) {
   if (!obj || typeof obj !== "object") return "";
   const candidates = [
@@ -83,7 +101,7 @@ function resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc) {
   const path = String(a?.avatar_path ?? "").trim();
   if (path) return `${baseNoSlash}${path}?v=${AVATAR_REV}`;
   const remote = firstNonEmptyAvatarField(a);
-  if (remote) return remote;
+  if (remote) return maybeProxyAvatarUrl(remote);
   return missingSrc;
 }
 
@@ -929,6 +947,7 @@ export default function App() {
     const cache = avatarCacheRef.current;
     const warnedHandles = avatarWarnedHandlesRef.current;
     const hooked = avatarHookedRef.current;
+    const userAgent = typeof navigator !== "undefined" ? navigator.userAgent : "unknown";
     const urlToHandles = new Map();
     for (const n of nodes) {
       if (!n.avatarUrl) continue;
@@ -937,6 +956,8 @@ export default function App() {
     }
     const missingImg = getAvatar(missingSrc);
     if ("loading" in missingImg) missingImg.loading = "eager";
+    if ("decoding" in missingImg) missingImg.decoding = "async";
+    if ("referrerPolicy" in missingImg) missingImg.referrerPolicy = "no-referrer";
     if (!hooked.has(missingImg)) {
       hooked.add(missingImg);
       missingImg.addEventListener("load", () => drawRef.current());
@@ -946,26 +967,36 @@ export default function App() {
       const img = getAvatar(url);
       if ("decoding" in img) img.decoding = "async";
       if ("loading" in img) img.loading = "eager";
+      if ("referrerPolicy" in img) img.referrerPolicy = "no-referrer";
       cache.set(url, img);
       if (!hooked.has(img)) {
         hooked.add(img);
-        const handleError = () => {
+        const handleError = (onErrorFired = true) => {
           const handles = urlToHandles.get(url) || [];
           for (const handle of handles) {
             if (warnedHandles.has(handle)) continue;
             warnedHandles.add(handle);
-            console.warn("Avatar failed", handle, url);
+            if (!import.meta.env.PROD) {
+              // eslint-disable-next-line no-console
+              console.warn("[avatar-load-failed]", {
+                handle,
+                avatarUrl: url,
+                userAgent,
+                onErrorFired,
+                placeholderFallbackUsed: true,
+              });
+            }
           }
           if (img.src !== missingSrc) img.src = missingSrc;
           cache.set(url, missingImg);
           drawRef.current();
         };
         img.addEventListener("load", () => drawRef.current());
-        img.addEventListener("error", handleError);
+        img.addEventListener("error", () => handleError(true));
         // If preload finished before listeners were attached, recover immediately.
         if (img.complete) {
           if (img.naturalWidth > 0) drawRef.current();
-          else handleError();
+          else handleError(false);
         }
       }
     });
@@ -1493,6 +1524,23 @@ export default function App() {
                 <img
                   src={me.avatar_url || `${getBase()}/avatars/_missing.svg`}
                   alt={`@${me.handle}`}
+                  loading="eager"
+                  decoding="async"
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    const fallback = `${getBase()}/avatars/_missing.svg?v=${AVATAR_REV}`;
+                    if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+                    if (!import.meta.env.PROD) {
+                      // eslint-disable-next-line no-console
+                      console.warn("[avatar-load-failed]", {
+                        handle: normalizeHandle(me.handle),
+                        avatarUrl: me.avatar_url || "",
+                        userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
+                        onErrorFired: true,
+                        placeholderFallbackUsed: true,
+                      });
+                    }
+                  }}
                   style={styles.userChipAvatar}
                 />
                 <span style={styles.stanceLabel}>@{me.handle}</span>
@@ -1583,7 +1631,28 @@ export default function App() {
       {showDonateModal && (
         <div style={styles.modalBackdrop} onClick={() => setShowDonateModal(false)}>
           <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
-            <img src={donateAvatarSrc} alt="@zndtoshi" style={styles.donateProfileAvatar} />
+            <img
+              src={donateAvatarSrc}
+              alt="@zndtoshi"
+              loading="eager"
+              decoding="async"
+              referrerPolicy="no-referrer"
+              onError={(e) => {
+                const fallback = `${getBase()}/avatars/_missing.svg?v=${AVATAR_REV}`;
+                if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+                if (!import.meta.env.PROD) {
+                  // eslint-disable-next-line no-console
+                  console.warn("[avatar-load-failed]", {
+                    handle: "zndtoshi",
+                    avatarUrl: donateAvatarSrc,
+                    userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
+                    onErrorFired: true,
+                    placeholderFallbackUsed: true,
+                  });
+                }
+              }}
+              style={styles.donateProfileAvatar}
+            />
             <a href="https://x.com/zndtoshi" target="_blank" rel="noreferrer" style={styles.donateHandleLink}>
               @zndtoshi
             </a>

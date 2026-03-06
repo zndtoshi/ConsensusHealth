@@ -137,6 +137,11 @@ type SessionUser = {
 
 const pendingAuth = new Map<string, PendingAuth>();
 
+function isAllowedAvatarHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "pbs.twimg.com" || host.endsWith(".twimg.com");
+}
+
 function b64url(input: Buffer): string {
   return input
     .toString("base64")
@@ -614,6 +619,60 @@ app.get("/api/community", async (_req, res, next) => {
   try {
     const { rows } = await pool.query("SELECT * FROM community_users");
     res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/api/avatar-proxy", async (req, res, next) => {
+  try {
+    const rawUrl = String(req.query.url ?? "").trim();
+    if (!rawUrl) {
+      res.status(400).json({ error: "missing_url" });
+      return;
+    }
+    let target: URL;
+    try {
+      target = new URL(rawUrl);
+    } catch {
+      res.status(400).json({ error: "invalid_url" });
+      return;
+    }
+    if (!["http:", "https:"].includes(target.protocol)) {
+      res.status(400).json({ error: "invalid_protocol" });
+      return;
+    }
+    if (!isAllowedAvatarHost(target.hostname)) {
+      res.status(400).json({ error: "host_not_allowed" });
+      return;
+    }
+
+    const upstream = await fetch(target.toString(), {
+      redirect: "follow",
+      headers: {
+        "user-agent": "ConsensusHealthAvatarProxy/1.0",
+        accept: "image/*,*/*;q=0.8",
+      },
+    });
+
+    if (!upstream.ok) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[avatar-proxy] upstream-failed", {
+          url: target.toString(),
+          status: upstream.status,
+        });
+      }
+      res.status(502).json({ error: "upstream_fetch_failed", status: upstream.status });
+      return;
+    }
+
+    const contentType = upstream.headers.get("content-type") || "image/jpeg";
+    const cacheControl =
+      upstream.headers.get("cache-control") || "public, max-age=86400, stale-while-revalidate=604800";
+    const body = Buffer.from(await upstream.arrayBuffer());
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", cacheControl);
+    res.send(body);
   } catch (err) {
     next(err);
   }
