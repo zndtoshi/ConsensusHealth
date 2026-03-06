@@ -142,10 +142,6 @@ function isAllowedAvatarHost(hostname: string): boolean {
   return host === "pbs.twimg.com" || host.endsWith(".twimg.com");
 }
 
-function normalizeHandle(value: unknown): string {
-  return String(value ?? "").trim().toLowerCase().replace(/^@+/, "");
-}
-
 function b64url(input: Buffer): string {
   return input
     .toString("base64")
@@ -248,7 +244,6 @@ async function initDb(): Promise<void> {
       expires_at TIMESTAMPTZ NOT NULL
     );
   `);
-  await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS updated_by TEXT;`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS stance_events (
       id SERIAL PRIMARY KEY,
@@ -761,16 +756,14 @@ app.post("/api/stance", async (req, res, next) => {
         avatar_url,
         followers_count,
         stance,
-        updated_by,
         updated_at
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+      VALUES ($1,$2,$3,$4,$5,$6,NOW())
       ON CONFLICT (x_user_id)
       DO UPDATE SET
         stance = EXCLUDED.stance,
         followers_count = COALESCE(EXCLUDED.followers_count, community_users.followers_count),
         avatar_url = COALESCE(EXCLUDED.avatar_url, community_users.avatar_url),
-        updated_by = EXCLUDED.updated_by,
         updated_at = NOW()
       RETURNING *
     `,
@@ -781,7 +774,6 @@ app.post("/api/stance", async (req, res, next) => {
         user.avatar_url,
         user.followers_count,
         normalized,
-        user.handle,
       ]
     );
 
@@ -794,138 +786,6 @@ app.post("/api/stance", async (req, res, next) => {
       });
     }
     res.json(result.rows[0]);
-  } catch (err) {
-    next(err);
-  }
-});
-
-app.post("/api/admin/stance", async (req, res, next) => {
-  try {
-    const user = getSessionUser(req);
-    const adminHandle = normalizeHandle(user?.handle);
-    if (!user || adminHandle !== "zndtoshi") {
-      if (process.env.NODE_ENV !== "production") {
-        console.log("[admin-stance] unauthorized", { handle: adminHandle || null });
-      }
-      res.status(403).json({ error: "forbidden" });
-      return;
-    }
-
-    const stanceRaw = String(req.body?.stance || "").toLowerCase().trim();
-    const stance = stanceRaw === "support" ? "approve" : stanceRaw;
-    if (!["against", "neutral", "approve"].includes(stance)) {
-      res.status(400).json({ error: "invalid_stance" });
-      return;
-    }
-
-    const targetXId = String(req.body?.x_user_id || "").trim();
-    const targetHandle = normalizeHandle(req.body?.handle);
-    if (!targetXId && !targetHandle) {
-      res.status(400).json({ error: "target_required" });
-      return;
-    }
-
-    if (process.env.NODE_ENV !== "production") {
-      console.log("[admin-stance] request", {
-        admin: adminHandle,
-        targetXId: targetXId || null,
-        targetHandle: targetHandle || null,
-        stance,
-      });
-    }
-
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      let targetRow = null as Record<string, unknown> | null;
-      if (targetXId) {
-        const byId = await client.query("SELECT * FROM community_users WHERE x_user_id = $1 LIMIT 1", [targetXId]);
-        targetRow = byId.rows[0] || null;
-      }
-      if (!targetRow && targetHandle) {
-        const byHandle = await client.query(
-          "SELECT * FROM community_users WHERE lower(coalesce(handle, '')) = $1 LIMIT 1",
-          [targetHandle]
-        );
-        targetRow = byHandle.rows[0] || null;
-      }
-
-      const prevRaw = String(targetRow?.stance ?? "").toLowerCase();
-      const prevStance =
-        prevRaw === "support"
-          ? "approve"
-          : ["against", "neutral", "approve"].includes(prevRaw)
-            ? prevRaw
-            : null;
-
-      let persisted;
-      if (targetRow) {
-        const existingXId = String(targetRow.x_user_id ?? "").trim();
-        if (existingXId) {
-          const result = await client.query(
-            `
-            UPDATE community_users
-            SET stance = $1,
-                handle = COALESCE($2, handle),
-                updated_by = $3,
-                updated_at = NOW()
-            WHERE x_user_id = $4
-            RETURNING *
-            `,
-            [stance, targetHandle || null, adminHandle, existingXId]
-          );
-          persisted = result.rows[0];
-        } else {
-          const result = await client.query(
-            `
-            UPDATE community_users
-            SET stance = $1,
-                handle = COALESCE($2, handle),
-                updated_by = $3,
-                updated_at = NOW()
-            WHERE lower(coalesce(handle, '')) = $4
-            RETURNING *
-            `,
-            [stance, targetHandle || null, adminHandle, targetHandle]
-          );
-          persisted = result.rows[0];
-        }
-      } else {
-        const result = await client.query(
-          `
-          INSERT INTO community_users (x_user_id, handle, stance, updated_by, updated_at)
-          VALUES ($1, $2, $3, $4, NOW())
-          RETURNING *
-          `,
-          [targetXId || null, targetHandle || null, stance, adminHandle]
-        );
-        persisted = result.rows[0];
-      }
-
-      const eventXId = String(persisted?.x_user_id || targetXId || "").trim();
-      if (eventXId && prevStance !== stance) {
-        await client.query(
-          `INSERT INTO stance_events (x_user_id, from_stance, to_stance) VALUES ($1, $2, $3)`,
-          [eventXId, prevStance, stance]
-        );
-      }
-
-      await client.query("COMMIT");
-      if (process.env.NODE_ENV !== "production") {
-        console.log("[admin-stance] persisted", {
-          admin: adminHandle,
-          targetHandle: persisted?.handle ?? targetHandle ?? null,
-          targetXId: persisted?.x_user_id ?? targetXId ?? null,
-          stance: persisted?.stance ?? stance,
-        });
-      }
-      res.json(persisted);
-    } catch (e) {
-      await client.query("ROLLBACK");
-      throw e;
-    } finally {
-      client.release();
-    }
   } catch (err) {
     next(err);
   }

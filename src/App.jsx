@@ -449,10 +449,6 @@ export default function App() {
   const [statsError, setStatsError] = useState("");
   const [statsData, setStatsData] = useState(null);
   const [showDonateModal, setShowDonateModal] = useState(false);
-  const [adminEditorTarget, setAdminEditorTarget] = useState(null);
-  const [adminSaveBusy, setAdminSaveBusy] = useState(false);
-  const [adminSaveError, setAdminSaveError] = useState("");
-  const [adminSaveOk, setAdminSaveOk] = useState("");
   const [labels, setLabels] = useState(() => {
     try {
       const raw = localStorage.getItem(LABELS_STORAGE_KEY);
@@ -557,16 +553,6 @@ export default function App() {
 
   const meStance = me?.stance ? normalizedStance(me.stance) : "";
   const meHandleLower = safeLower(me?.handle);
-  const isAdminEditor = Boolean(me?.authenticated && normalizeHandle(me?.handle) === "zndtoshi");
-  const accountByHandle = useMemo(() => {
-    const map = new Map();
-    for (const a of accounts) {
-      const h = normalizeHandle(a?.handle);
-      if (!h) continue;
-      map.set(h, a);
-    }
-    return map;
-  }, [accounts]);
   const pillActiveStyle = (stance) => {
     if (stance === "against") {
       return {
@@ -598,12 +584,6 @@ export default function App() {
     if (account?.avatar_url) return account.avatar_url;
     return `${baseNoSlash}/avatars/zndtoshi.jpg?v=${AVATAR_REV}`;
   }, [accounts]);
-  const adminTargetAvatarSrc = useMemo(() => {
-    if (!adminEditorTarget) return "";
-    const baseNoSlash = getBase().replace(/\/$/, "");
-    const missingSrc = `${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`;
-    return resolveAvatarUrlForAccount(adminEditorTarget, baseNoSlash, missingSrc);
-  }, [adminEditorTarget]);
   const donationAddress = String(me?.donation_btc_address || "bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7").trim();
   const statisticsData = useMemo(() => {
     const num = (v) => {
@@ -727,80 +707,6 @@ export default function App() {
       generatedAtISO: String(statsData?.generated_at || new Date().toISOString()),
     };
   }, [statsData, accounts, labels]);
-
-  async function refreshAccounts() {
-    const cleanedAccounts = await loadAccounts();
-    const accountsFiltered = cleanedAccounts.filter((r) => (r.handle ?? "").toString().trim().length > 0);
-    setAccounts(accountsFiltered);
-  }
-
-  async function saveAdminStance(target, stance) {
-    if (!isAdminEditor || !target) return;
-    setAdminSaveBusy(true);
-    setAdminSaveError("");
-    setAdminSaveOk("");
-    try {
-      if (!import.meta.env.PROD) {
-        // eslint-disable-next-line no-console
-        console.log("[admin-editor] save-request", {
-          targetHandle: target.handle,
-          targetXUserId: target.x_user_id || null,
-          requestedStance: stance,
-        });
-      }
-      const res = await fetch(`${API_BASE}/api/admin/stance`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          handle: normalizeHandle(target.handle),
-          x_user_id: String(target.x_user_id || "").trim() || null,
-          stance,
-        }),
-      });
-      if (!res.ok) {
-        let reason = `Failed (${res.status})`;
-        try {
-          const errData = await res.json();
-          if (errData?.error) reason = String(errData.error);
-        } catch {
-          // ignore parse failure
-        }
-        throw new Error(reason);
-      }
-      const data = await res.json();
-      const targetHandleNorm = normalizeHandle(data?.handle || target.handle);
-      const targetStance = normalizedStance(data?.stance || stance);
-      setLabels((prev) => ({ ...prev, [targetHandleNorm]: targetStance }));
-      await refreshAccounts();
-      if (showStatsModal) {
-        const statsRes = await fetch(`${API_BASE}/api/stats`, { credentials: "include" });
-        if (statsRes.ok) setStatsData(await statsRes.json());
-      }
-      setAdminEditorTarget((prev) => (prev ? { ...prev, stance: targetStance, updated_at: data?.updated_at ?? prev.updated_at } : prev));
-      setAdminSaveOk("Saved");
-      if (!import.meta.env.PROD) {
-        // eslint-disable-next-line no-console
-        console.log("[admin-editor] save-success", {
-          targetHandle: targetHandleNorm,
-          persistedStance: targetStance,
-        });
-      }
-    } catch (e) {
-      const msg = String(e?.message || e);
-      setAdminSaveError(msg);
-      if (!import.meta.env.PROD) {
-        // eslint-disable-next-line no-console
-        console.warn("[admin-editor] save-failed", {
-          targetHandle: target?.handle || "",
-          requestedStance: stance,
-          error: msg,
-        });
-      }
-    } finally {
-      setAdminSaveBusy(false);
-    }
-  }
 
   // Load canonical accounts and mentions CSV from public/data
   useEffect(() => {
@@ -1493,37 +1399,9 @@ export default function App() {
     const n = hitTest(mx, my);
     if (!n) {
       setSelectedHandle(null);
-      if (isAdminEditor) {
-        setAdminEditorTarget(null);
-        setAdminSaveError("");
-        setAdminSaveOk("");
-      }
       return;
     }
     setSelectedHandle(n.handle);
-    if (isAdminEditor) {
-      const key = normalizeHandle(n.handle);
-      const account = accountByHandle.get(key) || null;
-      const target = {
-        handle: key || n.handle,
-        x_user_id: String(account?.x_user_id ?? "").trim(),
-        followers_count: Number(account?.followers_count ?? n.followers ?? 0) || 0,
-        stance: normalizedStance(getStanceForHandle(labelsRef.current, key || n.handle) || account?.stance || n.seedStance || "neutral"),
-        avatar_path: account?.avatar_path || "",
-        avatar_url: account?.avatar_url || account?.profile_image_url || n.avatarUrl || "",
-      };
-      setAdminSaveError("");
-      setAdminSaveOk("");
-      setAdminEditorTarget(target);
-      if (!import.meta.env.PROD) {
-        // eslint-disable-next-line no-console
-        console.log("[admin-editor] selected-target", {
-          handle: target.handle,
-          x_user_id: target.x_user_id || null,
-          currentStance: target.stance,
-        });
-      }
-    }
   }
 
   if (loading) {
@@ -1750,89 +1628,6 @@ export default function App() {
         loading={statsLoading}
         error={statsError}
       />
-      {isAdminEditor && adminEditorTarget && (
-        <div style={styles.modalBackdrop} onClick={() => setAdminEditorTarget(null)}>
-          <div style={styles.adminEditorCard} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.adminEditorHead}>Admin stance editor</div>
-            <div style={styles.adminEditorUserRow}>
-              <img
-                src={adminTargetAvatarSrc}
-                alt={`@${adminEditorTarget.handle}`}
-                loading="eager"
-                decoding="async"
-                referrerPolicy="no-referrer"
-                onError={(e) => {
-                  const fallback = `${getBase()}/avatars/_missing.svg?v=${AVATAR_REV}`;
-                  if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
-                }}
-                style={styles.adminEditorAvatar}
-              />
-              <div>
-                <div style={styles.adminEditorHandle}>@{adminEditorTarget.handle}</div>
-                <div style={styles.adminEditorMeta}>
-                  stance: {normalizedStance(getStanceForHandle(labels, adminEditorTarget.handle) || adminEditorTarget.stance || "neutral")}
-                </div>
-                <div style={styles.adminEditorMeta}>followers: {formatNum(adminEditorTarget.followers_count || 0)}</div>
-              </div>
-            </div>
-            <div style={styles.adminEditorActions}>
-              <button
-                className={`stanceGlow stance-red ${normalizedStance(adminEditorTarget.stance) === "against" ? "aura aura-red" : ""}`}
-                style={{
-                  ...styles.pill,
-                  borderColor: "rgba(220,38,38,0.55)",
-                  opacity: normalizedStance(adminEditorTarget.stance) === "against" ? 1 : 0.72,
-                  ...(normalizedStance(adminEditorTarget.stance) === "against" ? pillActiveStyle("against") : null),
-                }}
-                disabled={adminSaveBusy}
-                onClick={() => saveAdminStance(adminEditorTarget, "against")}
-              >
-                Against
-              </button>
-              <button
-                className={`stanceGlow stance-gray ${normalizedStance(adminEditorTarget.stance) === "neutral" ? "aura aura-gray" : ""}`}
-                style={{
-                  ...styles.pill,
-                  borderColor: "rgba(156,163,175,0.65)",
-                  opacity: normalizedStance(adminEditorTarget.stance) === "neutral" ? 1 : 0.72,
-                  ...(normalizedStance(adminEditorTarget.stance) === "neutral" ? pillActiveStyle("neutral") : null),
-                }}
-                disabled={adminSaveBusy}
-                onClick={() => saveAdminStance(adminEditorTarget, "neutral")}
-              >
-                Neutral
-              </button>
-              <button
-                className={`stanceGlow stance-green ${normalizedStance(adminEditorTarget.stance) === "approve" ? "aura aura-green" : ""}`}
-                style={{
-                  ...styles.pill,
-                  borderColor: "rgba(34,197,94,0.55)",
-                  opacity: normalizedStance(adminEditorTarget.stance) === "approve" ? 1 : 0.72,
-                  ...(normalizedStance(adminEditorTarget.stance) === "approve" ? pillActiveStyle("support") : null),
-                }}
-                disabled={adminSaveBusy}
-                onClick={() => saveAdminStance(adminEditorTarget, "approve")}
-              >
-                Approve
-              </button>
-            </div>
-            {adminSaveBusy ? <div style={styles.adminEditorInfo}>Saving...</div> : null}
-            {adminSaveOk ? <div style={styles.adminEditorInfoOk}>{adminSaveOk}</div> : null}
-            {adminSaveError ? <div style={styles.adminEditorInfoErr}>{adminSaveError}</div> : null}
-            <button
-              style={{ ...styles.btn, marginTop: 10 }}
-              onClick={() => {
-                setAdminEditorTarget(null);
-                setAdminSaveError("");
-                setAdminSaveOk("");
-              }}
-              disabled={adminSaveBusy}
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
       {showDonateModal && (
         <div style={styles.modalBackdrop} onClick={() => setShowDonateModal(false)}>
           <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
@@ -2191,61 +1986,6 @@ const styles = {
     flexDirection: "column",
     alignItems: "center",
     gap: 8,
-  },
-  adminEditorCard: {
-    width: "min(420px, 94vw)",
-    padding: 14,
-    borderRadius: 12,
-    border: "1px solid rgba(255,255,255,0.2)",
-    background: "rgba(15,23,42,0.97)",
-    display: "flex",
-    flexDirection: "column",
-    gap: 10,
-  },
-  adminEditorHead: {
-    fontWeight: 800,
-    color: "#e2e8f0",
-    fontSize: 14,
-  },
-  adminEditorUserRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-  },
-  adminEditorAvatar: {
-    width: 46,
-    height: 46,
-    borderRadius: 999,
-    objectFit: "cover",
-    border: "1px solid rgba(255,255,255,0.28)",
-  },
-  adminEditorHandle: {
-    fontWeight: 900,
-    color: "#e2e8f0",
-    fontSize: 13,
-  },
-  adminEditorMeta: {
-    fontSize: 12,
-    color: "rgba(255,255,255,0.8)",
-  },
-  adminEditorActions: {
-    display: "flex",
-    gap: 8,
-    flexWrap: "wrap",
-  },
-  adminEditorInfo: {
-    fontSize: 12,
-    color: "rgba(255,255,255,0.82)",
-  },
-  adminEditorInfoOk: {
-    fontSize: 12,
-    color: "#86efac",
-    fontWeight: 700,
-  },
-  adminEditorInfoErr: {
-    fontSize: 12,
-    color: "#fca5a5",
-    fontWeight: 700,
   },
   donateProfileAvatar: {
     width: 64,
