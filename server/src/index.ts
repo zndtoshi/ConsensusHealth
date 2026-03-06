@@ -142,6 +142,10 @@ function isAllowedAvatarHost(hostname: string): boolean {
   return host === "pbs.twimg.com" || host.endsWith(".twimg.com");
 }
 
+function normalizeHandle(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase().replace(/^@+/, "");
+}
+
 function b64url(input: Buffer): string {
   return input
     .toString("base64")
@@ -726,10 +730,11 @@ app.post("/api/stance", async (req, res, next) => {
     }
 
     const prevRes = await pool.query(
-      "SELECT stance FROM community_users WHERE x_user_id = $1 LIMIT 1",
+      "SELECT stance, followers_count FROM community_users WHERE x_user_id = $1 LIMIT 1",
       [user.x_user_id]
     );
     const prevRaw = String(prevRes.rows[0]?.stance ?? "").toLowerCase();
+    const prevFollowers = Number(prevRes.rows[0]?.followers_count ?? NaN);
     const prevNormalized =
       prevRaw === "support"
         ? "approve"
@@ -747,6 +752,14 @@ app.post("/api/stance", async (req, res, next) => {
       );
     }
 
+    const incomingFollowersNum = Number(user.followers_count);
+    const safeIncomingFollowers =
+      Number.isFinite(incomingFollowersNum) && incomingFollowersNum > 0
+        ? incomingFollowersNum
+        : null;
+    const incomingAvatar = String(user.avatar_url ?? "").trim() || null;
+    const incomingName = String(user.name ?? "").trim() || null;
+
     const result = await pool.query(
       `
       INSERT INTO community_users (
@@ -762,17 +775,18 @@ app.post("/api/stance", async (req, res, next) => {
       ON CONFLICT (x_user_id)
       DO UPDATE SET
         stance = EXCLUDED.stance,
-        followers_count = COALESCE(EXCLUDED.followers_count, community_users.followers_count),
-        avatar_url = COALESCE(EXCLUDED.avatar_url, community_users.avatar_url),
+        name = COALESCE(NULLIF(EXCLUDED.name, ''), community_users.name),
+        followers_count = COALESCE(NULLIF(EXCLUDED.followers_count, 0), community_users.followers_count),
+        avatar_url = COALESCE(NULLIF(EXCLUDED.avatar_url, ''), community_users.avatar_url),
         updated_at = NOW()
       RETURNING *
     `,
       [
         user.x_user_id,
-        user.handle,
-        user.name,
-        user.avatar_url,
-        user.followers_count,
+        normalizeHandle(user.handle),
+        incomingName,
+        incomingAvatar,
+        safeIncomingFollowers,
         normalized,
       ]
     );
@@ -781,8 +795,11 @@ app.post("/api/stance", async (req, res, next) => {
       console.log("[stance-save] persisted-row", {
         x_user_id: result.rows[0]?.x_user_id,
         handle: result.rows[0]?.handle,
+        followers_before: Number.isFinite(prevFollowers) ? prevFollowers : null,
+        followers_after: result.rows[0]?.followers_count ?? null,
         avatar_url_persisted: result.rows[0]?.avatar_url,
         stance_persisted: result.rows[0]?.stance,
+        patch_mode: true,
       });
     }
     res.json(result.rows[0]);

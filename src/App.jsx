@@ -318,6 +318,7 @@ async function loadAccounts() {
   const merged = [];
   const byHandle = new Map();
   const byXid = new Map();
+  const richestByHandle = new Map();
 
   const upsert = (raw, source) => {
     const handleNorm = normalizeHandle(raw?.handle ?? raw?.username ?? raw?.screen_name);
@@ -329,12 +330,15 @@ async function loadAccounts() {
     if (!rec) {
       rec = { ...raw };
       merged.push(rec);
-    } else {
-      Object.assign(rec, raw);
     }
 
     if (handleNorm) rec.handle = handleNorm;
     if (xId) rec.x_user_id = xId;
+
+    const incomingName = String(raw?.name ?? "").trim();
+    if (incomingName) {
+      if (!rec.name || source === "seeded") rec.name = incomingName;
+    }
 
     // Prefer any non-empty avatar value across known profile fields.
     const avatarCandidate = firstNonEmptyAvatarField(raw);
@@ -346,9 +350,31 @@ async function loadAccounts() {
     }
 
     const followers = toFiniteNumber(raw?.followers_count);
-    if (followers != null) rec.followers_count = Math.max(0, followers);
+    const currentFollowers = toFiniteNumber(rec?.followers_count);
+    if (followers != null) {
+      const safeFollowers = Math.max(0, followers);
+      if (source === "seeded") {
+        rec.followers_count = safeFollowers;
+      } else if (safeFollowers > 0 || currentFollowers == null || currentFollowers <= 0) {
+        // Avoid letting minimal stance rows (0/null followers) clobber richer profile records.
+        rec.followers_count = safeFollowers;
+      }
+    }
     if (source === "community") rec.stance = normalizedStance(raw?.stance ?? rec?.stance);
     else if (rec.stance) rec.stance = normalizedStance(rec.stance);
+
+    if (handleNorm) {
+      const prevRich = richestByHandle.get(handleNorm);
+      const recFollowers = toFiniteNumber(rec?.followers_count) ?? 0;
+      const prevFollowers = toFiniteNumber(prevRich?.followers_count) ?? 0;
+      if (!prevRich || recFollowers > prevFollowers) {
+        richestByHandle.set(handleNorm, {
+          followers_count: recFollowers,
+          avatar_url: firstNonEmptyAvatarField(rec) || rec.avatar_url || null,
+          name: String(rec?.name ?? "").trim() || null,
+        });
+      }
+    }
 
     if (isDevRuntime && source === "community") {
       const avatarFields = collectAvatarFieldValues(raw);
@@ -373,6 +399,23 @@ async function loadAccounts() {
 
   for (const rec of merged) {
     if (!rec.handle) continue;
+    const handleNorm = normalizeHandle(rec.handle);
+    const rich = richestByHandle.get(handleNorm);
+    const currentFollowers = toFiniteNumber(rec.followers_count);
+    if ((currentFollowers == null || currentFollowers <= 0) && rich?.followers_count > 0) {
+      rec.followers_count = rich.followers_count;
+      if (!rec.avatar_url && rich.avatar_url) rec.avatar_url = rich.avatar_url;
+      if (!rec.name && rich.name) rec.name = rich.name;
+      if (isDevRuntime && rec.stance) {
+        console.log("[auth-merge][repair-backfill]", {
+          handle: handleNorm,
+          restoredFollowers: rich.followers_count,
+          restoredAvatar: Boolean(rich.avatar_url),
+          restoredName: Boolean(rich.name),
+          reason: "Community stance row had missing/zero profile fields",
+        });
+      }
+    }
     if (rec.followers_count == null || !Number.isFinite(Number(rec.followers_count))) {
       rec.followers_count = 0;
     } else {
