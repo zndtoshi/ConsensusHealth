@@ -483,9 +483,19 @@ app.get("/auth/x/callback", async (req, res, next) => {
     const xUserId = String(data.id);
     const handle = String(data.username).toLowerCase();
     const name = data.name ? String(data.name) : null;
-    const avatarUrl = data.profile_image_url ? String(data.profile_image_url).replace("_normal", "") : null;
+    const rawProfileImageUrl = data.profile_image_url ? String(data.profile_image_url) : null;
+    const avatarUrl = rawProfileImageUrl ? rawProfileImageUrl.replace("_normal", "") : null;
     const followersCount =
       typeof data.public_metrics?.followers_count === "number" ? data.public_metrics.followers_count : null;
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[auth-callback] profile-fields", {
+        x_user_id: xUserId,
+        handle,
+        profile_image_url: rawProfileImageUrl,
+        persisted_avatar_url: avatarUrl,
+        followers_count: followersCount,
+      });
+    }
 
     // Link/login logic:
     // 1) find by x_user_id and update profile fields (preserve stance)
@@ -645,6 +655,16 @@ app.post("/api/stance", async (req, res, next) => {
       return;
     }
     const normalized = stance === "support" ? "approve" : stance;
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[stance-save] session-user", {
+        x_user_id: user.x_user_id,
+        handle: user.handle,
+        avatar_url_session: user.avatar_url,
+        followers_count_session: user.followers_count,
+        requested_stance: stance,
+        normalized_stance: normalized,
+      });
+    }
 
     const prevRes = await pool.query(
       "SELECT stance FROM community_users WHERE x_user_id = $1 LIMIT 1",
@@ -683,8 +703,8 @@ app.post("/api/stance", async (req, res, next) => {
       ON CONFLICT (x_user_id)
       DO UPDATE SET
         stance = EXCLUDED.stance,
-        followers_count = EXCLUDED.followers_count,
-        avatar_url = EXCLUDED.avatar_url,
+        followers_count = COALESCE(EXCLUDED.followers_count, community_users.followers_count),
+        avatar_url = COALESCE(EXCLUDED.avatar_url, community_users.avatar_url),
         updated_at = NOW()
       RETURNING *
     `,
@@ -698,6 +718,14 @@ app.post("/api/stance", async (req, res, next) => {
       ]
     );
 
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[stance-save] persisted-row", {
+        x_user_id: result.rows[0]?.x_user_id,
+        handle: result.rows[0]?.handle,
+        avatar_url_persisted: result.rows[0]?.avatar_url,
+        stance_persisted: result.rows[0]?.stance,
+      });
+    }
     res.json(result.rows[0]);
   } catch (err) {
     next(err);

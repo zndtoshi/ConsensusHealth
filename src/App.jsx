@@ -44,6 +44,49 @@ function getFollowersFromUser(user) {
   return { followers: 0, source: "none" };
 }
 
+function normalizeTwitterAvatarUrl(url) {
+  const u = String(url ?? "").trim();
+  if (!u) return "";
+  return u.includes("_normal") ? u.replace("_normal", "") : u;
+}
+
+function firstNonEmptyAvatarField(obj) {
+  if (!obj || typeof obj !== "object") return "";
+  const candidates = [
+    obj.profile_image_url,
+    obj.profileImageUrl,
+    obj.avatar_url,
+    obj.avatarUrl,
+    obj.image,
+    obj.photo_url,
+  ];
+  for (const c of candidates) {
+    const s = String(c ?? "").trim();
+    if (s) return normalizeTwitterAvatarUrl(s);
+  }
+  return "";
+}
+
+function collectAvatarFieldValues(obj) {
+  return {
+    profile_image_url: String(obj?.profile_image_url ?? "").trim(),
+    profileImageUrl: String(obj?.profileImageUrl ?? "").trim(),
+    avatar_url: String(obj?.avatar_url ?? "").trim(),
+    avatarUrl: String(obj?.avatarUrl ?? "").trim(),
+    image: String(obj?.image ?? "").trim(),
+    photo_url: String(obj?.photo_url ?? "").trim(),
+    avatar_path: String(obj?.avatar_path ?? "").trim(),
+  };
+}
+
+function resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc) {
+  const path = String(a?.avatar_path ?? "").trim();
+  if (path) return `${baseNoSlash}${path}?v=${AVATAR_REV}`;
+  const remote = firstNonEmptyAvatarField(a);
+  if (remote) return remote;
+  return missingSrc;
+}
+
 const STANCE = {
   AGAINST: "against",
   NEUTRAL: "neutral",
@@ -251,34 +294,83 @@ async function loadAccounts() {
     fetchCommunityUsers(),
   ]);
   const seeded = seededRes.ok ? await seededRes.json() : [];
-  const map = new Map();
-  for (const a of Array.isArray(seeded) ? seeded : []) {
-    const handle = String(a.handle ?? "").trim().toLowerCase();
-    if (!handle) continue;
-    map.set(handle, { ...a, handle });
-  }
-  for (const c of Array.isArray(community) ? community : []) {
-    const handle = String(c.handle ?? "").trim().toLowerCase();
-    if (!handle) continue;
-    if (map.has(handle)) {
-      const prev = map.get(handle);
-      map.set(handle, {
-        ...prev,
-        stance: normalizedStance(c.stance ?? prev.stance),
-      });
+  const isDevRuntime =
+    (typeof process !== "undefined" && process.env && process.env.NODE_ENV !== "production") ||
+    (typeof import.meta !== "undefined" && import.meta.env && !import.meta.env.PROD);
+  const merged = [];
+  const byHandle = new Map();
+  const byXid = new Map();
+
+  const upsert = (raw, source) => {
+    const handleNorm = normalizeHandle(raw?.handle ?? raw?.username ?? raw?.screen_name);
+    const xId = String(raw?.x_user_id ?? raw?.xUserId ?? raw?.id ?? "").trim();
+    if (!handleNorm && !xId) return;
+
+    const matchedBy = xId && byXid.get(xId) ? "x_user_id" : (handleNorm && byHandle.get(handleNorm) ? "handle" : "new");
+    let rec = (xId && byXid.get(xId)) || (handleNorm && byHandle.get(handleNorm)) || null;
+    if (!rec) {
+      rec = { ...raw };
+      merged.push(rec);
     } else {
-      map.set(handle, {
-        handle,
-        name: c.name ?? "",
-        followers_count:
-          c.followers_count == null ? 1000 : toInt(c.followers_count),
-        stance: normalizedStance(c.stance),
-        avatar_url: c.avatar_url ?? null,
-        x_user_id: c.x_user_id ?? null,
+      Object.assign(rec, raw);
+    }
+
+    if (handleNorm) rec.handle = handleNorm;
+    if (xId) rec.x_user_id = xId;
+
+    // Prefer any non-empty avatar value across known profile fields.
+    const avatarCandidate = firstNonEmptyAvatarField(raw);
+    if (avatarCandidate) {
+      rec.avatar_url = avatarCandidate;
+    } else if (!rec.avatar_url) {
+      const existingCandidate = firstNonEmptyAvatarField(rec);
+      if (existingCandidate) rec.avatar_url = existingCandidate;
+    }
+
+    const followers = toFiniteNumber(raw?.followers_count);
+    if (followers != null) rec.followers_count = Math.max(0, followers);
+    if (source === "community") rec.stance = normalizedStance(raw?.stance ?? rec?.stance);
+    else if (rec.stance) rec.stance = normalizedStance(rec.stance);
+
+    if (isDevRuntime && source === "community") {
+      const avatarFields = collectAvatarFieldValues(raw);
+      const resolvedAvatar = firstNonEmptyAvatarField(raw) || firstNonEmptyAvatarField(rec) || "";
+      console.log("[auth-merge]", {
+        x_user_id: xId || null,
+        handle: handleNorm || null,
+        matchedBy,
+        stance: rec.stance || null,
+        avatarFieldsReceived: avatarFields,
+        avatarPersistedForMerge: rec.avatar_url || null,
+        resolvedAvatar,
+      });
+    }
+
+    if (xId) byXid.set(xId, rec);
+    if (handleNorm) byHandle.set(handleNorm, rec);
+  };
+
+  for (const a of Array.isArray(seeded) ? seeded : []) upsert(a, "seeded");
+  for (const c of Array.isArray(community) ? community : []) upsert(c, "community");
+
+  for (const rec of merged) {
+    if (!rec.handle) continue;
+    if (rec.followers_count == null || !Number.isFinite(Number(rec.followers_count))) {
+      rec.followers_count = 0;
+    } else {
+      rec.followers_count = Math.max(0, toInt(rec.followers_count));
+    }
+    rec.avatar_url = firstNonEmptyAvatarField(rec) || rec.avatar_url || null;
+    if (isDevRuntime && rec.stance && !rec.avatar_path && !rec.avatar_url) {
+      console.log("[auth-merge][missing-avatar-after-merge]", {
+        handle: normalizeHandle(rec.handle),
+        x_user_id: String(rec.x_user_id ?? ""),
+        stance: rec.stance,
+        reason: "No avatar field available after merge",
       });
     }
   }
-  const merged = Array.from(map.values());
+
   console.log("[ConsensusHealth] loaded seeded:", Array.isArray(seeded) ? seeded.length : 0, "community:", community.length, "merged:", merged.length);
   return merged;
 }
@@ -742,9 +834,7 @@ export default function App() {
     const missingSrc = `${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`;
     getAvatar(missingSrc);
     for (const a of accounts) {
-      const src = a.avatar_path
-        ? `${baseNoSlash}${a.avatar_path}?v=${AVATAR_REV}`
-        : (a.avatar_url || a.profile_image_url || missingSrc);
+      const src = resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc);
       const img = getAvatar(src);
       if ("loading" in img) img.loading = "eager";
     }
@@ -787,10 +877,7 @@ export default function App() {
     const base = getBase();
     const baseNoSlash = base.replace(/\/$/, "");
     const missingSrc = `${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`;
-    const avatarSrc = (a) =>
-      a.avatar_path
-        ? `${baseNoSlash}${a.avatar_path}?v=${AVATAR_REV}`
-        : (a.avatar_url || a.profile_image_url || missingSrc);
+    const avatarSrc = (a) => resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc);
 
     // Build nodes: accounts that tweeted about bip110, plus manually stance-labeled accounts
     const nodes = accounts
@@ -807,6 +894,19 @@ export default function App() {
         const rawFollowers = Number(a.followers_count || 0);
         const followersForSize = rawFollowers > 0 ? rawFollowers : (seedStance ? 5000 : 0);
         const side = sideFromFollowers(followersForSize);
+        const resolvedAvatar = avatarSrc(a);
+        const hasStance = Boolean(seedStance);
+        if (hasStance && resolvedAvatar === missingSrc && !import.meta.env.PROD) {
+          const dbgFields = collectAvatarFieldValues(a);
+          // eslint-disable-next-line no-console
+          console.log("[avatar-missing][stance-node]", {
+            handle: normalizeHandle(a.handle),
+            matchedAccountKey: String(a.x_user_id || normalizeHandle(a.handle) || ""),
+            stance: seedStance,
+            avatarFieldsInspected: dbgFields,
+            reason: "No avatar_path or known avatar URL fields present",
+          });
+        }
         return {
           handle: a.handle,
           seedStance,
@@ -814,7 +914,7 @@ export default function App() {
           side,
           half: side / 2,
           tweetCount,
-          avatarUrl: avatarSrc(a),
+          avatarUrl: resolvedAvatar,
           x: w / 2 + (Math.random() - 0.5) * w * 0.6,
           y: h / 2 + (Math.random() - 0.5) * h * 0.6,
           vx: 0,
