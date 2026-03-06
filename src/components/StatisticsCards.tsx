@@ -311,7 +311,7 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
         <Card title="Followers impact" subtitle="Total followers by stance">
-          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", alignItems: "center", gap: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "160px 220px", alignItems: "center", gap: 14 }}>
             <Donut
               size={150}
               thickness={16}
@@ -319,20 +319,59 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
               centerBottom="followers"
               segments={followerSegments}
             />
-            <Legend
-              items={(["against", "neutral", "approve"] as const).map((k) => ({
-                color: STANCE[k].color,
-                label: STANCE[k].label,
-                right: (
-                  <span>
-                    {formatInt(data.totalFollowersByStance[k])}{" "}
-                    <span style={{ opacity: 0.55, fontWeight: 700 }}>
-                      ({formatPct(((followerTotal ? data.totalFollowersByStance[k] / followerTotal : 0) * 100))})
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
+              {(["against", "neutral", "approve"] as const).map((k) => (
+                <div
+                  key={k}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    width: "100%",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span
+                      style={{
+                        width: 10,
+                        height: 10,
+                        borderRadius: 999,
+                        background: STANCE[k].color,
+                        boxShadow: "0 0 0 3px rgba(255,255,255,0.06), 0 10px 20px rgba(0,0,0,0.30)",
+                      }}
+                    />
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: "rgba(255,255,255,0.88)",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {STANCE[k].label}
                     </span>
-                  </span>
-                ),
-              }))}
-            />
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      width: "100%",
+                      maxWidth: 132,
+                      color: "rgba(255,255,255,0.96)",
+                      fontSize: 12,
+                      fontWeight: 800,
+                    }}
+                  >
+                    <span style={{ marginLeft: "auto" }}>
+                      {formatInt(data.totalFollowersByStance[k])}{" "}
+                      <span style={{ opacity: 0.55, fontWeight: 700 }}>
+                        ({formatPct(((followerTotal ? data.totalFollowersByStance[k] / followerTotal : 0) * 100))})
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </Card>
 
