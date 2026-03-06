@@ -49,7 +49,7 @@ export function StatisticsModal({
           borderRadius: 22,
           border: "1px solid rgba(255,255,255,0.12)",
           background:
-            "radial-gradient(1200px 600px at 20% 0%, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.02) 55%, rgba(0,0,0,0.35) 100%)",
+            "radial-gradient(1200px 600px at 20% 0%, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0.06) 55%, rgba(0,0,0,0.60) 100%)",
           boxShadow: "0 20px 70px rgba(0,0,0,0.55)",
           padding: 18,
           backdropFilter: "blur(12px)",

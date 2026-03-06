@@ -76,14 +76,14 @@ function Card({
         borderRadius: 18,
         border: "1px solid rgba(255,255,255,0.10)",
         background:
-          "linear-gradient(180deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.03) 100%)",
+          "linear-gradient(180deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.06) 100%)",
         boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
         padding: 16,
         backdropFilter: "blur(10px)",
       }}
     >
       <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 12 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: 0.2, color: "rgba(255,255,255,0.92)" }}>
+        <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: 0.2, color: "rgba(255,255,255,0.96)" }}>
           {title}
         </div>
         {subtitle ? (
@@ -173,7 +173,7 @@ function Donut({
           pointerEvents: "none",
         }}
       >
-        <div style={{ fontSize: 18, fontWeight: 900, color: "rgba(255,255,255,0.92)", lineHeight: 1.1 }}>
+        <div style={{ fontSize: 18, fontWeight: 900, color: "rgba(255,255,255,0.96)", lineHeight: 1.1 }}>
           {centerTop}
         </div>
         <div style={{ fontSize: 12, color: "rgba(255,255,255,0.58)" }}>{centerBottom}</div>
@@ -204,7 +204,7 @@ function Legend({
             <span
               style={{
                 fontSize: 12,
-                color: "rgba(255,255,255,0.72)",
+                color: "rgba(255,255,255,0.85)",
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
@@ -213,7 +213,7 @@ function Legend({
               {it.label}
             </span>
           </div>
-          <div style={{ fontSize: 12, fontWeight: 800, color: "rgba(255,255,255,0.90)" }}>{it.right}</div>
+          <div style={{ fontSize: 12, fontWeight: 800, color: "rgba(255,255,255,0.96)" }}>{it.right}</div>
         </div>
       ))}
     </div>
@@ -277,7 +277,7 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
             style={{
               borderRadius: 14,
               border: "1px solid rgba(255,255,255,0.08)",
-              background: "rgba(0,0,0,0.18)",
+              background: "rgba(0,0,0,0.40)",
               padding: 12,
             }}
           >
@@ -334,7 +334,7 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
             style={{
               borderRadius: 14,
               border: "1px solid rgba(255,255,255,0.08)",
-              background: "rgba(0,0,0,0.18)",
+              background: "rgba(0,0,0,0.40)",
               padding: 12,
             }}
           >
@@ -351,11 +351,11 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={{ width: 10, height: 10, borderRadius: 999, background: STANCE[k].color }} />
-                  <span style={{ fontSize: 12, color: "rgba(255,255,255,0.72)", fontWeight: 800 }}>
+                  <span style={{ fontSize: 12, color: "rgba(255,255,255,0.85)", fontWeight: 800 }}>
                     {STANCE[k].label}
                   </span>
                 </div>
-                <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.92)" }}>
+                <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>
                   {formatInt(data.avgFollowersByStance[k])}
                 </div>
               </div>
@@ -373,7 +373,7 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
                   style={{
                     borderRadius: 14,
                     border: "1px solid rgba(255,255,255,0.08)",
-                    background: "rgba(0,0,0,0.18)",
+                    background: "rgba(0,0,0,0.40)",
                     padding: 12,
                     display: "flex",
                     justifyContent: "space-between",
@@ -384,11 +384,11 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
                   <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                     <span style={{ width: 10, height: 10, borderRadius: 999, background: STANCE[k].color }} />
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.92)" }}>{STANCE[k].label}</div>
+                      <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{STANCE[k].label}</div>
                       <div
                         style={{
                           fontSize: 12,
-                          color: "rgba(255,255,255,0.65)",
+                          color: "rgba(255,255,255,0.85)",
                           whiteSpace: "nowrap",
                           overflow: "hidden",
                           textOverflow: "ellipsis",
@@ -399,7 +399,7 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
                       </div>
                     </div>
                   </div>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.92)" }}>
+                  <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>
                     {top ? formatInt(top.followers) : "—"}
                   </div>
                 </div>
@@ -411,7 +411,7 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
 
       <Card title="Flows" subtitle="Last 7 days">
         {data.topFlowsLast7Days.length === 0 ? (
-          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.62)" }}>No flows in the last 7 days.</div>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.85)" }}>No flows in the last 7 days.</div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             {data.topFlowsLast7Days.slice(0, 8).map((f, idx) => {
@@ -424,7 +424,7 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
                   style={{
                     borderRadius: 14,
                     border: "1px solid rgba(255,255,255,0.08)",
-                    background: "rgba(0,0,0,0.18)",
+                    background: "rgba(0,0,0,0.40)",
                     padding: 12,
                     display: "flex",
                     justifyContent: "space-between",
@@ -434,12 +434,12 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                     <span style={{ width: 10, height: 10, borderRadius: 999, background: fromColor }} />
-                    <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.85)" }}>{fromLabel}</span>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{fromLabel}</span>
                     <span style={{ opacity: 0.5 }}>→</span>
                     <span style={{ width: 10, height: 10, borderRadius: 999, background: to.color }} />
-                    <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.85)" }}>{to.label}</span>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{to.label}</span>
                   </div>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.92)" }}>{formatInt(f.count)}</div>
+                  <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{formatInt(f.count)}</div>
                 </div>
               );
             })}
