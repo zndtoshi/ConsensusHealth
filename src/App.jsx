@@ -738,6 +738,28 @@ export default function App() {
       topAccountByFollowers,
       usersChangedStanceAtLeastOnce: num(statsData?.changed_ever),
       totalStanceChangesLast7Days: num(statsData?.changes_last_7d),
+      totalStanceChanges: num(statsData?.total_changes),
+      transitionCounts: Array.isArray(statsData?.transition_counts)
+        ? statsData.transition_counts
+            .map((f) => ({
+              from: flowNorm(f.from),
+              to: flowNorm(f.to),
+              count: num(f.count),
+            }))
+            .filter((f) => (f.from === null || f.from) && (f.to === "against" || f.to === "neutral" || f.to === "approve"))
+        : [],
+      recentChanges: Array.isArray(statsData?.recent_changes)
+        ? statsData.recent_changes
+            .map((r) => ({
+              x_user_id: String(r.x_user_id ?? ""),
+              handle: String(r.handle ?? "").trim() || "(unknown)",
+              from: flowNorm(r.from),
+              to: flowNorm(r.to) || "neutral",
+              changed_at: String(r.changed_at || ""),
+              changed_by: String(r.changed_by || "").trim() || null,
+            }))
+            .filter((r) => r.to === "against" || r.to === "neutral" || r.to === "approve")
+        : [],
       topFlowsLast7Days: Array.isArray(statsData?.flows_last_7d)
         ? statsData.flows_last_7d
             .map((f) => ({

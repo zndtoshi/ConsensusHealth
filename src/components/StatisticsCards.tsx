@@ -13,6 +13,15 @@ export type FlowItem = {
   count: number;
 };
 
+export type HistoryChangeItem = {
+  x_user_id: string;
+  handle: string;
+  from: StanceKey | null;
+  to: StanceKey;
+  changed_at: string;
+  changed_by: string | null;
+};
+
 export type StatisticsData = {
   totalUsersWithStance: number;
   counts: Record<StanceKey, number>;
@@ -22,6 +31,9 @@ export type StatisticsData = {
   topAccountByFollowers: Record<StanceKey, TopAccount | null>;
   usersChangedStanceAtLeastOnce: number;
   totalStanceChangesLast7Days: number;
+  totalStanceChanges: number;
+  transitionCounts: FlowItem[];
+  recentChanges: HistoryChangeItem[];
   topFlowsLast7Days: FlowItem[];
   generatedAtISO: string;
 };
@@ -491,6 +503,66 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
             })}
           </div>
         )}
+      </Card>
+
+      <Card title="Stance history" subtitle="Persisted events">
+        <div style={{ display: "grid", gap: 10 }}>
+          <div
+            style={{
+              borderRadius: 14,
+              border: "1px solid rgba(255,255,255,0.08)",
+              background: "rgba(0,0,0,0.40)",
+              padding: 12,
+            }}
+          >
+            <StatRow label="Total stance changes" value={formatInt(data.totalStanceChanges)} />
+            <StatRow label="Users who changed stance" value={formatInt(data.usersChangedStanceAtLeastOnce)} />
+            <StatRow
+              label="Top transition"
+              value={
+                data.transitionCounts.length
+                  ? `${data.transitionCounts[0].from ? STANCE[data.transitionCounts[0].from].label : "Unset"} -> ${STANCE[data.transitionCounts[0].to].label} (${formatInt(data.transitionCounts[0].count)})`
+                  : "None"
+              }
+            />
+          </div>
+          <div
+            style={{
+              borderRadius: 14,
+              border: "1px solid rgba(255,255,255,0.08)",
+              background: "rgba(0,0,0,0.40)",
+              padding: 12,
+              display: "grid",
+              gap: 8,
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>Recent 10 changes</div>
+            {data.recentChanges.length === 0 ? (
+              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.85)" }}>No change events yet.</div>
+            ) : (
+              data.recentChanges.map((row, idx) => (
+                <div
+                  key={`${row.x_user_id}-${row.changed_at}-${idx}`}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    alignItems: "center",
+                    borderBottom: idx === data.recentChanges.length - 1 ? "none" : "1px solid rgba(255,255,255,0.06)",
+                    paddingBottom: 6,
+                  }}
+                >
+                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.96)", minWidth: 0 }}>
+                      @{row.handle} - {row.from ? STANCE[row.from].label : "Unset"} {"->"} {STANCE[row.to].label}
+                    </div>
+                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.72)", whiteSpace: "nowrap" }}>
+                    {formatDateTime(row.changed_at)}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       </Card>
     </div>
   );

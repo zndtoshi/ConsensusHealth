@@ -12,6 +12,7 @@
     "build": "npm run build:web && npm run build:server",
     "start": "node server/dist/index.js",
     "lint": "eslint .",
+    "test": "tsx --test server/src/**/*.test.ts",
     "preview": "vite preview",
     "prune:stanced": "node scripts/prune_to_stanced_accounts.js"
   },

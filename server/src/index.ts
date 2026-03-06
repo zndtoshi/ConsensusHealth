@@ -5,9 +5,10 @@ import express, { type Request, type Response, type NextFunction } from "express
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { v4 as uuidv4 } from "uuid";
 import { logConfig } from "./config/appUrl.js";
+import { normalizeStanceValue, type ChangedByValue, type StanceValue } from "./stanceHistory.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
@@ -146,6 +147,98 @@ function normalizeHandle(value: unknown): string {
   return String(value ?? "").trim().toLowerCase().replace(/^@+/, "");
 }
 
+async function upsertStanceWithHistory(
+  client: PoolClient,
+  args: {
+    xUserId: string;
+    handle: string;
+    name: string | null;
+    avatarUrl: string | null;
+    followersCount: number | null;
+    stance: StanceValue;
+    changedBy: ChangedByValue;
+  }
+): Promise<{ row: Record<string, unknown>; changed: boolean; previous: StanceValue | null }> {
+  const xUserId = String(args.xUserId || "").trim();
+  const handle = normalizeHandle(args.handle);
+  if (!xUserId || !handle) {
+    throw new Error("x_user_id and handle are required");
+  }
+  const incomingFollowersNum = Number(args.followersCount);
+  const safeIncomingFollowers =
+    Number.isFinite(incomingFollowersNum) && incomingFollowersNum > 0 ? incomingFollowersNum : null;
+  const incomingAvatar = String(args.avatarUrl ?? "").trim() || null;
+  const incomingName = String(args.name ?? "").trim() || null;
+  const nextStance = args.stance;
+
+  const prevRes = await client.query(
+    "SELECT stance, followers_count FROM community_users WHERE x_user_id = $1 LIMIT 1",
+    [xUserId]
+  );
+  const prevRow = prevRes.rows[0] as { stance?: string | null; followers_count?: number | null } | undefined;
+  const prevStance = normalizeStanceValue(prevRow?.stance ?? null);
+  const followersBefore = Number(prevRow?.followers_count ?? NaN);
+  const changed = prevStance !== nextStance;
+
+  const result = await client.query(
+    `
+    INSERT INTO community_users (
+      x_user_id,
+      handle,
+      name,
+      avatar_url,
+      followers_count,
+      stance,
+      updated_at
+    )
+    VALUES ($1,$2,$3,$4,$5,$6,NOW())
+    ON CONFLICT (x_user_id)
+    DO UPDATE SET
+      handle = COALESCE(NULLIF(EXCLUDED.handle, ''), community_users.handle),
+      name = COALESCE(NULLIF(EXCLUDED.name, ''), community_users.name),
+      avatar_url = COALESCE(NULLIF(EXCLUDED.avatar_url, ''), community_users.avatar_url),
+      followers_count = COALESCE(NULLIF(EXCLUDED.followers_count, 0), community_users.followers_count),
+      stance = EXCLUDED.stance,
+      updated_at = NOW()
+    RETURNING *
+  `,
+    [xUserId, handle, incomingName, incomingAvatar, safeIncomingFollowers, nextStance]
+  );
+  const row = (result.rows[0] ?? {}) as Record<string, unknown>;
+
+  if (changed) {
+    await client.query(
+      `
+      INSERT INTO stance_history (x_user_id, previous_stance, new_stance, changed_by)
+      VALUES ($1, $2, $3, $4)
+    `,
+      [xUserId, prevStance, nextStance, args.changedBy]
+    );
+    await client.query(
+      `
+      INSERT INTO stance_events (x_user_id, from_stance, to_stance)
+      VALUES ($1, $2, $3)
+    `,
+      [xUserId, prevStance, nextStance]
+    );
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    console.log("[stance-update]", {
+      x_user_id: xUserId,
+      handle,
+      previous_stance: prevStance,
+      next_stance: nextStance,
+      changed,
+      followers_before: Number.isFinite(followersBefore) ? followersBefore : null,
+      followers_after: row.followers_count ?? null,
+      patch_mode: true,
+    });
+  }
+
+  return { row, changed, previous: prevStance };
+}
+
 function b64url(input: Buffer): string {
   return input
     .toString("base64")
@@ -248,6 +341,8 @@ async function initDb(): Promise<void> {
       expires_at TIMESTAMPTZ NOT NULL
     );
   `);
+  await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();`);
+  await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS stance_events (
       id SERIAL PRIMARY KEY,
@@ -259,6 +354,43 @@ async function initDb(): Promise<void> {
   `);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_stance_events_x_user_id ON stance_events (x_user_id);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_stance_events_created_at ON stance_events (created_at);`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS stance_history (
+      id SERIAL PRIMARY KEY,
+      x_user_id TEXT NOT NULL REFERENCES community_users(x_user_id) ON DELETE CASCADE,
+      previous_stance TEXT CHECK (previous_stance IN ('against','neutral','approve') OR previous_stance IS NULL),
+      new_stance TEXT NOT NULL CHECK (new_stance IN ('against','neutral','approve')),
+      changed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      changed_by TEXT NULL CHECK (changed_by IN ('user','admin','system','oauth','backfill') OR changed_by IS NULL)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_stance_history_x_user_id ON stance_history (x_user_id);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_stance_history_changed_at ON stance_history (changed_at);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_stance_history_x_user_id_changed_at ON stance_history (x_user_id, changed_at);`);
+  // Idempotent backfill: seed one initial history event for rows that already have stance and no history.
+  await pool.query(`
+    INSERT INTO stance_history (x_user_id, previous_stance, new_stance, changed_at, changed_by)
+    SELECT
+      cu.x_user_id,
+      NULL,
+      CASE
+        WHEN lower(coalesce(cu.stance, '')) = 'support' THEN 'approve'
+        WHEN lower(coalesce(cu.stance, '')) IN ('against', 'neutral', 'approve') THEN lower(cu.stance)
+        ELSE NULL
+      END AS stance_norm,
+      COALESCE(cu.updated_at::timestamptz, cu.created_at::timestamptz, now()) AS changed_at,
+      'backfill'
+    FROM community_users cu
+    WHERE cu.x_user_id IS NOT NULL
+      AND (
+        CASE
+          WHEN lower(coalesce(cu.stance, '')) = 'support' THEN 'approve'
+          WHEN lower(coalesce(cu.stance, '')) IN ('against', 'neutral', 'approve') THEN lower(cu.stance)
+          ELSE NULL
+        END
+      ) IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM stance_history sh WHERE sh.x_user_id = cu.x_user_id);
+  `);
 }
 
 async function cleanupExpiredSessions(): Promise<void> {
@@ -711,98 +843,145 @@ app.post("/api/stance", async (req, res, next) => {
       return;
     }
 
-    const stance = String(req.body?.stance || "").toLowerCase();
-
-    if (!["against", "neutral", "approve", "support"].includes(stance)) {
+    const requestedStance = normalizeStanceValue(req.body?.stance);
+    if (!requestedStance) {
       res.status(400).json({ error: "invalid_stance" });
       return;
     }
-    const normalized = stance === "support" ? "approve" : stance;
+
     if (process.env.NODE_ENV !== "production") {
       console.log("[stance-save] session-user", {
         x_user_id: user.x_user_id,
         handle: user.handle,
         avatar_url_session: user.avatar_url,
         followers_count_session: user.followers_count,
-        requested_stance: stance,
-        normalized_stance: normalized,
+        requested_stance: String(req.body?.stance ?? ""),
+        normalized_stance: requestedStance,
       });
     }
 
-    const prevRes = await pool.query(
-      "SELECT stance, followers_count FROM community_users WHERE x_user_id = $1 LIMIT 1",
-      [user.x_user_id]
-    );
-    const prevRaw = String(prevRes.rows[0]?.stance ?? "").toLowerCase();
-    const prevFollowers = Number(prevRes.rows[0]?.followers_count ?? NaN);
-    const prevNormalized =
-      prevRaw === "support"
-        ? "approve"
-        : ["against", "neutral", "approve"].includes(prevRaw)
-          ? prevRaw
-          : null;
-
-    if (prevNormalized !== normalized) {
-      await pool.query(
-        `
-        INSERT INTO stance_events (x_user_id, from_stance, to_stance)
-        VALUES ($1, $2, $3)
-      `,
-        [user.x_user_id, prevNormalized, normalized]
-      );
+    const client = await pool.connect();
+    let row: Record<string, unknown>;
+    try {
+      await client.query("BEGIN");
+      const result = await upsertStanceWithHistory(client, {
+        xUserId: user.x_user_id,
+        handle: user.handle,
+        name: user.name ?? null,
+        avatarUrl: user.avatar_url ?? null,
+        followersCount: user.followers_count ?? null,
+        stance: requestedStance,
+        changedBy: "user",
+      });
+      row = result.row;
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
     }
-
-    const incomingFollowersNum = Number(user.followers_count);
-    const safeIncomingFollowers =
-      Number.isFinite(incomingFollowersNum) && incomingFollowersNum > 0
-        ? incomingFollowersNum
-        : null;
-    const incomingAvatar = String(user.avatar_url ?? "").trim() || null;
-    const incomingName = String(user.name ?? "").trim() || null;
-
-    const result = await pool.query(
-      `
-      INSERT INTO community_users (
-        x_user_id,
-        handle,
-        name,
-        avatar_url,
-        followers_count,
-        stance,
-        updated_at
-      )
-      VALUES ($1,$2,$3,$4,$5,$6,NOW())
-      ON CONFLICT (x_user_id)
-      DO UPDATE SET
-        stance = EXCLUDED.stance,
-        name = COALESCE(NULLIF(EXCLUDED.name, ''), community_users.name),
-        followers_count = COALESCE(NULLIF(EXCLUDED.followers_count, 0), community_users.followers_count),
-        avatar_url = COALESCE(NULLIF(EXCLUDED.avatar_url, ''), community_users.avatar_url),
-        updated_at = NOW()
-      RETURNING *
-    `,
-      [
-        user.x_user_id,
-        normalizeHandle(user.handle),
-        incomingName,
-        incomingAvatar,
-        safeIncomingFollowers,
-        normalized,
-      ]
-    );
 
     if (process.env.NODE_ENV !== "production") {
       console.log("[stance-save] persisted-row", {
-        x_user_id: result.rows[0]?.x_user_id,
-        handle: result.rows[0]?.handle,
-        followers_before: Number.isFinite(prevFollowers) ? prevFollowers : null,
-        followers_after: result.rows[0]?.followers_count ?? null,
-        avatar_url_persisted: result.rows[0]?.avatar_url,
-        stance_persisted: result.rows[0]?.stance,
-        patch_mode: true,
+        x_user_id: row?.x_user_id,
+        handle: row?.handle,
+        followers_after: row?.followers_count ?? null,
+        avatar_url_persisted: row?.avatar_url,
+        stance_persisted: row?.stance,
       });
     }
-    res.json(result.rows[0]);
+    res.json(row);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/api/stance-history", async (req, res, next) => {
+  try {
+    const xUserId = String(req.query.x_user_id ?? "").trim();
+    const handle = normalizeHandle(req.query.handle);
+    const where: string[] = [];
+    const params: string[] = [];
+    if (xUserId) {
+      params.push(xUserId);
+      where.push(`sh.x_user_id = $${params.length}`);
+    }
+    if (handle) {
+      params.push(handle);
+      where.push(`lower(coalesce(cu.handle, '')) = $${params.length}`);
+    }
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const historyRes = await pool.query(
+      `
+      SELECT
+        sh.x_user_id,
+        cu.handle,
+        sh.previous_stance,
+        sh.new_stance,
+        sh.changed_at,
+        sh.changed_by
+      FROM stance_history sh
+      LEFT JOIN community_users cu ON cu.x_user_id = sh.x_user_id
+      ${whereSql}
+      ORDER BY sh.changed_at ASC
+      LIMIT 3000
+      `,
+      params
+    );
+
+    const dailyTotalsRes = await pool.query(
+      `
+      SELECT
+        date_trunc('day', sh.changed_at)::date AS day,
+        COUNT(*)::int AS total_changes
+      FROM stance_history sh
+      LEFT JOIN community_users cu ON cu.x_user_id = sh.x_user_id
+      ${whereSql}
+      GROUP BY 1
+      ORDER BY 1 ASC
+      `,
+      params
+    );
+
+    const dailyTransitionsRes = await pool.query(
+      `
+      SELECT
+        date_trunc('day', sh.changed_at)::date AS day,
+        sh.previous_stance AS "from",
+        sh.new_stance AS "to",
+        COUNT(*)::int AS count
+      FROM stance_history sh
+      LEFT JOIN community_users cu ON cu.x_user_id = sh.x_user_id
+      ${whereSql}
+      GROUP BY 1,2,3
+      ORDER BY 1 ASC, count DESC
+      `,
+      params
+    );
+
+    res.json({
+      generated_at: new Date().toISOString(),
+      history: historyRes.rows.map((r) => ({
+        x_user_id: String(r.x_user_id ?? ""),
+        handle: r.handle ? String(r.handle) : null,
+        previous_stance: r.previous_stance ? String(r.previous_stance) : null,
+        new_stance: String(r.new_stance),
+        changed_at: new Date(r.changed_at).toISOString(),
+        changed_by: r.changed_by ? String(r.changed_by) : null,
+      })),
+      daily_totals: dailyTotalsRes.rows.map((r) => ({
+        day: String(r.day),
+        total_changes: Number(r.total_changes) || 0,
+      })),
+      daily_transitions: dailyTransitionsRes.rows.map((r) => ({
+        day: String(r.day),
+        from: r.from ? String(r.from) : null,
+        to: String(r.to),
+        count: Number(r.count) || 0,
+      })),
+    });
   } catch (err) {
     next(err);
   }
@@ -908,26 +1087,67 @@ app.get("/api/stats", async (_req, res, next) => {
     }
 
     const changedEverRes = await pool.query(
-      "SELECT COUNT(DISTINCT x_user_id)::int AS changed_ever FROM stance_events"
+      `
+      SELECT COUNT(DISTINCT x_user_id)::int AS changed_ever
+      FROM stance_history
+      WHERE previous_stance IS NOT NULL
+        AND previous_stance IS DISTINCT FROM new_stance
+      `
     );
     const changes7dRes = await pool.query(
-      "SELECT COUNT(*)::int AS changes_last_7d FROM stance_events WHERE created_at >= now() - interval '7 days'"
+      `
+      SELECT COUNT(*)::int AS changes_last_7d
+      FROM stance_history
+      WHERE changed_at >= now() - interval '7 days'
+        AND previous_stance IS DISTINCT FROM new_stance
+      `
+    );
+    const totalChangesRes = await pool.query(
+      `
+      SELECT COUNT(*)::int AS total_changes
+      FROM stance_history
+      WHERE previous_stance IS DISTINCT FROM new_stance
+      `
+    );
+    const transitionCountsRes = await pool.query(
+      `
+      SELECT previous_stance AS "from", new_stance AS "to", COUNT(*)::int AS count
+      FROM stance_history
+      GROUP BY previous_stance, new_stance
+      HAVING COUNT(*) > 0
+      ORDER BY count DESC, previous_stance NULLS FIRST, new_stance
+      `
+    );
+    const recentChangesRes = await pool.query(
+      `
+      SELECT
+        sh.x_user_id,
+        cu.handle,
+        sh.previous_stance AS "from",
+        sh.new_stance AS "to",
+        sh.changed_at,
+        sh.changed_by
+      FROM stance_history sh
+      LEFT JOIN community_users cu ON cu.x_user_id = sh.x_user_id
+      ORDER BY sh.changed_at DESC
+      LIMIT 10
+      `
     );
     const flowsRes = await pool.query(`
       WITH norm AS (
         SELECT
           CASE
-            WHEN lower(coalesce(from_stance, '')) = 'support' THEN 'approve'
-            WHEN lower(coalesce(from_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(from_stance)
+            WHEN lower(coalesce(previous_stance, '')) = 'support' THEN 'approve'
+            WHEN lower(coalesce(previous_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(previous_stance)
             ELSE NULL
           END AS from_norm,
           CASE
-            WHEN lower(coalesce(to_stance, '')) = 'support' THEN 'approve'
-            WHEN lower(coalesce(to_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(to_stance)
+            WHEN lower(coalesce(new_stance, '')) = 'support' THEN 'approve'
+            WHEN lower(coalesce(new_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(new_stance)
             ELSE NULL
           END AS to_norm
-        FROM stance_events
-        WHERE created_at >= now() - interval '7 days'
+        FROM stance_history
+        WHERE changed_at >= now() - interval '7 days'
       )
       SELECT from_norm AS "from", to_norm AS "to", COUNT(*)::int AS count
       FROM norm
@@ -947,6 +1167,20 @@ app.get("/api/stats", async (_req, res, next) => {
       top_account: topAccount,
       changed_ever: toNum(changedEverRes.rows[0]?.changed_ever),
       changes_last_7d: toNum(changes7dRes.rows[0]?.changes_last_7d),
+      total_changes: toNum(totalChangesRes.rows[0]?.total_changes),
+      transition_counts: transitionCountsRes.rows.map((r) => ({
+        from: r.from === null ? null : String(r.from),
+        to: String(r.to),
+        count: toNum(r.count),
+      })),
+      recent_changes: recentChangesRes.rows.map((r) => ({
+        x_user_id: String(r.x_user_id ?? ""),
+        handle: r.handle ? String(r.handle) : null,
+        from: r.from === null ? null : String(r.from),
+        to: String(r.to),
+        changed_at: new Date(r.changed_at).toISOString(),
+        changed_by: r.changed_by ? String(r.changed_by) : null,
+      })),
       flows_last_7d: flowsRes.rows.map((r) => ({
         from: r.from === null ? null : String(r.from),
         to: String(r.to),
