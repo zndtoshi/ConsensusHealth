@@ -323,7 +323,14 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
               items={(["against", "neutral", "approve"] as const).map((k) => ({
                 color: STANCE[k].color,
                 label: STANCE[k].label,
-                right: formatInt(data.totalFollowersByStance[k]),
+                right: (
+                  <span>
+                    {formatInt(data.totalFollowersByStance[k])}{" "}
+                    <span style={{ opacity: 0.55, fontWeight: 700 }}>
+                      ({formatPct(((followerTotal ? data.totalFollowersByStance[k] / followerTotal : 0) * 100))})
+                    </span>
+                  </span>
+                ),
               }))}
             />
           </div>
