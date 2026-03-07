@@ -281,6 +281,44 @@ function forceStanceAnchor(regionRef, labelsRef, strength = 0.016) {
   return force;
 }
 
+function normalizeIslandEdgeGaps(nodes, labelsMap, minGap = 18, blend = 0.45) {
+  if (!Array.isArray(nodes) || nodes.length === 0) return;
+  const bounds = {
+    [STANCE.AGAINST]: { min: Infinity, max: -Infinity, count: 0 },
+    [STANCE.NEUTRAL]: { min: Infinity, max: -Infinity, count: 0 },
+    [STANCE.APPROVE]: { min: Infinity, max: -Infinity, count: 0 },
+  };
+  for (const n of nodes) {
+    const stance = getNodeStance(n, labelsMap);
+    const b = bounds[stance];
+    if (!b) continue;
+    const half = Number.isFinite(n?.half) ? n.half : Math.max(1, Number(n?.side || 0) / 2);
+    const left = n.x - half;
+    const right = n.x + half;
+    if (left < b.min) b.min = left;
+    if (right > b.max) b.max = right;
+    b.count += 1;
+  }
+  if (!bounds.against.count || !bounds.neutral.count || !bounds.approve.count) return;
+
+  const gapLeft = bounds.neutral.min - bounds.against.max;
+  const gapRight = bounds.approve.min - bounds.neutral.max;
+  const target = Math.max(minGap, (gapLeft + gapRight) / 2);
+  let shiftAgainst = (gapLeft - target) * blend;
+  let shiftApprove = (target - gapRight) * blend;
+  const maxShift = Math.max(6, minGap * 0.85);
+  shiftAgainst = clamp(shiftAgainst, -maxShift, maxShift);
+  shiftApprove = clamp(shiftApprove, -maxShift, maxShift);
+
+  if (Math.abs(shiftAgainst) < 0.05 && Math.abs(shiftApprove) < 0.05) return;
+
+  for (const n of nodes) {
+    const stance = getNodeStance(n, labelsMap);
+    if (stance === STANCE.AGAINST) n.x += shiftAgainst;
+    else if (stance === STANCE.APPROVE) n.x += shiftApprove;
+  }
+}
+
 function drawRoundedRectPath(ctx, x, y, w, h, r) {
   if (typeof ctx.roundRect === "function") {
     ctx.roundRect(x, y, w, h, r);
@@ -1285,6 +1323,7 @@ export default function App() {
     // Pre-tick offscreen so first paint is settled; then stop (static layout, no ongoing CPU)
     sim.alpha(1).restart();
     for (let i = 0; i < 180; i++) sim.tick();
+    normalizeIslandEdgeGaps(nodes, labelsRef.current, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
     sim.stop();
 
     sim.on("tick", () => {
@@ -1314,6 +1353,7 @@ export default function App() {
     sim.force("center", forceCenter(w / 2, h / 2));
     sim.force("stanceX", forceX(stanceCenterX).strength(0.11));
     sim.force("pullY", forceY(h / 2).strength(0.03));
+    normalizeIslandEdgeGaps(nodes, labelsRef.current, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.4);
     drawRef.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [w, h]);
@@ -1332,6 +1372,7 @@ export default function App() {
       sim.force("stanceX", forceX(stanceCenterX).strength(0.11));
       sim.alpha(0.8).restart();
       for (let i = 0; i < 90; i++) sim.tick();
+      normalizeIslandEdgeGaps(nodes, labels, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
       sim.stop();
     }
     draw();
