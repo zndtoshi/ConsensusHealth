@@ -250,6 +250,23 @@ function forceStanceBounds(regionRef, labelsRef, k = 0.06) {
   return force;
 }
 
+/** Weak stance-center anchor: gently stabilizes each cluster's visual center without rigidizing packing. */
+function forceStanceAnchor(regionRef, labelsRef, strength = 0.016) {
+  let nodes;
+  function force(alpha) {
+    const r = regionRef.current;
+    if (!r || !nodes) return;
+    const k = Math.max(0, strength) * (alpha || 1);
+    for (const node of nodes) {
+      const stance = getNodeStance(node, labelsRef.current);
+      const cx = r.stanceCenterX[stance] ?? (r.width || 0) / 2;
+      node.vx += (cx - node.x) * k;
+    }
+  }
+  force.initialize = (n) => { nodes = n; };
+  return force;
+}
+
 function drawRoundedRectPath(ctx, x, y, w, h, r) {
   if (typeof ctx.roundRect === "function") {
     ctx.roundRect(x, y, w, h, r);
@@ -1270,6 +1287,7 @@ export default function App() {
       .velocityDecay(0.4)
       .force("center", forceCenter(w / 2, h / 2))
       .force("stanceX", forceX(stanceCenterX).strength(0.11))
+      .force("stanceAnchor", forceStanceAnchor(regionRef, labelsRef, isFirefox ? 0.012 : 0.016))
       .force("stanceBounds", forceStanceBounds(regionRef, labelsRef, 0.07))
       .force("pullY", forceY(h / 2).strength(0.03))
       .force("charge", forceManyBody().strength(-4))
