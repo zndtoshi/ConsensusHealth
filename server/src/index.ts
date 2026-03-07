@@ -152,53 +152,6 @@ function normalizeHandle(value: unknown): string {
   return String(value ?? "").trim().toLowerCase().replace(/^@+/, "");
 }
 
-function extractTweetIdFromUrl(rawUrl: unknown): { tweetId: string; normalizedUrl: string } | null {
-  const raw = String(rawUrl ?? "").trim();
-  if (!raw) return null;
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return null;
-  }
-  const host = url.hostname.toLowerCase();
-  const allowedHost = host === "x.com" || host === "www.x.com" || host === "twitter.com" || host === "www.twitter.com";
-  if (!allowedHost) return null;
-  const match = url.pathname.match(/\/status\/(\d+)/i);
-  const tweetId = match?.[1] ? String(match[1]) : "";
-  if (!tweetId) return null;
-  return { tweetId, normalizedUrl: url.toString() };
-}
-
-function buildTweetPreview(rawText: unknown): string | null {
-  const text = String(rawText ?? "")
-    .replace(/https?:\/\/\S+/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!text) return null;
-  const words = text.split(" ").filter(Boolean);
-  const short = words.slice(0, 6).join(" ").replace(/[.,;:!?'"`]+$/g, "").trim();
-  if (!short) return null;
-  return short.length > 80 ? `${short.slice(0, 80).trim()}...` : `${short}...`;
-}
-
-async function fetchTweetPreviewText(tweetId: string): Promise<string | null> {
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4500);
-    const res = await fetch(`https://cdn.syndication.twimg.com/tweet-result?id=${encodeURIComponent(tweetId)}&lang=en`, {
-      signal: controller.signal,
-      headers: { "user-agent": "ConsensusHealth/1.0" },
-    });
-    clearTimeout(timer);
-    if (!res.ok) return null;
-    const data = (await res.json()) as { text?: string };
-    return buildTweetPreview(data?.text ?? "");
-  } catch {
-    return null;
-  }
-}
-
 async function upsertStanceWithHistory(
   client: PoolClient,
   args: {
@@ -395,10 +348,6 @@ async function initDb(): Promise<void> {
   `);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();`);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();`);
-  await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS stance_source_url TEXT;`);
-  await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS stance_source_tweet_id TEXT;`);
-  await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS stance_source_preview_text TEXT;`);
-  await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS stance_source_added_at TIMESTAMPTZ;`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS stance_events (
       id SERIAL PRIMARY KEY,
@@ -948,112 +897,6 @@ app.post("/api/stance", async (req, res, next) => {
       });
     }
     res.json(row);
-  } catch (err) {
-    next(err);
-  }
-});
-
-app.post("/api/stance/source", async (req, res, next) => {
-  try {
-    const user = getSessionUser(req);
-    if (!user) {
-      res.status(401).json({ error: "not_logged_in" });
-      return;
-    }
-    const parsed = extractTweetIdFromUrl(req.body?.url);
-    if (!parsed) {
-      res.status(400).json({ error: "invalid_source_url" });
-      return;
-    }
-    const preview = await fetchTweetPreviewText(parsed.tweetId);
-    const incomingFollowersNum = Number(user.followers_count);
-    const safeIncomingFollowers =
-      Number.isFinite(incomingFollowersNum) && incomingFollowersNum > 0 ? incomingFollowersNum : null;
-    const incomingAvatar = String(user.avatar_url ?? "").trim() || null;
-    const incomingName = String(user.name ?? "").trim() || null;
-    const normalizedHandle = normalizeHandle(user.handle);
-
-    const result = await pool.query(
-      `
-      INSERT INTO community_users (
-        x_user_id,
-        handle,
-        name,
-        avatar_url,
-        followers_count,
-        stance_source_url,
-        stance_source_tweet_id,
-        stance_source_preview_text,
-        stance_source_added_at,
-        updated_at
-      )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
-      ON CONFLICT (x_user_id)
-      DO UPDATE SET
-        handle = COALESCE(NULLIF(EXCLUDED.handle, ''), community_users.handle),
-        name = COALESCE(NULLIF(EXCLUDED.name, ''), community_users.name),
-        avatar_url = COALESCE(NULLIF(EXCLUDED.avatar_url, ''), community_users.avatar_url),
-        followers_count = COALESCE(NULLIF(EXCLUDED.followers_count, 0), community_users.followers_count),
-        stance_source_url = EXCLUDED.stance_source_url,
-        stance_source_tweet_id = EXCLUDED.stance_source_tweet_id,
-        stance_source_preview_text = EXCLUDED.stance_source_preview_text,
-        stance_source_added_at = EXCLUDED.stance_source_added_at,
-        updated_at = NOW()
-      RETURNING *
-      `,
-      [
-        user.x_user_id,
-        normalizedHandle,
-        incomingName,
-        incomingAvatar,
-        safeIncomingFollowers,
-        parsed.normalizedUrl,
-        parsed.tweetId,
-        preview,
-      ]
-    );
-    if (process.env.NODE_ENV !== "production") {
-      console.log("[stance-source] saved", {
-        x_user_id: user.x_user_id,
-        handle: normalizedHandle,
-        tweet_id: parsed.tweetId,
-        preview_fetched: Boolean(preview),
-      });
-    }
-    res.json(result.rows[0] || null);
-  } catch (err) {
-    next(err);
-  }
-});
-
-app.delete("/api/stance/source", async (req, res, next) => {
-  try {
-    const user = getSessionUser(req);
-    if (!user) {
-      res.status(401).json({ error: "not_logged_in" });
-      return;
-    }
-    const result = await pool.query(
-      `
-      UPDATE community_users
-      SET
-        stance_source_url = NULL,
-        stance_source_tweet_id = NULL,
-        stance_source_preview_text = NULL,
-        stance_source_added_at = NULL,
-        updated_at = NOW()
-      WHERE x_user_id = $1
-      RETURNING *
-      `,
-      [user.x_user_id]
-    );
-    if (process.env.NODE_ENV !== "production") {
-      console.log("[stance-source] removed", {
-        x_user_id: user.x_user_id,
-        handle: normalizeHandle(user.handle),
-      });
-    }
-    res.json(result.rows[0] || null);
   } catch (err) {
     next(err);
   }
