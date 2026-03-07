@@ -1985,8 +1985,10 @@ export default function App() {
         <div>Stances are self-reported or curated.</div>
         <div>Size of avatars is proportional to number of followers.</div>
       </div>
-      <button style={styles.statsBtn} onClick={() => setShowStatsModal(true)}>Statistics</button>
-      <button style={styles.donateBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
+      <div style={styles.bottomControls}>
+        <button style={styles.bottomControlBtn} onClick={() => setShowStatsModal(true)}>Stats</button>
+        <button style={styles.bottomControlBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
+      </div>
       <StatisticsModal
         open={showStatsModal}
         onClose={() => setShowStatsModal(false)}
@@ -2414,26 +2416,22 @@ const styles = {
     pointerEvents: "none",
     zIndex: 20,
   },
-  donateBtn: {
+  bottomControls: {
     position: "fixed",
-    right: 12,
-    bottom: 10,
+    right: 18,
+    bottom: 18,
     zIndex: 40,
-    padding: "8px 12px",
-    borderRadius: 8,
-    border: "1px solid rgba(255,255,255,0.25)",
-    background: "rgba(30,41,59,0.86)",
-    color: "#e2e8f0",
-    cursor: "pointer",
-    fontWeight: 700,
-    fontSize: 12,
+    display: "flex",
+    gap: 10,
+    alignItems: "center",
+    background: "rgba(18,22,35,0.55)",
+    padding: "6px 10px",
+    borderRadius: 12,
+    backdropFilter: "blur(6px)",
   },
-  statsBtn: {
-    position: "fixed",
-    right: 92,
-    bottom: 10,
-    zIndex: 40,
-    padding: "8px 12px",
+  bottomControlBtn: {
+    height: 34,
+    padding: "8px 14px",
     borderRadius: 8,
     border: "1px solid rgba(255,255,255,0.25)",
     background: "rgba(30,41,59,0.86)",
