@@ -234,7 +234,7 @@ function drawRoundedRectPath(ctx, x, y, w, h, r) {
 }
 
 function createGlowSprite(aura, side, emphasize, quality = 1) {
-  const layers = emphasize
+  const fullLayers = emphasize
     ? [
         { blur: clamp(side * 1.9, 30, 220), alpha: 0.72, line: 2.8 },
         { blur: clamp(side * 3.8, 56, 420), alpha: 0.44, line: 3.8 },
@@ -247,10 +247,12 @@ function createGlowSprite(aura, side, emphasize, quality = 1) {
         { blur: clamp(side * 5.2, 74, 560), alpha: 0.18, line: 4.4 },
         { blur: clamp(side * 7.4, 104, 820), alpha: 0.09, line: 5.4 },
       ];
+  const layers = quality < 0.55 ? fullLayers.slice(0, 2) : fullLayers;
   // Prevent clipping: pad must account for the largest blur radius.
-  const maxBlur = layers.reduce((m, l) => Math.max(m, l.blur), 0);
-  const padBase = clamp(side * (emphasize ? 5.2 : 4.6), 72, emphasize ? 560 : 460);
-  const pad = Math.ceil(Math.max(padBase, maxBlur * 1.6));
+  const maxBlur = layers.reduce((m, l) => Math.max(m, l.blur * quality), 0);
+  const padScale = 0.58 + quality * 0.42;
+  const padBase = clamp(side * (emphasize ? 5.2 : 4.6) * padScale, 36, emphasize ? 360 : 300);
+  const pad = Math.ceil(Math.max(padBase, maxBlur * 1.2));
   const size = Math.ceil(side + pad * 2);
   const canvas = document.createElement("canvas");
   canvas.width = size;
@@ -1038,6 +1040,8 @@ export default function App() {
   const tooltipSelfRef = useRef(null);
   const avatarWarnedHandlesRef = useRef(new Set());
   const avatarHookedRef = useRef(new WeakSet());
+  const starfieldCanvasRef = useRef(null);
+  const starfieldKeyRef = useRef("");
   labelsRef.current = labels;
   selectedHandleRef.current = selectedHandle;
 
@@ -1267,6 +1271,32 @@ export default function App() {
   }
 
   // Drawing
+  function getStarfieldCanvas(cw, ch, dpr) {
+    const key = `${cw}x${ch}|${dpr}|${isFirefox ? "ff" : "std"}`;
+    if (starfieldCanvasRef.current && starfieldKeyRef.current === key) return starfieldCanvasRef.current;
+    const off = document.createElement("canvas");
+    off.width = Math.floor(cw * dpr);
+    off.height = Math.floor(ch * dpr);
+    const sctx = off.getContext("2d");
+    if (sctx) {
+      sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      sctx.clearRect(0, 0, cw, ch);
+      sctx.fillStyle = "rgba(255,255,255,0.4)";
+      const starCount = isFirefox ? 48 : 120;
+      for (let i = 0; i < starCount; i++) {
+        const x = (i * 137.5 + 13) % (cw + 2);
+        const y = (i * 97.3 + 17) % (ch + 2);
+        const r = (i % 3 === 0) ? 1 : 0.5;
+        sctx.beginPath();
+        sctx.arc(x, y, r, 0, Math.PI * 2);
+        sctx.fill();
+      }
+    }
+    starfieldCanvasRef.current = off;
+    starfieldKeyRef.current = key;
+    return off;
+  }
+
   function draw() {
     drawRef.current = draw;
 
@@ -1290,17 +1320,9 @@ export default function App() {
 
     ctx.clearRect(0, 0, cw, ch);
 
-    // Subtle starfield (screen space)
-    ctx.fillStyle = "rgba(255,255,255,0.4)";
-    const starCount = isFirefox ? 48 : 120;
-    for (let i = 0; i < starCount; i++) {
-      const x = (i * 137.5 + 13) % (cw + 2);
-      const y = (i * 97.3 + 17) % (ch + 2);
-      const r = (i % 3 === 0) ? 1 : 0.5;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    // Cached starfield (screen space)
+    const starfield = getStarfieldCanvas(cw, ch, dpr);
+    if (starfield) ctx.drawImage(starfield, 0, 0, cw, ch);
 
     const nodes = nodesRef.current;
     const qset = filteredHandlesSet;
@@ -1342,7 +1364,7 @@ export default function App() {
     ctx.scale(scale, scale);
 
     const radius = (side) => Math.min(14, side * 0.22);
-    const glowQuality = isFirefox ? 0.62 : 1;
+    const glowQuality = isFirefox ? 0.48 : 1;
     const nonEmphasizedGlowPasses = isFirefox ? 1 : 3;
     const getGlow = (aura, drawSide, emphasize) => {
       const bucketSide = Math.max(6, Math.round(drawSide));
@@ -1431,7 +1453,7 @@ export default function App() {
     const curSelected = selectedHandleRef.current;
     const base = [], hovered = [], selected = [];
     const hoverScale = 1.14;
-    const selectedScale = 2;
+    const selectedScale = isFirefox ? 1.72 : 2;
     const cullMargin = 28;
     const isVisible = (n, scaleFactor) => {
       const halfPx = (n.side * scaleFactor * scale) / 2;
