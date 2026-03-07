@@ -495,6 +495,8 @@ export default function App() {
   const [statsError, setStatsError] = useState("");
   const [statsData, setStatsData] = useState(null);
   const [showDonateModal, setShowDonateModal] = useState(false);
+  const [adminOptionsOpen, setAdminOptionsOpen] = useState(false);
+  const [plebsMode, setPlebsMode] = useState(false);
   const [manualEditMode, setManualEditMode] = useState(false);
   const [manualEditTarget, setManualEditTarget] = useState(null);
   const [manualEditChoice, setManualEditChoice] = useState("neutral");
@@ -517,6 +519,7 @@ export default function App() {
     }
   });
   const [dropdownHoverHandle, setDropdownHoverHandle] = useState(null);
+  const adminOptionsRef = useRef(null);
 
   useEffect(() => {
     try {
@@ -605,15 +608,19 @@ export default function App() {
   const meStance = me?.stance ? normalizedStance(me.stance) : "";
   const meHandleLower = safeLower(me?.handle);
   const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
+  const visibleAccounts = useMemo(() => {
+    if (!plebsMode) return accounts;
+    return accounts.filter((a) => getFollowersFromUser(a).followers < 3000);
+  }, [accounts, plebsMode]);
   const accountByHandle = useMemo(() => {
     const m = new Map();
-    for (const a of accounts) {
+    for (const a of visibleAccounts) {
       const h = normalizeHandle(a?.handle);
       if (!h) continue;
       m.set(h, a);
     }
     return m;
-  }, [accounts]);
+  }, [visibleAccounts]);
   const pillActiveStyle = (stance) => {
     if (stance === "against") {
       return {
@@ -669,7 +676,7 @@ export default function App() {
     const canonicalById = new Map();
     const canonicalByHandle = new Map();
 
-    for (const a of accounts) {
+    for (const a of visibleAccounts) {
       const handle =
         normalizeHandle(a?.handle) ||
         normalizeHandle(a?.username) ||
@@ -762,10 +769,10 @@ export default function App() {
       totalFollowersByStance: followersTotal,
       avgFollowersByStance,
       topAccountByFollowers,
-      usersChangedStanceAtLeastOnce: num(statsData?.changed_ever),
-      totalStanceChangesLast7Days: num(statsData?.changes_last_7d),
-      totalStanceChanges: num(statsData?.total_changes),
-      transitionCounts: Array.isArray(statsData?.transition_counts)
+      usersChangedStanceAtLeastOnce: plebsMode ? 0 : num(statsData?.changed_ever),
+      totalStanceChangesLast7Days: plebsMode ? 0 : num(statsData?.changes_last_7d),
+      totalStanceChanges: plebsMode ? 0 : num(statsData?.total_changes),
+      transitionCounts: !plebsMode && Array.isArray(statsData?.transition_counts)
         ? statsData.transition_counts
             .map((f) => ({
               from: flowNorm(f.from),
@@ -774,7 +781,7 @@ export default function App() {
             }))
             .filter((f) => (f.from === null || f.from) && (f.to === "against" || f.to === "neutral" || f.to === "approve"))
         : [],
-      recentChanges: Array.isArray(statsData?.recent_changes)
+      recentChanges: !plebsMode && Array.isArray(statsData?.recent_changes)
         ? statsData.recent_changes
             .map((r) => ({
               x_user_id: String(r.x_user_id ?? ""),
@@ -786,7 +793,7 @@ export default function App() {
             }))
             .filter((r) => r.to === "against" || r.to === "neutral" || r.to === "approve")
         : [],
-      topFlowsLast7Days: Array.isArray(statsData?.flows_last_7d)
+      topFlowsLast7Days: !plebsMode && Array.isArray(statsData?.flows_last_7d)
         ? statsData.flows_last_7d
             .map((f) => ({
               from: flowNorm(f.from),
@@ -797,7 +804,7 @@ export default function App() {
         : [],
       generatedAtISO: String(statsData?.generated_at || new Date().toISOString()),
     };
-  }, [statsData, accounts, labels]);
+  }, [statsData, visibleAccounts, labels, plebsMode]);
 
   async function refreshStatsNow() {
     try {
@@ -867,11 +874,46 @@ export default function App() {
 
   useEffect(() => {
     if (isPrivilegedEditor) return;
+    setAdminOptionsOpen(false);
+    setPlebsMode(false);
     setManualEditMode(false);
     setManualEditTarget(null);
     setManualEditChoice("neutral");
     setManualEditError("");
   }, [isPrivilegedEditor]);
+
+  useEffect(() => {
+    if (manualEditMode) return;
+    setManualEditTarget(null);
+    setManualEditChoice("neutral");
+    setManualEditError("");
+  }, [manualEditMode]);
+
+  useEffect(() => {
+    if (!adminOptionsOpen) return;
+    const onDocMouseDown = (e) => {
+      const root = adminOptionsRef.current;
+      if (!root) return;
+      if (root.contains(e.target)) return;
+      setAdminOptionsOpen(false);
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [adminOptionsOpen]);
+
+  useEffect(() => {
+    if (!selectedHandle) return;
+    const selectedNorm = normalizeHandle(selectedHandle);
+    const visible = visibleAccounts.some((a) => normalizeHandle(a.handle) === selectedNorm);
+    if (!visible) setSelectedHandle(null);
+  }, [visibleAccounts, selectedHandle]);
+
+  useEffect(() => {
+    if (!manualEditTarget) return;
+    const targetNorm = normalizeHandle(manualEditTarget.handle);
+    const visible = visibleAccounts.some((a) => normalizeHandle(a.handle) === targetNorm);
+    if (!visible) setManualEditTarget(null);
+  }, [visibleAccounts, manualEditTarget]);
 
   // Load canonical accounts and mentions CSV from public/data
   useEffect(() => {
@@ -941,26 +983,26 @@ export default function App() {
 
   const tweetCountByHandle = useMemo(() => {
     const map = new Map();
-    for (const a of accounts) map.set(a.handle, 0);
+    for (const a of visibleAccounts) map.set(a.handle, 0);
     for (const [h, arr] of mentionsByHandle.entries()) map.set(h, arr.length);
     return map;
-  }, [accounts, mentionsByHandle]);
+  }, [visibleAccounts, mentionsByHandle]);
 
   const filteredHandlesSet = useMemo(() => {
     const q = normalizeHandleToken(search);
     if (!q) return null;
     const s = new Set();
-    for (const a of accounts) {
+    for (const a of visibleAccounts) {
       if (normalizeHandleToken(a.handle).includes(q)) s.add(a.handle);
     }
     return s;
-  }, [accounts, search]);
+  }, [visibleAccounts, search]);
 
   const searchDropdownResults = useMemo(() => {
     const q = normalizeHandleToken(search);
     if (!q) return [];
     const out = [];
-    for (const a of accounts) {
+    for (const a of visibleAccounts) {
       const hasMatch = normalizeHandleToken(a.handle).includes(q);
       const inBlob =
         (tweetCountByHandle.get(a.handle) || 0) > 0 ||
@@ -972,7 +1014,7 @@ export default function App() {
       }
     }
     return out;
-  }, [accounts, search, tweetCountByHandle, labels]);
+  }, [visibleAccounts, search, tweetCountByHandle, labels]);
 
   const selectedTweets = useMemo(() => {
     if (!selectedHandle) return [];
@@ -980,10 +1022,10 @@ export default function App() {
   }, [mentionsByHandle, selectedHandle]);
 
   const visibleCount = useMemo(() => {
-    return accounts.filter(
+    return visibleAccounts.filter(
       (a) => (tweetCountByHandle.get(a.handle) || 0) > 0 || Boolean(getStanceForHandle(labels, a.handle))
     ).length;
-  }, [accounts, tweetCountByHandle, labels]);
+  }, [visibleAccounts, tweetCountByHandle, labels]);
 
   // Backfill labels from account-provided stance fields, preserving existing stored values.
   useEffect(() => {
@@ -1011,17 +1053,17 @@ export default function App() {
 
   // Preload avatars once accounts are available.
   useEffect(() => {
-    if (!accounts.length) return;
+    if (!visibleAccounts.length) return;
     const base = getBase();
     const baseNoSlash = base.replace(/\/$/, "");
     const missingSrc = `${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`;
     getAvatar(missingSrc);
-    for (const a of accounts) {
+    for (const a of visibleAccounts) {
       const src = resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc);
       const img = getAvatar(src);
       if ("loading" in img) img.loading = "eager";
     }
-  }, [accounts]);
+  }, [visibleAccounts]);
 
   // Build nodes for simulation
   const nodesRef = useRef([]);
@@ -1056,7 +1098,7 @@ export default function App() {
   // (Re)create simulation when size/data/shake changes
   useEffect(() => {
     if (loading || err) return;
-    if (!accounts.length) return;
+    if (!visibleAccounts.length) return;
     if (w < 10 || h < 10) return;
 
     const base = getBase();
@@ -1065,7 +1107,7 @@ export default function App() {
     const avatarSrc = (a) => resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc);
 
     // Build nodes: accounts that tweeted about bip110, plus manually stance-labeled accounts
-    const nodes = accounts
+    const nodes = visibleAccounts
       .map((a) => {
         const tweetCount = tweetCountByHandle.get(a.handle) || 0;
         const seedStance = String(a.stance ?? a.position ?? "").trim()
@@ -1212,7 +1254,7 @@ export default function App() {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, err, accounts.length, w, h]);
+  }, [loading, err, visibleAccounts.length, w, h]);
 
   // On resize: recompute stance regions and update forces
   useEffect(() => {
@@ -1751,21 +1793,38 @@ export default function App() {
           ) : (
             <>
               {isPrivilegedEditor && (
-                <button
-                  style={{
-                    ...styles.btn,
-                    ...(manualEditMode ? styles.manualEditBtnOn : styles.manualEditBtnOff),
-                  }}
-                  onClick={() => {
-                    setManualEditMode((v) => !v);
-                    setManualEditTarget(null);
-                    setManualEditError("");
-                  }}
-                  disabled={authBusy}
-                  title="Toggle privileged stance edit mode"
-                >
-                  {manualEditMode ? "Editing ON" : "Edit stances"}
-                </button>
+                <div ref={adminOptionsRef} style={styles.optionsWrap}>
+                  <button
+                    style={styles.btn}
+                    onClick={() => setAdminOptionsOpen((v) => !v)}
+                    disabled={authBusy}
+                    title="Admin options"
+                  >
+                    Options
+                  </button>
+                  {adminOptionsOpen && (
+                    <div style={styles.optionsMenu}>
+                      <label style={styles.optionsItem}>
+                        <input
+                          type="checkbox"
+                          checked={manualEditMode}
+                          onChange={(e) => setManualEditMode(e.target.checked)}
+                        />
+                        <span>Edit stances</span>
+                        <span style={styles.optionsState}>{manualEditMode ? "ON" : "OFF"}</span>
+                      </label>
+                      <label style={styles.optionsItem}>
+                        <input
+                          type="checkbox"
+                          checked={plebsMode}
+                          onChange={(e) => setPlebsMode(e.target.checked)}
+                        />
+                        <span>Plebs</span>
+                        <span style={styles.optionsState}>{plebsMode ? "ON" : "OFF"}</span>
+                      </label>
+                    </div>
+                  )}
+                </div>
               )}
               <div style={styles.userChip}>
                 <img
@@ -2127,6 +2186,41 @@ const styles = {
     cursor: "pointer",
     fontWeight: 700,
     fontSize: 12,
+  },
+  optionsWrap: {
+    position: "relative",
+    display: "inline-flex",
+  },
+  optionsMenu: {
+    position: "absolute",
+    top: "calc(100% + 6px)",
+    right: 0,
+    minWidth: 180,
+    padding: 8,
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.18)",
+    background: "rgba(15,23,42,0.98)",
+    boxShadow: "0 8px 22px rgba(0,0,0,0.35)",
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    zIndex: 120,
+  },
+  optionsItem: {
+    display: "grid",
+    gridTemplateColumns: "16px 1fr auto",
+    alignItems: "center",
+    gap: 8,
+    fontSize: 12,
+    color: "#e2e8f0",
+    padding: "6px 6px",
+    borderRadius: 8,
+    background: "rgba(255,255,255,0.02)",
+  },
+  optionsState: {
+    fontSize: 11,
+    fontWeight: 800,
+    color: "rgba(255,255,255,0.75)",
   },
   manualEditBtnOff: {
     borderColor: "rgba(255,255,255,0.22)",
