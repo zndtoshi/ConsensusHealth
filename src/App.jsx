@@ -163,41 +163,49 @@ function computeStanceRegions(nodes, labels, width) {
     else greyW += w; // unlabeled -> neutral
   }
   const total = redW + greyW + greenW || 1;
-  const gapPx = Math.max(10, width * 0.01);
-  // Tight band (~58% of width) so all three islands sit close together and feel cohesive
-  const contentWidth = width * 0.58;
+  const gapPx = Math.max(12, width * 0.012);
+  // Tight centered band keeps islands cohesive while preserving symmetric centers.
+  const contentWidth = width * 0.6;
   const contentLeft = (width - contentWidth) / 2;
-  const usable = contentWidth - 2 * gapPx;
-  // Proportional widths with minimum per region so neutral is never a sliver (avoids scattered grey blob)
-  const minFrac = 0.18;
-  const rawRed = Math.max(usable * (redW / total), usable * minFrac);
-  const rawGrey = Math.max(usable * (greyW / total), usable * minFrac);
-  const rawGreen = Math.max(usable * (greenW / total), usable * minFrac);
-  const sum = rawRed + rawGrey + rawGreen;
-  const redWidth = usable * (rawRed / sum);
-  const greyWidth = usable * (rawGrey / sum);
-  const greenWidth = usable * (rawGreen / sum);
-  const redStart = contentLeft;
-  const redEnd = contentLeft + redWidth;
-  const greyStart = redEnd + gapPx;
-  const greyEnd = greyStart + greyWidth;
-  const greenStart = greyEnd + gapPx;
-  const greenEnd = contentLeft + contentWidth;
-  const greyCxCurrent = greyStart + greyWidth / 2;
-  const shift = width / 2 - greyCxCurrent;
-  const redCx = redStart + redWidth / 2 + shift;
-  const greyCx = width / 2;
-  const greenCx = greenStart + greenWidth / 2 + shift;
+  const contentRight = contentLeft + contentWidth;
+  const mid = width / 2;
+
+  // Mild weighting for side widths while avoiding extreme visual drift.
+  const baseRegion = contentWidth * 0.22;
+  const scale = contentWidth * 0.16;
+  const safeTotal = Math.max(total, 1);
+  const redWidth = clamp(baseRegion + scale * (redW / safeTotal), contentWidth * 0.16, contentWidth * 0.34);
+  const greenWidth = clamp(baseRegion + scale * (greenW / safeTotal), contentWidth * 0.16, contentWidth * 0.34);
+  const greyWidth = clamp(baseRegion + scale * (greyW / safeTotal), contentWidth * 0.18, contentWidth * 0.36);
+
+  // Neutral remains fixed center. Left/right centers are symmetric around neutral.
+  const minCenterDist = Math.max(
+    greyWidth / 2 + gapPx + redWidth / 2,
+    greyWidth / 2 + gapPx + greenWidth / 2
+  );
+  const maxCenterDist = Math.min(
+    mid - contentLeft - redWidth / 2,
+    contentRight - mid - greenWidth / 2
+  );
+  const centerDist = clamp(contentWidth * 0.24, minCenterDist, maxCenterDist);
+  const redCx = mid - centerDist;
+  const greyCx = mid;
+  const greenCx = mid + centerDist;
+
+  const redEnd = redCx + redWidth / 2;
+  const greyStart = greyCx - greyWidth / 2;
+  const greyEnd = greyCx + greyWidth / 2;
+  const greenStart = greenCx - greenWidth / 2;
   return {
     stanceCenterX: {
       [STANCE.AGAINST]: redCx,
       [STANCE.NEUTRAL]: greyCx,
       [STANCE.APPROVE]: greenCx,
     },
-    redEnd: redEnd + shift,
-    greyStart: greyStart + shift,
-    greyEnd: greyEnd + shift,
-    greenStart: greenStart + shift,
+    redEnd,
+    greyStart,
+    greyEnd,
+    greenStart,
     gapPx,
     width,
   };
