@@ -497,6 +497,8 @@ export default function App() {
   const [showDonateModal, setShowDonateModal] = useState(false);
   const [adminOptionsOpen, setAdminOptionsOpen] = useState(false);
   const [plebsMode, setPlebsMode] = useState(false);
+  const [dimOthersEnabled, setDimOthersEnabled] = useState(false);
+  const [pulseSelectedEnabled, setPulseSelectedEnabled] = useState(false);
   const [manualEditMode, setManualEditMode] = useState(false);
   const [manualEditTarget, setManualEditTarget] = useState(null);
   const [manualEditChoice, setManualEditChoice] = useState("neutral");
@@ -876,6 +878,8 @@ export default function App() {
     if (isPrivilegedEditor) return;
     setAdminOptionsOpen(false);
     setPlebsMode(false);
+    setDimOthersEnabled(false);
+    setPulseSelectedEnabled(false);
     setManualEditMode(false);
     setManualEditTarget(null);
     setManualEditChoice("neutral");
@@ -914,6 +918,19 @@ export default function App() {
     const visible = visibleAccounts.some((a) => normalizeHandle(a.handle) === targetNorm);
     if (!visible) setManualEditTarget(null);
   }, [visibleAccounts, manualEditTarget]);
+
+  useEffect(() => {
+    if (!pulseSelectedEnabled || !selectedHandle) return;
+    let raf = 0;
+    const tick = () => {
+      drawRef.current();
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [pulseSelectedEnabled, selectedHandle]);
 
   // Load canonical accounts and mentions CSV from public/data
   useEffect(() => {
@@ -1428,6 +1445,14 @@ export default function App() {
       return sprite;
     };
     const drawNode = (n, scaleFactor, emphasize = false) => {
+      const shouldDim =
+        dimOthersEnabled &&
+        Boolean(curSelected) &&
+        n.handle !== curSelected;
+      ctx.save();
+      if (shouldDim) {
+        ctx.globalAlpha *= 0.6;
+      }
       const drawHalf = (n.side * scaleFactor) / 2;
       const drawX = n.x - drawHalf;
       const drawY = n.y - drawHalf;
@@ -1496,14 +1521,19 @@ export default function App() {
         ctx.rect(drawX, drawY, drawSide, drawSide);
       }
       ctx.stroke();
-
+      ctx.restore();
     };
 
     const curHover = hoverRef.current;
     const curSelected = selectedHandleRef.current;
     const base = [], hovered = [], selected = [];
     const hoverScale = 1.14;
-    const selectedScale = isFirefox ? 1.72 : 2;
+    const selectedScaleBase = isFirefox ? 1.72 : 2;
+    const selectedPulseScale =
+      pulseSelectedEnabled && curSelected
+        ? 1 + Math.sin(performance.now() * 0.005) * 0.06
+        : 1;
+    const selectedScale = selectedScaleBase * selectedPulseScale;
     const cullMargin = 28;
     const isVisible = (n, scaleFactor) => {
       const halfPx = (n.side * scaleFactor * scale) / 2;
@@ -1821,6 +1851,24 @@ export default function App() {
                         />
                         <span>Plebs</span>
                         <span style={styles.optionsState}>{plebsMode ? "ON" : "OFF"}</span>
+                      </label>
+                      <label style={styles.optionsItem}>
+                        <input
+                          type="checkbox"
+                          checked={dimOthersEnabled}
+                          onChange={(e) => setDimOthersEnabled(e.target.checked)}
+                        />
+                        <span>Dim others</span>
+                        <span style={styles.optionsState}>{dimOthersEnabled ? "ON" : "OFF"}</span>
+                      </label>
+                      <label style={styles.optionsItem}>
+                        <input
+                          type="checkbox"
+                          checked={pulseSelectedEnabled}
+                          onChange={(e) => setPulseSelectedEnabled(e.target.checked)}
+                        />
+                        <span>Pulse selected</span>
+                        <span style={styles.optionsState}>{pulseSelectedEnabled ? "ON" : "OFF"}</span>
                       </label>
                     </div>
                   )}
