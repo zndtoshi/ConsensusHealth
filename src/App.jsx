@@ -5,6 +5,7 @@ import { getAvatar } from "./utils/avatarCache";
 import { fetchCommunityUsers } from "./api/community";
 import { BitcoinQr } from "./components/BitcoinQr";
 import { StatisticsModal } from "./components/StatisticsModal";
+import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
 
 function toInt(v) {
   const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -492,6 +493,11 @@ export default function App() {
   const [statsError, setStatsError] = useState("");
   const [statsData, setStatsData] = useState(null);
   const [showDonateModal, setShowDonateModal] = useState(false);
+  const [manualEditMode, setManualEditMode] = useState(false);
+  const [manualEditTarget, setManualEditTarget] = useState(null);
+  const [manualEditChoice, setManualEditChoice] = useState("neutral");
+  const [manualEditBusy, setManualEditBusy] = useState(false);
+  const [manualEditError, setManualEditError] = useState("");
   const [labels, setLabels] = useState(() => {
     try {
       const raw = localStorage.getItem(LABELS_STORAGE_KEY);
@@ -596,6 +602,16 @@ export default function App() {
 
   const meStance = me?.stance ? normalizedStance(me.stance) : "";
   const meHandleLower = safeLower(me?.handle);
+  const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
+  const accountByHandle = useMemo(() => {
+    const m = new Map();
+    for (const a of accounts) {
+      const h = normalizeHandle(a?.handle);
+      if (!h) continue;
+      m.set(h, a);
+    }
+    return m;
+  }, [accounts]);
   const pillActiveStyle = (stance) => {
     if (stance === "against") {
       return {
@@ -772,6 +788,80 @@ export default function App() {
       generatedAtISO: String(statsData?.generated_at || new Date().toISOString()),
     };
   }, [statsData, accounts, labels]);
+
+  async function refreshStatsNow() {
+    try {
+      const res = await fetch(`${API_BASE}/api/stats`, { credentials: "include" });
+      if (!res.ok) return;
+      const data = await res.json();
+      setStatsData(data);
+    } catch {
+      // ignore on-demand stats refresh failures
+    }
+  }
+
+  async function saveManualStanceEdit() {
+    if (!isPrivilegedEditor || !manualEditTarget || manualEditBusy) return;
+    setManualEditBusy(true);
+    setManualEditError("");
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/stance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          handle: manualEditTarget.handle,
+          x_user_id: manualEditTarget.x_user_id || null,
+          stance: manualEditChoice,
+        }),
+      });
+      if (!res.ok) {
+        let msg = `Failed (${res.status})`;
+        try {
+          const errData = await res.json();
+          if (errData?.error) msg = String(errData.error);
+        } catch {
+          // ignore parse errors
+        }
+        throw new Error(msg);
+      }
+      const data = await res.json();
+      const targetHandleNorm = normalizeHandle(data?.handle || manualEditTarget.handle);
+      const next = normalizedStance(data?.stance || manualEditChoice);
+      setLabels((prev) => ({ ...prev, [targetHandleNorm]: next }));
+      setAccounts((prev) => applyManualStanceUpdate(prev, targetHandleNorm, next));
+      await refreshStatsNow();
+      setManualEditTarget(null);
+      if (!import.meta.env.PROD) {
+        // eslint-disable-next-line no-console
+        console.log("[manual-edit] saved", {
+          target: targetHandleNorm,
+          nextStance: next,
+        });
+      }
+    } catch (e) {
+      const msg = String(e?.message || e);
+      setManualEditError(msg);
+      if (!import.meta.env.PROD) {
+        // eslint-disable-next-line no-console
+        console.warn("[manual-edit] failed", {
+          target: manualEditTarget?.handle || null,
+          stance: manualEditChoice,
+          error: msg,
+        });
+      }
+    } finally {
+      setManualEditBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isPrivilegedEditor) return;
+    setManualEditMode(false);
+    setManualEditTarget(null);
+    setManualEditChoice("neutral");
+    setManualEditError("");
+  }, [isPrivilegedEditor]);
 
   // Load canonical accounts and mentions CSV from public/data
   useEffect(() => {
@@ -1467,6 +1557,39 @@ export default function App() {
       return;
     }
     setSelectedHandle(n.handle);
+    if (manualEditMode && isPrivilegedEditor) {
+      const targetHandle = normalizeHandle(n.handle);
+      if (targetHandle && targetHandle === meHandleLower) {
+        setManualEditError("Self-edit disabled in manual mode");
+        return;
+      }
+      const account = accountByHandle.get(targetHandle) || null;
+      const currentStance = normalizedStance(
+        getStanceForHandle(labelsRef.current, targetHandle) || account?.stance || account?.position || n.seedStance || "neutral"
+      );
+      const base = getBase();
+      const baseNoSlash = base.replace(/\/$/, "");
+      const missingSrc = `${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`;
+      setManualEditTarget({
+        handle: targetHandle || n.handle,
+        x_user_id: String(account?.x_user_id ?? "").trim(),
+        followers_count: Number(account?.followers_count ?? n.followers ?? 0) || 0,
+        avatar_url: account?.avatar_url || account?.profile_image_url || "",
+        avatar_path: account?.avatar_path || "",
+        avatarSrc: resolveAvatarUrlForAccount(account || { ...n, handle: targetHandle }, baseNoSlash, missingSrc),
+        currentStance,
+      });
+      setManualEditChoice(currentStance);
+      setManualEditError("");
+      if (!import.meta.env.PROD) {
+        // eslint-disable-next-line no-console
+        console.log("[manual-edit] selected", {
+          handle: targetHandle || n.handle,
+          x_user_id: String(account?.x_user_id ?? ""),
+          currentStance,
+        });
+      }
+    }
   }
 
   if (loading) {
@@ -1585,6 +1708,23 @@ export default function App() {
             </button>
           ) : (
             <>
+              {isPrivilegedEditor && (
+                <button
+                  style={{
+                    ...styles.btn,
+                    ...(manualEditMode ? styles.manualEditBtnOn : styles.manualEditBtnOff),
+                  }}
+                  onClick={() => {
+                    setManualEditMode((v) => !v);
+                    setManualEditTarget(null);
+                    setManualEditError("");
+                  }}
+                  disabled={authBusy}
+                  title="Toggle privileged stance edit mode"
+                >
+                  {manualEditMode ? "Editing ON" : "Edit stances"}
+                </button>
+              )}
               <div style={styles.userChip}>
                 <img
                   src={me.avatar_url || `${getBase()}/avatars/_missing.svg`}
@@ -1671,7 +1811,11 @@ export default function App() {
             }}
             onMouseMove={onMouseMove}
             onClick={onClick}
-            style={{ ...styles.canvas, touchAction: "none" }}
+            style={{
+              ...styles.canvas,
+              touchAction: "none",
+              cursor: manualEditMode && isPrivilegedEditor ? "crosshair" : "default",
+            }}
           />
           <div ref={tooltipRef} style={{ ...styles.tooltip, display: "none" }}>
             <div ref={tooltipHandleRef} style={{ fontWeight: 700 }} />
@@ -1693,6 +1837,60 @@ export default function App() {
         loading={statsLoading}
         error={statsError}
       />
+      {manualEditMode && isPrivilegedEditor && manualEditTarget && (
+        <div style={styles.modalBackdrop} onClick={() => setManualEditTarget(null)}>
+          <div style={styles.manualEditCard} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.manualEditTitle}>Manual stance edit</div>
+            <div style={styles.manualEditRow}>
+              <img
+                src={manualEditTarget.avatarSrc}
+                alt={`@${manualEditTarget.handle}`}
+                loading="eager"
+                decoding="async"
+                referrerPolicy="no-referrer"
+                onError={(e) => {
+                  const fallback = `${getBase()}/avatars/_missing.svg?v=${AVATAR_REV}`;
+                  if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+                }}
+                style={styles.manualEditAvatar}
+              />
+              <div style={{ minWidth: 0 }}>
+                <div style={styles.manualEditHandle}>@{manualEditTarget.handle}</div>
+                <div style={styles.manualEditMeta}>Current: {manualEditTarget.currentStance || "neutral"}</div>
+                <div style={styles.manualEditMeta}>Followers: {formatNum(manualEditTarget.followers_count || 0)}</div>
+              </div>
+            </div>
+            <div style={styles.manualEditChoices}>
+              {(["against", "neutral", "approve"]).map((stanceKey) => (
+                <button
+                  key={stanceKey}
+                  className={`stanceGlow ${
+                    stanceKey === "against" ? "stance-red" : stanceKey === "neutral" ? "stance-gray" : "stance-green"
+                  } ${manualEditChoice === stanceKey ? (stanceKey === "against" ? "aura aura-red" : stanceKey === "neutral" ? "aura aura-gray" : "aura aura-green") : ""}`}
+                  style={{
+                    ...styles.pill,
+                    opacity: manualEditChoice === stanceKey ? 1 : 0.72,
+                    ...(manualEditChoice === stanceKey ? pillActiveStyle(stanceKey === "approve" ? "support" : stanceKey) : null),
+                  }}
+                  onClick={() => setManualEditChoice(stanceKey)}
+                  disabled={manualEditBusy}
+                >
+                  {stanceKey === "approve" ? "Approve" : stanceKey === "against" ? "Against" : "Neutral"}
+                </button>
+              ))}
+            </div>
+            {manualEditError ? <div style={styles.manualEditErr}>{manualEditError}</div> : null}
+            <div style={styles.manualEditFooter}>
+              <button style={styles.btn} onClick={() => setManualEditTarget(null)} disabled={manualEditBusy}>
+                Cancel
+              </button>
+              <button style={styles.btn} onClick={saveManualStanceEdit} disabled={manualEditBusy}>
+                {manualEditBusy ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {showDonateModal && (
         <div style={styles.modalBackdrop} onClick={() => setShowDonateModal(false)}>
           <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
@@ -1877,6 +2075,15 @@ const styles = {
     fontWeight: 700,
     fontSize: 12,
   },
+  manualEditBtnOff: {
+    borderColor: "rgba(255,255,255,0.22)",
+    background: "rgba(30,41,59,0.8)",
+  },
+  manualEditBtnOn: {
+    borderColor: "rgba(251,191,36,0.85)",
+    background: "rgba(251,191,36,0.18)",
+    boxShadow: "0 0 0 1px rgba(251,191,36,0.35), 0 0 14px rgba(251,191,36,0.35)",
+  },
   btnInline: {
     display: "inline-flex",
     alignItems: "center",
@@ -2051,6 +2258,57 @@ const styles = {
     flexDirection: "column",
     alignItems: "center",
     gap: 8,
+  },
+  manualEditCard: {
+    width: "min(360px, 92vw)",
+    padding: 14,
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.2)",
+    background: "rgba(15,23,42,0.97)",
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+  manualEditTitle: {
+    fontSize: 14,
+    fontWeight: 900,
+    color: "#e2e8f0",
+  },
+  manualEditRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+  },
+  manualEditAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 999,
+    objectFit: "cover",
+    border: "1px solid rgba(255,255,255,0.24)",
+  },
+  manualEditHandle: {
+    fontSize: 13,
+    fontWeight: 900,
+    color: "#e2e8f0",
+  },
+  manualEditMeta: {
+    fontSize: 12,
+    color: "rgba(255,255,255,0.76)",
+  },
+  manualEditChoices: {
+    display: "flex",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  manualEditFooter: {
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: 8,
+  },
+  manualEditErr: {
+    fontSize: 12,
+    color: "#fca5a5",
+    fontWeight: 700,
   },
   donateProfileAvatar: {
     width: 64,

@@ -8,7 +8,12 @@ import dotenv from "dotenv";
 import { Pool, type PoolClient } from "pg";
 import { v4 as uuidv4 } from "uuid";
 import { logConfig } from "./config/appUrl.js";
-import { normalizeStanceValue, type ChangedByValue, type StanceValue } from "./stanceHistory.js";
+import {
+  isPrivilegedManualEditorHandle,
+  normalizeStanceValue,
+  type ChangedByValue,
+  type StanceValue,
+} from "./stanceHistory.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
@@ -892,6 +897,93 @@ app.post("/api/stance", async (req, res, next) => {
       });
     }
     res.json(row);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/admin/stance", async (req, res, next) => {
+  try {
+    const user = getSessionUser(req);
+    if (!user || !isPrivilegedManualEditorHandle(user.handle)) {
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[admin-stance] forbidden", { requester: normalizeHandle(user?.handle) || null });
+      }
+      res.status(403).json({ error: "forbidden" });
+      return;
+    }
+
+    const requestedStance = normalizeStanceValue(req.body?.stance);
+    if (!requestedStance) {
+      res.status(400).json({ error: "invalid_stance" });
+      return;
+    }
+    const reqXUserId = String(req.body?.x_user_id ?? "").trim();
+    const reqHandle = normalizeHandle(req.body?.handle);
+    if (!reqXUserId && !reqHandle) {
+      res.status(400).json({ error: "target_required" });
+      return;
+    }
+    if (reqHandle && reqHandle === normalizeHandle(user.handle)) {
+      res.status(400).json({ error: "cannot_edit_self" });
+      return;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      let existingRow: Record<string, unknown> | null = null;
+      if (reqXUserId) {
+        const byId = await client.query("SELECT * FROM community_users WHERE x_user_id = $1 LIMIT 1", [reqXUserId]);
+        existingRow = (byId.rows[0] ?? null) as Record<string, unknown> | null;
+      }
+      if (!existingRow && reqHandle) {
+        const byHandle = await client.query(
+          "SELECT * FROM community_users WHERE lower(coalesce(handle, '')) = $1 LIMIT 1",
+          [reqHandle]
+        );
+        existingRow = (byHandle.rows[0] ?? null) as Record<string, unknown> | null;
+      }
+
+      const resolvedHandle = normalizeHandle(existingRow?.handle ?? reqHandle);
+      if (!resolvedHandle) {
+        res.status(400).json({ error: "target_handle_required" });
+        await client.query("ROLLBACK");
+        return;
+      }
+      const resolvedXUserId = String(
+        existingRow?.x_user_id ?? (reqXUserId || `manual:${resolvedHandle}`)
+      ).trim();
+
+      const result = await upsertStanceWithHistory(client, {
+        xUserId: resolvedXUserId,
+        handle: resolvedHandle,
+        name: existingRow?.name ? String(existingRow.name) : null,
+        avatarUrl: existingRow?.avatar_url ? String(existingRow.avatar_url) : null,
+        followersCount:
+          typeof existingRow?.followers_count === "number"
+            ? (existingRow.followers_count as number)
+            : Number(existingRow?.followers_count || 0) || null,
+        stance: requestedStance,
+        changedBy: "admin",
+      });
+      await client.query("COMMIT");
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[admin-stance] saved", {
+          requester: normalizeHandle(user.handle),
+          target_handle: resolvedHandle,
+          target_x_user_id: resolvedXUserId,
+          changed: result.changed,
+          next_stance: requestedStance,
+        });
+      }
+      res.json(result.row);
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
   } catch (err) {
     next(err);
   }

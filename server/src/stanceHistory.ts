@@ -66,3 +66,7 @@ export function summarizeHistory(rows: HistoryEvent[]): {
     transitionCounts,
   };
 }
+
+export function isPrivilegedManualEditorHandle(handle: unknown): boolean {
+  return String(handle ?? "").trim().toLowerCase().replace(/^@+/, "") === "zndtoshi";
+}
