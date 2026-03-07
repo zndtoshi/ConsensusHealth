@@ -144,6 +144,20 @@ function getNodeStance(node, labelsMap) {
   return normalizedStance(getStanceForHandle(labelsMap, node.handle) || node.seedStance);
 }
 
+function getAccountStanceValue(account, labelsMap) {
+  const handle = normalizeHandle(account?.handle ?? account?.username ?? account?.screen_name);
+  const override = getStanceForHandle(labelsMap, handle);
+  return normalizedStance(override || account?.stance || account?.position || "neutral");
+}
+
+function hasAccountStance(account, labelsMap) {
+  const handle = normalizeHandle(account?.handle ?? account?.username ?? account?.screen_name);
+  const override = getStanceForHandle(labelsMap, handle);
+  if (override) return true;
+  const raw = String(account?.stance ?? account?.position ?? "").trim();
+  return raw.length > 0;
+}
+
 const LABELS_STORAGE_KEY = "consensushealth:bip110:labels:v1";
 const GLOW_CACHE_VERSION = 3;
 const AVATAR_REV = "20260305d";
@@ -546,30 +560,18 @@ export default function App() {
   const [manualEditChoice, setManualEditChoice] = useState("neutral");
   const [manualEditBusy, setManualEditBusy] = useState(false);
   const [manualEditError, setManualEditError] = useState("");
-  const [labels, setLabels] = useState(() => {
-    try {
-      const raw = localStorage.getItem(LABELS_STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-      const normalized = {};
-      for (const [k, v] of Object.entries(parsed)) {
-        const kk = String(k ?? "").trim().toLowerCase();
-        if (!kk) continue;
-        normalized[kk] = v;
-      }
-      return normalized;
-    } catch {
-      return {};
-    }
-  });
+  const [labels, setLabels] = useState(() => ({}));
   const [dropdownHoverHandle, setDropdownHoverHandle] = useState(null);
   const adminOptionsRef = useRef(null);
 
   useEffect(() => {
+    // Cleanup legacy persisted stance overrides so backend data is canonical across devices.
     try {
-      localStorage.setItem(LABELS_STORAGE_KEY, JSON.stringify(labels));
-    } catch {}
-  }, [labels]);
+      localStorage.removeItem(LABELS_STORAGE_KEY);
+    } catch {
+      // ignore storage failures
+    }
+  }, []);
 
   async function loadMe() {
     try {
@@ -704,6 +706,12 @@ export default function App() {
     const missingSrc = `${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`;
     return resolveAvatarUrlForAccount(account || { handle: key }, baseNoSlash, missingSrc);
   }, [selectedHandle, accountByHandle]);
+  const selectedHeaderStance = useMemo(() => {
+    if (!selectedHandle) return "";
+    const key = normalizeHandle(selectedHandle);
+    const account = accountByHandle.get(key) || null;
+    return getAccountStanceValue(account || { handle: key }, labels);
+  }, [selectedHandle, accountByHandle, labels]);
   const donationAddress = String(me?.donation_btc_address || "bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7").trim();
   const statisticsData = useMemo(() => {
     const num = (v) => {
@@ -726,7 +734,7 @@ export default function App() {
         normalizeHandle(a?.username) ||
         normalizeHandle(a?.screen_name);
       const xId = String(a?.x_user_id ?? a?.xUserId ?? "").trim();
-      const stance = normalizedStance(getStanceForHandle(labels, handle) || a?.stance || a?.position || "neutral");
+      const stance = getAccountStanceValue(a, labels);
       const followersInfo = getFollowersFromUser(a);
       const candidate = {
         raw: a,
@@ -1082,33 +1090,9 @@ export default function App() {
 
   const visibleCount = useMemo(() => {
     return visibleAccounts.filter(
-      (a) => (tweetCountByHandle.get(a.handle) || 0) > 0 || Boolean(getStanceForHandle(labels, a.handle))
+      (a) => (tweetCountByHandle.get(a.handle) || 0) > 0 || hasAccountStance(a, labels)
     ).length;
   }, [visibleAccounts, tweetCountByHandle, labels]);
-
-  // Backfill labels from account-provided stance fields, preserving existing stored values.
-  useEffect(() => {
-    if (!accounts.length) return;
-    setLabels((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const a of accounts) {
-        const h = (a.handle || "").trim().toLowerCase();
-        if (!h) continue;
-        if (next[h]) continue;
-        const raw = String(a.stance ?? a.position ?? "").trim().toLowerCase();
-        let mapped = "";
-        if (raw === "against") mapped = STANCE.AGAINST;
-        else if (raw === "support" || raw === "approve") mapped = STANCE.APPROVE;
-        else if (raw === "neutral") mapped = STANCE.NEUTRAL;
-        if (mapped) {
-          next[h] = mapped;
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [accounts]);
 
   // Preload avatars once accounts are available.
   useEffect(() => {
@@ -1873,11 +1857,11 @@ export default function App() {
                 <span
                   style={{
                     ...styles.selectedStanceBadge,
-                    color: stanceHeaderColor(getStanceForHandle(labels, selectedHandle)),
-                    textShadow: `0 1px 0 rgba(0,0,0,0.9), 0 0 8px ${stanceHeaderColor(getStanceForHandle(labels, selectedHandle))}, 0 0 18px ${stanceHeaderColor(getStanceForHandle(labels, selectedHandle))}`,
+                    color: stanceHeaderColor(selectedHeaderStance),
+                    textShadow: `0 1px 0 rgba(0,0,0,0.9), 0 0 8px ${stanceHeaderColor(selectedHeaderStance)}, 0 0 18px ${stanceHeaderColor(selectedHeaderStance)}`,
                   }}
                 >
-                  {getStanceForHandle(labels, selectedHandle) ? getStanceForHandle(labels, selectedHandle) : "unlabeled"}
+                  {selectedHeaderStance || "unlabeled"}
                 </span>
               </div>
             </>
