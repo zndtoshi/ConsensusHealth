@@ -645,6 +645,14 @@ export default function App() {
     if (account?.avatar_url) return account.avatar_url;
     return `${baseNoSlash}/avatars/zndtoshi.jpg?v=${AVATAR_REV}`;
   }, [accounts]);
+  const selectedHeaderAvatarSrc = useMemo(() => {
+    if (!selectedHandle) return "";
+    const key = normalizeHandle(selectedHandle);
+    const account = accountByHandle.get(key) || null;
+    const baseNoSlash = getBase().replace(/\/$/, "");
+    const missingSrc = `${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`;
+    return resolveAvatarUrlForAccount(account || { handle: key }, baseNoSlash, missingSrc);
+  }, [selectedHandle, accountByHandle]);
   const donationAddress = String(me?.donation_btc_address || "bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7").trim();
   const statisticsData = useMemo(() => {
     const num = (v) => {
@@ -1689,6 +1697,18 @@ export default function App() {
           {selectedHandle && (
             <>
               <div style={styles.selectedMetaBlock}>
+                <img
+                  src={selectedHeaderAvatarSrc}
+                  alt={selectedHandle ? `@${selectedHandle}` : "selected user"}
+                  loading="eager"
+                  decoding="async"
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    const fallback = `${getBase()}/avatars/_missing.svg?v=${AVATAR_REV}`;
+                    if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+                  }}
+                  style={styles.selectedHeaderAvatar}
+                />
                 <span
                   style={{ pointerEvents: "auto", userSelect: "text" }}
                   title="Open profile on X"
@@ -2029,20 +2049,31 @@ const styles = {
   },
   selectedMetaBlock: {
     display: "flex",
-    alignItems: "baseline",
-    gap: 10,
+    alignItems: "center",
+    gap: 8,
+    padding: "4px 8px",
+    borderRadius: 999,
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(15,23,42,0.62)",
+  },
+  selectedHeaderAvatar: {
+    width: 30,
+    height: 30,
+    borderRadius: 999,
+    objectFit: "cover",
+    border: "1px solid rgba(255,255,255,0.24)",
   },
   selectedHandle: { fontWeight: 800, fontSize: 14, color: "#e2e8f0" },
   selectedHandleLink: {
     ...{
-      fontWeight: 800,
-      fontSize: 14,
-      color: "#e2e8f0",
+      fontWeight: 900,
+      fontSize: 15,
+      color: "#f1f5f9",
     },
     textDecoration: "none",
     cursor: "pointer",
   },
-  selectedStanceBadge: { fontWeight: 900, fontSize: 24, letterSpacing: 0.4, lineHeight: 1, textTransform: "capitalize" },
+  selectedStanceBadge: { fontWeight: 850, fontSize: 17, letterSpacing: 0.25, lineHeight: 1, textTransform: "capitalize" },
   title: { fontSize: 16, fontWeight: 900, letterSpacing: 0.2, color: "#e2e8f0" },
   stanceRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
   stanceLabel: { fontSize: 12, opacity: 0.9, marginRight: 4 },
