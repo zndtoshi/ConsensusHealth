@@ -150,6 +150,23 @@ const AVATAR_REV = "20260305d";
 const DATA_REV = "20260305d";
 const API_BASE = ((import.meta.env && import.meta.env.VITE_API_BASE) || "").replace(/\/$/, "");
 
+function createStanceZoneSprite(color, radius, alpha) {
+  const r = Math.max(12, Math.round(radius));
+  const size = r * 2;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const g = canvas.getContext("2d");
+  if (!g) return canvas;
+  const grad = g.createRadialGradient(r, r, 0, r, r, r);
+  grad.addColorStop(0, `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha})`);
+  grad.addColorStop(0.45, `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha * 0.4})`);
+  grad.addColorStop(1, `rgba(${color[0]}, ${color[1]}, ${color[2]}, 0)`);
+  g.fillStyle = grad;
+  g.fillRect(0, 0, size, size);
+  return canvas;
+}
+
 /** Compute stance weights (sum of sqrt(followers)) and region layout. Neutral at width/2; all three in a tight band so islands stay cohesive. */
 function computeStanceRegions(nodes, labels, width) {
   if (!nodes || nodes.length === 0) return null;
@@ -1117,6 +1134,7 @@ export default function App() {
   const avatarHookedRef = useRef(new WeakSet());
   const starfieldCanvasRef = useRef(null);
   const starfieldKeyRef = useRef("");
+  const stanceZoneCacheRef = useRef(new Map());
   labelsRef.current = labels;
   selectedHandleRef.current = selectedHandle;
 
@@ -1433,6 +1451,38 @@ export default function App() {
     const ty = fitTy + user.panY;
 
     viewRef.current = { scale, tx, ty };
+
+    // Subtle stance anchor zones (cached radial sprites), rendered behind nodes.
+    const r = regionRef.current;
+    const againstCx = r?.stanceCenterX?.[STANCE.AGAINST] ?? (w * 0.33);
+    const neutralCx = r?.stanceCenterX?.[STANCE.NEUTRAL] ?? (w * 0.5);
+    const approveCx = r?.stanceCenterX?.[STANCE.APPROVE] ?? (w * 0.67);
+    const zoneCyWorld = h / 2;
+    const againstX = againstCx * scale + tx;
+    const neutralX = neutralCx * scale + tx;
+    const approveX = approveCx * scale + tx;
+    const zoneY = zoneCyWorld * scale + ty;
+    const baseRadius = Math.min(cw, ch) * (isFirefox ? 0.28 : 0.31);
+    const zoneRadius = Math.max(120, Math.min(420, baseRadius));
+    const getZone = (key, rgb, alpha) => {
+      const cacheKey = `${key}|${Math.round(zoneRadius)}|${alpha}|${isFirefox ? "ff" : "std"}`;
+      const cache = stanceZoneCacheRef.current;
+      if (cache.has(cacheKey)) return cache.get(cacheKey);
+      const sprite = createStanceZoneSprite(rgb, zoneRadius, alpha);
+      if (cache.size > 24) cache.clear();
+      cache.set(cacheKey, sprite);
+      return sprite;
+    };
+    const redZone = getZone("red", [220, 38, 38], isFirefox ? 0.055 : 0.07);
+    const neutralZone = getZone("neutral", [156, 163, 175], isFirefox ? 0.032 : 0.042);
+    const greenZone = getZone("green", [34, 197, 94], isFirefox ? 0.055 : 0.07);
+    const drawZone = (sprite, cx, cy) => {
+      const rad = sprite.width / 2;
+      ctx.drawImage(sprite, cx - rad, cy - rad);
+    };
+    drawZone(redZone, againstX, zoneY);
+    drawZone(neutralZone, neutralX, zoneY);
+    drawZone(greenZone, approveX, zoneY);
 
     ctx.save();
     ctx.translate(tx, ty);
