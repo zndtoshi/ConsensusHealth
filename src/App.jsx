@@ -145,6 +145,7 @@ function getNodeStance(node, labelsMap) {
 }
 
 const LABELS_STORAGE_KEY = "consensushealth:bip110:labels:v1";
+const SOURCE_REMINDER_SNOOZE_KEY = "consensushealth:stance-source:snooze-until";
 const GLOW_CACHE_VERSION = 3;
 const AVATAR_REV = "20260305d";
 const DATA_REV = "20260305d";
@@ -407,6 +408,16 @@ async function loadAccounts() {
     }
     if (source === "community") rec.stance = normalizedStance(raw?.stance ?? rec?.stance);
     else if (rec.stance) rec.stance = normalizedStance(rec.stance);
+    if (source === "community") {
+      const sourceUrl = String(raw?.stance_source_url ?? "").trim();
+      const sourceTweetId = String(raw?.stance_source_tweet_id ?? "").trim();
+      const sourcePreview = String(raw?.stance_source_preview_text ?? "").trim();
+      const sourceAddedAt = String(raw?.stance_source_added_at ?? "").trim();
+      if (sourceUrl) rec.stance_source_url = sourceUrl;
+      if (sourceTweetId) rec.stance_source_tweet_id = sourceTweetId;
+      if (sourcePreview) rec.stance_source_preview_text = sourcePreview;
+      if (sourceAddedAt) rec.stance_source_added_at = sourceAddedAt;
+    }
 
     if (handleNorm) {
       const prevRich = richestByHandle.get(handleNorm);
@@ -467,6 +478,10 @@ async function loadAccounts() {
       rec.followers_count = Math.max(0, toInt(rec.followers_count));
     }
     rec.avatar_url = firstNonEmptyAvatarField(rec) || rec.avatar_url || null;
+    rec.stance_source_url = String(rec.stance_source_url ?? "").trim() || null;
+    rec.stance_source_tweet_id = String(rec.stance_source_tweet_id ?? "").trim() || null;
+    rec.stance_source_preview_text = String(rec.stance_source_preview_text ?? "").trim() || null;
+    rec.stance_source_added_at = String(rec.stance_source_added_at ?? "").trim() || null;
     if (isDevRuntime && rec.stance && !rec.avatar_path && !rec.avatar_url) {
       console.log("[auth-merge][missing-avatar-after-merge]", {
         handle: normalizeHandle(rec.handle),
@@ -546,6 +561,21 @@ export default function App() {
   const [manualEditChoice, setManualEditChoice] = useState("neutral");
   const [manualEditBusy, setManualEditBusy] = useState(false);
   const [manualEditError, setManualEditError] = useState("");
+  const [showSourceModal, setShowSourceModal] = useState(false);
+  const [sourceUrlInput, setSourceUrlInput] = useState("");
+  const [sourceBusy, setSourceBusy] = useState(false);
+  const [sourceError, setSourceError] = useState("");
+  const [sourceRemoveConfirm, setSourceRemoveConfirm] = useState(false);
+  const [sourcePromptTriggered, setSourcePromptTriggered] = useState(false);
+  const [sourceReminderSnoozeUntil, setSourceReminderSnoozeUntil] = useState(() => {
+    try {
+      const raw = localStorage.getItem(SOURCE_REMINDER_SNOOZE_KEY);
+      const n = Number(raw || 0);
+      return Number.isFinite(n) ? n : 0;
+    } catch {
+      return 0;
+    }
+  });
   const [labels, setLabels] = useState(() => {
     try {
       const raw = localStorage.getItem(LABELS_STORAGE_KEY);
@@ -570,6 +600,14 @@ export default function App() {
       localStorage.setItem(LABELS_STORAGE_KEY, JSON.stringify(labels));
     } catch {}
   }, [labels]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SOURCE_REMINDER_SNOOZE_KEY, String(sourceReminderSnoozeUntil || 0));
+    } catch {
+      // ignore localStorage failures
+    }
+  }, [sourceReminderSnoozeUntil]);
 
   async function loadMe() {
     try {
@@ -603,6 +641,7 @@ export default function App() {
 
   async function setMyStance(stance) {
     if (!me?.authenticated) return;
+    const hadSource = Boolean(String(me?.stance_source_url || "").trim());
     try {
       setAuthBusy(true);
       const res = await fetch(`${API_BASE}/api/stance`, {
@@ -616,9 +655,110 @@ export default function App() {
       if (data?.handle && data?.stance) {
         setLabels((prev) => ({ ...prev, [String(data.handle).toLowerCase()]: normalizedStance(data.stance) }));
       }
+      if (!hadSource) {
+        setSourcePromptTriggered(true);
+      }
       await loadMe();
     } finally {
       setAuthBusy(false);
+    }
+  }
+
+  async function saveStanceSourceUrl() {
+    if (!me?.authenticated || sourceBusy) return;
+    setSourceBusy(true);
+    setSourceError("");
+    try {
+      const res = await fetch(`${API_BASE}/api/stance/source`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ url: sourceUrlInput.trim() }),
+      });
+      if (!res.ok) {
+        let msg = `Failed (${res.status})`;
+        try {
+          const errData = await res.json();
+          if (errData?.error) msg = String(errData.error);
+        } catch {
+          // ignore parse failures
+        }
+        throw new Error(msg);
+      }
+      const row = await res.json();
+      const handleNorm = normalizeHandle(row?.handle || me?.handle);
+      setAccounts((prev) =>
+        prev.map((a) =>
+          normalizeHandle(a?.handle) === handleNorm
+            ? {
+                ...a,
+                stance_source_url: row?.stance_source_url ?? a.stance_source_url ?? null,
+                stance_source_tweet_id: row?.stance_source_tweet_id ?? a.stance_source_tweet_id ?? null,
+                stance_source_preview_text: row?.stance_source_preview_text ?? a.stance_source_preview_text ?? null,
+                stance_source_added_at: row?.stance_source_added_at ?? a.stance_source_added_at ?? null,
+              }
+            : a
+        )
+      );
+      setSourcePromptTriggered(false);
+      setShowSourceModal(false);
+      setSourceUrlInput("");
+      await loadMe();
+    } catch (e) {
+      setSourceError(String(e?.message || e));
+    } finally {
+      setSourceBusy(false);
+    }
+  }
+
+  function openSourceModal(prefill = "") {
+    setSourceError("");
+    setSourceRemoveConfirm(false);
+    setSourceUrlInput(prefill);
+    setShowSourceModal(true);
+  }
+
+  async function removeStanceSourceUrl() {
+    if (!me?.authenticated || sourceBusy) return;
+    setSourceBusy(true);
+    setSourceError("");
+    try {
+      const res = await fetch(`${API_BASE}/api/stance/source`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        let msg = `Failed (${res.status})`;
+        try {
+          const errData = await res.json();
+          if (errData?.error) msg = String(errData.error);
+        } catch {
+          // ignore parse failures
+        }
+        throw new Error(msg);
+      }
+      const meHandleNorm = normalizeHandle(me?.handle);
+      setAccounts((prev) =>
+        prev.map((a) =>
+          normalizeHandle(a?.handle) === meHandleNorm
+            ? {
+                ...a,
+                stance_source_url: null,
+                stance_source_tweet_id: null,
+                stance_source_preview_text: null,
+                stance_source_added_at: null,
+              }
+            : a
+        )
+      );
+      setSourceRemoveConfirm(false);
+      setSourcePromptTriggered(false);
+      setSourceReminderSnoozeUntil(Date.now() + 24 * 60 * 60 * 1000);
+      await loadMe();
+    } catch (e) {
+      setSourceError(String(e?.message || e));
+    } finally {
+      setSourceBusy(false);
     }
   }
 
@@ -649,7 +789,27 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!me?.authenticated) {
+      setSourcePromptTriggered(false);
+      setSourceRemoveConfirm(false);
+      return;
+    }
+    if (String(me?.stance_source_url || "").trim()) {
+      setSourcePromptTriggered(false);
+      return;
+    }
+    setSourceRemoveConfirm(false);
+  }, [me]);
+
   const meStance = me?.stance ? normalizedStance(me.stance) : "";
+  const meHasStance = Boolean(meStance);
+  const meHasSourceUrl = Boolean(String(me?.stance_source_url || "").trim());
+  const showSourceReminder =
+    Boolean(me?.authenticated) &&
+    meHasStance &&
+    !meHasSourceUrl &&
+    (sourcePromptTriggered || Date.now() > sourceReminderSnoozeUntil);
   const meHandleLower = safeLower(me?.handle);
   const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
   const visibleAccounts = useMemo(() => {
@@ -703,6 +863,15 @@ export default function App() {
     const baseNoSlash = getBase().replace(/\/$/, "");
     const missingSrc = `${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`;
     return resolveAvatarUrlForAccount(account || { handle: key }, baseNoSlash, missingSrc);
+  }, [selectedHandle, accountByHandle]);
+  const selectedSourceInfo = useMemo(() => {
+    if (!selectedHandle) return null;
+    const account = accountByHandle.get(normalizeHandle(selectedHandle));
+    if (!account) return null;
+    const url = String(account?.stance_source_url ?? "").trim();
+    if (!url) return null;
+    const preview = String(account?.stance_source_preview_text ?? "").trim() || "View stance explanation";
+    return { url, preview };
   }, [selectedHandle, accountByHandle]);
   const donationAddress = String(me?.donation_btc_address || "bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7").trim();
   const statisticsData = useMemo(() => {
@@ -1857,28 +2026,41 @@ export default function App() {
                   }}
                   style={styles.selectedHeaderAvatar}
                 />
-                <span
-                  style={{ pointerEvents: "auto", userSelect: "text" }}
-                  title="Open profile on X"
-                >
-                  <a
-                    href={`https://x.com/${encodeURIComponent(selectedHandle)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={styles.selectedHandleLink}
+                <div style={styles.selectedMetaText}>
+                  <span
+                    style={{ pointerEvents: "auto", userSelect: "text" }}
+                    title="Open profile on X"
                   >
-                    @{selectedHandle}
-                  </a>
-                </span>
-                <span
-                  style={{
-                    ...styles.selectedStanceBadge,
-                    color: stanceHeaderColor(getStanceForHandle(labels, selectedHandle)),
-                    textShadow: `0 1px 0 rgba(0,0,0,0.9), 0 0 8px ${stanceHeaderColor(getStanceForHandle(labels, selectedHandle))}, 0 0 18px ${stanceHeaderColor(getStanceForHandle(labels, selectedHandle))}`,
-                  }}
-                >
-                  {getStanceForHandle(labels, selectedHandle) ? getStanceForHandle(labels, selectedHandle) : "unlabeled"}
-                </span>
+                    <a
+                      href={`https://x.com/${encodeURIComponent(selectedHandle)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={styles.selectedHandleLink}
+                    >
+                      @{selectedHandle}
+                    </a>
+                  </span>
+                  <span
+                    style={{
+                      ...styles.selectedStanceBadge,
+                      color: stanceHeaderColor(getStanceForHandle(labels, selectedHandle)),
+                      textShadow: `0 1px 0 rgba(0,0,0,0.9), 0 0 8px ${stanceHeaderColor(getStanceForHandle(labels, selectedHandle))}, 0 0 18px ${stanceHeaderColor(getStanceForHandle(labels, selectedHandle))}`,
+                    }}
+                  >
+                    {getStanceForHandle(labels, selectedHandle) ? getStanceForHandle(labels, selectedHandle) : "unlabeled"}
+                  </span>
+                  {selectedSourceInfo && (
+                    <a
+                      href={selectedSourceInfo.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={styles.selectedSourceLink}
+                      title="View stance explanation tweet/thread"
+                    >
+                      {`\u{1F9F5} "${selectedSourceInfo.preview}" \u2192`}
+                    </a>
+                  )}
+                </div>
               </div>
             </>
           )}
@@ -2014,6 +2196,76 @@ export default function App() {
               >
                 Approve
               </button>
+              {meHasSourceUrl ? (
+                <div style={styles.sourcePromptInline}>
+                  <a
+                    href={String(me?.stance_source_url || "")}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={styles.sourcePromptLink}
+                  >
+                    View explanation
+                  </a>
+                  <button
+                    style={styles.sourcePromptAction}
+                    onClick={() => openSourceModal(String(me?.stance_source_url || ""))}
+                    disabled={authBusy || sourceBusy}
+                  >
+                    Edit
+                  </button>
+                  {!sourceRemoveConfirm ? (
+                    <button
+                      style={styles.sourcePromptSnooze}
+                      onClick={() => {
+                        setSourceError("");
+                        setSourceRemoveConfirm(true);
+                      }}
+                      disabled={authBusy || sourceBusy}
+                    >
+                      Remove
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        style={styles.sourceDangerBtn}
+                        onClick={removeStanceSourceUrl}
+                        disabled={authBusy || sourceBusy}
+                      >
+                        {sourceBusy ? "Removing..." : "Confirm remove"}
+                      </button>
+                      <button
+                        style={styles.sourcePromptSnooze}
+                        onClick={() => setSourceRemoveConfirm(false)}
+                        disabled={authBusy || sourceBusy}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                </div>
+              ) : showSourceReminder ? (
+                <div style={styles.sourcePromptInline}>
+                  <span style={styles.sourcePromptText}>Add a tweet explaining your stance (optional)</span>
+                  <button
+                    style={styles.sourcePromptAction}
+                    onClick={() => openSourceModal(String(me?.stance_source_url || ""))}
+                    disabled={authBusy}
+                  >
+                    Add link
+                  </button>
+                  <button
+                    style={styles.sourcePromptSnooze}
+                    onClick={() => {
+                      setSourcePromptTriggered(false);
+                      setSourceReminderSnoozeUntil(Date.now() + 7 * 24 * 60 * 60 * 1000);
+                    }}
+                    disabled={authBusy}
+                  >
+                    Snooze 7d
+                  </button>
+                </div>
+              ) : null}
+              {sourceError && !showSourceModal && <div style={styles.manualEditErr}>{sourceError}</div>}
               <button style={styles.btn} onClick={logout} disabled={authBusy}>Logout</button>
             </>
           )}
@@ -2064,6 +2316,37 @@ export default function App() {
         loading={statsLoading}
         error={statsError}
       />
+      {showSourceModal && (
+        <div style={styles.modalBackdrop} onClick={() => setShowSourceModal(false)}>
+          <div style={styles.sourceModalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.sourceModalTitle}>Add stance explanation</div>
+            <div style={styles.sourceModalSub}>
+              Paste one X/Twitter tweet or thread link (optional).
+            </div>
+            <input
+              type="url"
+              placeholder="https://x.com/handle/status/123456789..."
+              value={sourceUrlInput}
+              onChange={(e) => setSourceUrlInput(e.target.value)}
+              style={styles.sourceModalInput}
+              autoFocus
+            />
+            {sourceError ? <div style={styles.manualEditErr}>{sourceError}</div> : null}
+            <div style={styles.manualEditFooter}>
+              <button style={styles.btn} onClick={() => setShowSourceModal(false)} disabled={sourceBusy}>
+                Cancel
+              </button>
+              <button
+                style={styles.btn}
+                onClick={saveStanceSourceUrl}
+                disabled={sourceBusy || !sourceUrlInput.trim()}
+              >
+                {sourceBusy ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {manualEditMode && isPrivilegedEditor && manualEditTarget && (
         <div style={styles.modalBackdrop} onClick={() => setManualEditTarget(null)}>
           <div style={styles.manualEditCard} onClick={(e) => e.stopPropagation()}>
@@ -2234,12 +2517,19 @@ const styles = {
   },
   selectedMetaBlock: {
     display: "flex",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 8,
-    padding: "4px 8px",
-    borderRadius: 999,
+    padding: "6px 10px",
+    borderRadius: 14,
     border: "1px solid rgba(255,255,255,0.12)",
     background: "rgba(15,23,42,0.62)",
+  },
+  selectedMetaText: {
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 2,
+    minWidth: 0,
   },
   selectedHeaderAvatar: {
     width: 30,
@@ -2258,7 +2548,15 @@ const styles = {
     textDecoration: "none",
     cursor: "pointer",
   },
-  selectedStanceBadge: { fontWeight: 850, fontSize: 17, letterSpacing: 0.25, lineHeight: 1, textTransform: "capitalize" },
+  selectedStanceBadge: { fontWeight: 820, fontSize: 14, letterSpacing: 0.2, lineHeight: 1.1, textTransform: "capitalize" },
+  selectedSourceLink: {
+    pointerEvents: "auto",
+    color: "rgba(191,219,254,0.92)",
+    fontSize: 11,
+    fontWeight: 700,
+    textDecoration: "none",
+    lineHeight: 1.2,
+  },
   title: { fontSize: 16, fontWeight: 900, letterSpacing: 0.2, color: "#e2e8f0" },
   stanceRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
   stanceLabel: { fontSize: 12, opacity: 0.9, marginRight: 4 },
@@ -2293,6 +2591,59 @@ const styles = {
     gap: 8,
     alignItems: "center",
     flexWrap: "wrap",
+  },
+  sourcePromptInline: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    flexBasis: "100%",
+    marginLeft: 2,
+    padding: "5px 8px",
+    borderRadius: 10,
+    background: "rgba(30,41,59,0.62)",
+    border: "1px solid rgba(255,255,255,0.14)",
+  },
+  sourcePromptText: {
+    fontSize: 11,
+    color: "rgba(226,232,240,0.9)",
+    whiteSpace: "nowrap",
+  },
+  sourcePromptLink: {
+    color: "#bfdbfe",
+    textDecoration: "none",
+    fontSize: 11,
+    fontWeight: 700,
+    whiteSpace: "nowrap",
+  },
+  sourcePromptAction: {
+    border: "1px solid rgba(147,197,253,0.55)",
+    background: "rgba(30,58,138,0.28)",
+    color: "#dbeafe",
+    borderRadius: 8,
+    padding: "4px 8px",
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  sourceDangerBtn: {
+    border: "1px solid rgba(248,113,113,0.55)",
+    background: "rgba(127,29,29,0.3)",
+    color: "#fecaca",
+    borderRadius: 8,
+    padding: "4px 8px",
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  sourcePromptSnooze: {
+    border: "1px solid rgba(148,163,184,0.4)",
+    background: "rgba(15,23,42,0.55)",
+    color: "#cbd5e1",
+    borderRadius: 8,
+    padding: "4px 8px",
+    fontSize: 11,
+    fontWeight: 700,
+    cursor: "pointer",
   },
   search: {
     width: 260,
@@ -2527,6 +2878,35 @@ const styles = {
     flexDirection: "column",
     alignItems: "center",
     gap: 8,
+  },
+  sourceModalCard: {
+    width: "min(460px, 94vw)",
+    padding: 14,
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.2)",
+    background: "rgba(15,23,42,0.97)",
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+  },
+  sourceModalTitle: {
+    fontSize: 14,
+    fontWeight: 900,
+    color: "#e2e8f0",
+  },
+  sourceModalSub: {
+    fontSize: 12,
+    color: "rgba(226,232,240,0.8)",
+  },
+  sourceModalInput: {
+    width: "100%",
+    padding: "10px 11px",
+    borderRadius: 10,
+    border: "1px solid rgba(148,163,184,0.34)",
+    background: "rgba(15,23,42,0.7)",
+    color: "#e2e8f0",
+    fontSize: 12,
+    outline: "none",
   },
   manualEditCard: {
     width: "min(360px, 92vw)",
