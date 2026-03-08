@@ -10,6 +10,7 @@
     "build:web": "vite build",
     "build:server": "tsc -p server/tsconfig.json",
     "build": "npm run build:web && npm run build:server",
+    "enrich:profiles": "tsx server/src/enrichProfilesFromUsersJson.ts",
     "start": "node server/dist/index.js",
     "lint": "eslint .",
     "test": "tsx --test server/src/**/*.test.ts src/**/*.test.ts",

@@ -8,6 +8,7 @@ import dotenv from "dotenv";
 import { Pool, type PoolClient } from "pg";
 import { v4 as uuidv4 } from "uuid";
 import { logConfig } from "./config/appUrl.js";
+import { fetchProfileEnrichmentFromTwitterApiIo } from "./profileEnrichment.js";
 import {
   isPrivilegedManualEditorHandle,
   normalizeStanceValue,
@@ -26,6 +27,7 @@ const DIST_PATH = path.resolve(process.cwd(), "dist");
 const DATABASE_URL = (process.env.DATABASE_URL || "").trim();
 const TWITTER_CLIENT_ID = process.env.X_CLIENT_ID || process.env.TWITTER_CLIENT_ID || "";
 const TWITTER_CLIENT_SECRET = process.env.X_CLIENT_SECRET || process.env.TWITTER_CLIENT_SECRET || "";
+const TWITTERAPI_IO_KEY = (process.env.TWITTERAPI_IO_KEY || "").trim();
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 30);
 const SESSION_SECRET = process.env.SESSION_SECRET || "";
 if (!SESSION_SECRET) {
@@ -348,6 +350,8 @@ async function initDb(): Promise<void> {
   `);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();`);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();`);
+  await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS bio TEXT;`);
+  await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS account_created_at TIMESTAMPTZ;`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS stance_events (
       id SERIAL PRIMARY KEY,
@@ -633,6 +637,24 @@ app.get("/auth/x/callback", async (req, res, next) => {
     const avatarUrl = rawProfileImageUrl ? rawProfileImageUrl.replace("_normal", "") : null;
     const followersCount =
       typeof data.public_metrics?.followers_count === "number" ? data.public_metrics.followers_count : null;
+    let enrichedBio: string | null = null;
+    let enrichedAccountCreatedAt: string | null = null;
+    if (TWITTERAPI_IO_KEY) {
+      try {
+        const enrichment = await fetchProfileEnrichmentFromTwitterApiIo(
+          { xUserId, handle },
+          TWITTERAPI_IO_KEY
+        );
+        if (enrichment) {
+          enrichedBio = enrichment.bio;
+          enrichedAccountCreatedAt = enrichment.accountCreatedAt;
+        }
+      } catch (e) {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn("[auth-callback] twitterapi.io enrichment failed:", e);
+        }
+      }
+    }
     if (process.env.NODE_ENV !== "production") {
       console.log("[auth-callback] profile-fields", {
         x_user_id: xUserId,
@@ -640,6 +662,8 @@ app.get("/auth/x/callback", async (req, res, next) => {
         profile_image_url: rawProfileImageUrl,
         persisted_avatar_url: avatarUrl,
         followers_count: followersCount,
+        enriched_bio: Boolean(enrichedBio),
+        enriched_account_created_at: enrichedAccountCreatedAt || null,
       });
     }
 
@@ -682,10 +706,12 @@ app.get("/auth/x/callback", async (req, res, next) => {
               name = $3,
               avatar_url = $4,
               followers_count = $5,
+              bio = COALESCE(NULLIF(community_users.bio, ''), $6),
+              account_created_at = COALESCE(community_users.account_created_at, $7::timestamptz),
               updated_at = now()
-          WHERE id = $6
+          WHERE id = $8
         `,
-          [xUserId, handle, name, avatarUrl, followersCount, winner.id]
+          [xUserId, handle, name, avatarUrl, followersCount, enrichedBio, enrichedAccountCreatedAt, winner.id]
         );
         await client.query(`DELETE FROM community_users WHERE id = $1`, [loser.id]);
       } else if (byId) {
@@ -696,10 +722,12 @@ app.get("/auth/x/callback", async (req, res, next) => {
               name = $3,
               avatar_url = $4,
               followers_count = $5,
+              bio = COALESCE(NULLIF(community_users.bio, ''), $6),
+              account_created_at = COALESCE(community_users.account_created_at, $7::timestamptz),
               updated_at = now()
           WHERE x_user_id = $1
         `,
-          [xUserId, handle, name, avatarUrl, followersCount]
+          [xUserId, handle, name, avatarUrl, followersCount, enrichedBio, enrichedAccountCreatedAt]
         );
       } else {
         if (byHandle) {
@@ -711,18 +739,30 @@ app.get("/auth/x/callback", async (req, res, next) => {
                 name = $3,
                 avatar_url = $4,
                 followers_count = $5,
+                bio = COALESCE(NULLIF(community_users.bio, ''), $6),
+                account_created_at = COALESCE(community_users.account_created_at, $7::timestamptz),
                 updated_at = now()
-            WHERE id = $6
+            WHERE id = $8
           `,
-            [xUserId, handle, name, avatarUrl, followersCount, byHandle.id]
+            [xUserId, handle, name, avatarUrl, followersCount, enrichedBio, enrichedAccountCreatedAt, byHandle.id]
           );
         } else {
           await client.query(
             `
-            INSERT INTO community_users (x_user_id, handle, name, avatar_url, followers_count, stance, updated_at)
-            VALUES ($1, $2, $3, $4, $5, NULL, now())
+            INSERT INTO community_users (
+              x_user_id,
+              handle,
+              name,
+              avatar_url,
+              followers_count,
+              bio,
+              account_created_at,
+              stance,
+              updated_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, NULL, now())
           `,
-            [xUserId, handle, name, avatarUrl, followersCount]
+            [xUserId, handle, name, avatarUrl, followersCount, enrichedBio, enrichedAccountCreatedAt]
           );
         }
       }
@@ -758,7 +798,12 @@ app.get("/auth/x/callback", async (req, res, next) => {
 
 app.get("/api/community", async (_req, res, next) => {
   try {
-    const { rows } = await pool.query("SELECT * FROM community_users");
+    const { rows } = await pool.query(`
+      SELECT
+        cu.*,
+        cu.account_created_at AS "accountCreatedAt"
+      FROM community_users cu
+    `);
     res.json(rows);
   } catch (err) {
     next(err);
@@ -829,7 +874,13 @@ app.get("/api/me", async (req, res, next) => {
     }
 
     const result = await pool.query(
-      "SELECT * FROM community_users WHERE x_user_id = $1",
+      `
+      SELECT
+        cu.*,
+        cu.account_created_at AS "accountCreatedAt"
+      FROM community_users cu
+      WHERE cu.x_user_id = $1
+      `,
       [user.x_user_id]
     );
 
