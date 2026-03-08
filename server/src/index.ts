@@ -313,6 +313,74 @@ function computeOAuthRedirectUri(req: Request): string {
   return `${computeOAuthBase(req)}/auth/x/callback`;
 }
 
+async function loadSeededAccountsForCommunity(): Promise<Record<string, unknown>[]> {
+  const candidates = [
+    path.resolve(process.cwd(), "public", "data", "accounts_stanced.json"),
+    path.resolve(DIST_PATH, "data", "accounts_stanced.json"),
+  ];
+  for (const p of candidates) {
+    try {
+      const raw = await fs.promises.readFile(p, "utf-8");
+      const data = JSON.parse(raw);
+      if (Array.isArray(data)) {
+        return data as Record<string, unknown>[];
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  return [];
+}
+
+function hasStanceValue(value: unknown): boolean {
+  return normalizeStanceValue(value) !== null;
+}
+
+function mergeCommunityUsers(
+  seededRows: Record<string, unknown>[],
+  dbRows: Record<string, unknown>[]
+): Record<string, unknown>[] {
+  const byHandle = new Map<string, Record<string, unknown>>();
+  const byXid = new Map<string, Record<string, unknown>>();
+  const merged: Record<string, unknown>[] = [];
+
+  const upsert = (raw: Record<string, unknown>, source: "seeded" | "db"): void => {
+    const handle = normalizeHandle(raw?.handle ?? raw?.username ?? raw?.screen_name);
+    const xUserId = String(raw?.x_user_id ?? raw?.xUserId ?? "").trim();
+    if (!handle && !xUserId) return;
+
+    let rec =
+      (xUserId && byXid.get(xUserId)) ||
+      (handle && byHandle.get(handle)) ||
+      null;
+    if (!rec) {
+      rec = {};
+      merged.push(rec);
+    }
+
+    // Prefer DB values when present; seeded fills gaps.
+    const base = source === "db" ? { ...rec, ...raw } : { ...raw, ...rec };
+    Object.assign(rec, base);
+
+    if (handle) rec.handle = handle;
+    if (xUserId) rec.x_user_id = xUserId;
+
+    const stanceNorm = normalizeStanceValue(rec.stance ?? raw.stance);
+    if (stanceNorm) rec.stance = stanceNorm;
+
+    if (source === "db") {
+      rec.accountCreatedAt = rec.accountCreatedAt ?? rec.account_created_at ?? null;
+    }
+
+    if (xUserId) byXid.set(xUserId, rec);
+    if (handle) byHandle.set(handle, rec);
+  };
+
+  for (const r of seededRows) upsert(r, "seeded");
+  for (const r of dbRows) upsert(r, "db");
+  return merged;
+}
+
 async function initDb(): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS community_users (
@@ -798,13 +866,25 @@ app.get("/auth/x/callback", async (req, res, next) => {
 
 app.get("/api/community", async (_req, res, next) => {
   try {
+    const seededRows = await loadSeededAccountsForCommunity();
     const { rows } = await pool.query(`
       SELECT
         cu.*,
         cu.account_created_at AS "accountCreatedAt"
       FROM community_users cu
     `);
-    res.json(rows);
+    const dbRows = rows as Record<string, unknown>[];
+    const mergedRows = mergeCommunityUsers(seededRows, dbRows);
+    const withStance = mergedRows.filter((r) => hasStanceValue(r.stance));
+
+    console.log("[api/community] counts", {
+      manual_users_count: seededRows.length,
+      db_users_count: dbRows.length,
+      merged_total_count: mergedRows.length,
+      final_with_stance_count: withStance.length,
+    });
+
+    res.json(withStance);
   } catch (err) {
     next(err);
   }
