@@ -492,6 +492,11 @@ async function loadAccounts() {
     }
     if (source === "community") rec.stance = normalizedStance(raw?.stance ?? rec?.stance);
     else if (rec.stance) rec.stance = normalizedStance(rec.stance);
+    if (source === "community") {
+      const hasUserStanceChange = Boolean(raw?.hasUserStanceChange ?? raw?.has_user_stance_change);
+      if (hasUserStanceChange) rec.hasUserStanceChange = true;
+      else if (typeof rec.hasUserStanceChange !== "boolean") rec.hasUserStanceChange = false;
+    }
 
     if (handleNorm) {
       const prevRich = richestByHandle.get(handleNorm);
@@ -556,6 +561,7 @@ async function loadAccounts() {
     rec.accountCreatedAt = normalizeAccountCreatedAt(
       rec.accountCreatedAt ?? rec.account_created_at
     );
+    rec.hasUserStanceChange = Boolean(rec.hasUserStanceChange);
     if (isDevRuntime && rec.stance && !rec.avatar_path && !rec.avatar_url) {
       console.log("[auth-merge][missing-avatar-after-merge]", {
         handle: normalizeHandle(rec.handle),
@@ -628,6 +634,7 @@ export default function App() {
   const [showDonateModal, setShowDonateModal] = useState(false);
   const [adminOptionsOpen, setAdminOptionsOpen] = useState(false);
   const [plebsMode, setPlebsMode] = useState(false);
+  const [dimSeededUsersEnabled, setDimSeededUsersEnabled] = useState(false);
   const [dimOthersEnabled, setDimOthersEnabled] = useState(false);
   const [pulseSelectedEnabled, setPulseSelectedEnabled] = useState(false);
   const [manualEditMode, setManualEditMode] = useState(false);
@@ -1260,6 +1267,7 @@ export default function App() {
           followers: rawFollowers,
           bio: String(a.bio ?? "").trim() || null,
           accountCreatedAt: a.accountCreatedAt ?? a.account_created_at ?? null,
+          hasUserStanceChange: Boolean(a.hasUserStanceChange),
           side,
           half: side / 2,
           tweetCount,
@@ -1598,9 +1606,13 @@ export default function App() {
         dimOthersEnabled &&
         Boolean(curSelected) &&
         n.handle !== curSelected;
+      const shouldDimSeeded = dimSeededUsersEnabled && !n.hasUserStanceChange;
       ctx.save();
       if (shouldDim) {
         ctx.globalAlpha *= 0.6;
+      }
+      if (shouldDimSeeded) {
+        ctx.globalAlpha *= 0.62;
       }
       const drawHalf = (n.side * scaleFactor) / 2;
       const drawX = n.x - drawHalf;
@@ -1998,6 +2010,15 @@ export default function App() {
                       />
                       <span>Plebs (&lt;3k followers)</span>
                       <span style={styles.optionsState}>{plebsMode ? "ON" : "OFF"}</span>
+                    </label>
+                    <label style={styles.optionsItem}>
+                      <input
+                        type="checkbox"
+                        checked={dimSeededUsersEnabled}
+                        onChange={(e) => setDimSeededUsersEnabled(e.target.checked)}
+                      />
+                      <span>Dim seeded users</span>
+                      <span style={styles.optionsState}>{dimSeededUsersEnabled ? "ON" : "OFF"}</span>
                     </label>
                   </div>
                 )}

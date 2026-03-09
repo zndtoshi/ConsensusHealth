@@ -8,6 +8,7 @@ export type CommunityUser = {
   bio?: string | null;
   accountCreatedAt?: string | null;
   account_created_at?: string | null;
+  hasUserStanceChange?: boolean;
 };
 
 export async function fetchCommunityUsers(): Promise<CommunityUser[]> {

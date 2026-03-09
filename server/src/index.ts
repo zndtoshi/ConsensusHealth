@@ -970,7 +970,13 @@ app.get("/api/community", async (_req, res, next) => {
     const { rows } = await pool.query(`
       SELECT
         cu.*,
-        cu.account_created_at AS "accountCreatedAt"
+        cu.account_created_at AS "accountCreatedAt",
+        EXISTS (
+          SELECT 1
+          FROM stance_history sh
+          WHERE sh.x_user_id = cu.x_user_id
+            AND sh.changed_by = 'user'
+        ) AS "hasUserStanceChange"
       FROM community_users cu
     `);
     const dbRows = rows as Record<string, unknown>[];
