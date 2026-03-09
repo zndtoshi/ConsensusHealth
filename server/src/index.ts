@@ -27,7 +27,7 @@ const DIST_PATH = path.resolve(process.cwd(), "dist");
 const DATABASE_URL = (process.env.DATABASE_URL || "").trim();
 const TWITTER_CLIENT_ID = process.env.X_CLIENT_ID || process.env.TWITTER_CLIENT_ID || "";
 const TWITTER_CLIENT_SECRET = process.env.X_CLIENT_SECRET || process.env.TWITTER_CLIENT_SECRET || "";
-const TWITTERAPI_IO_KEY = (process.env.TWITTERAPI_IO_KEY || "").trim();
+const LOCAL_PROFILE_ENRICHMENT_KEY = IS_PROD ? "" : (process.env.TWITTERAPI_IO_KEY || "").trim();
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 30);
 const SESSION_SECRET = process.env.SESSION_SECRET || "";
 if (!SESSION_SECRET) {
@@ -340,40 +340,123 @@ function mergeCommunityUsers(
   seededRows: Record<string, unknown>[],
   dbRows: Record<string, unknown>[]
 ): Record<string, unknown>[] {
+  const isNonEmptyString = (value: unknown): value is string =>
+    typeof value === "string" && value.trim().length > 0;
+  const toNonEmptyString = (value: unknown): string | null => {
+    if (!isNonEmptyString(value)) return null;
+    return value.trim();
+  };
+  const toNormalizedHandle = (value: unknown): string | null => {
+    const normalized = normalizeHandle(value);
+    return normalized || null;
+  };
+  const toFiniteFollowers = (value: unknown): number | null => {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return Math.trunc(n);
+  };
+  const toAccountCreatedAt = (row: Record<string, unknown>): string | null =>
+    toNonEmptyString(row.account_created_at ?? row.accountCreatedAt);
+  const toAvatarUrl = (row: Record<string, unknown>): string | null =>
+    toNonEmptyString(
+      row.avatar_url ??
+      row.avatarUrl ??
+      row.profile_image_url ??
+      row.profileImageUrl
+    );
+  const chooseString = (
+    existing: string | null,
+    incoming: string | null,
+    source: "seeded" | "db"
+  ): string | null => {
+    if (source === "db") return incoming ?? existing;
+    return existing ?? incoming;
+  };
+  const chooseFollowers = (
+    existing: number | null,
+    incoming: number | null,
+    source: "seeded" | "db"
+  ): number | null => {
+    if (source === "db") {
+      if (incoming != null && (incoming > 0 || existing == null || existing <= 0)) return incoming;
+      return existing;
+    }
+    if (existing != null) return existing;
+    return incoming;
+  };
+
   const byHandle = new Map<string, Record<string, unknown>>();
   const byXid = new Map<string, Record<string, unknown>>();
   const merged: Record<string, unknown>[] = [];
 
   const upsert = (raw: Record<string, unknown>, source: "seeded" | "db"): void => {
-    const handle = normalizeHandle(raw?.handle ?? raw?.username ?? raw?.screen_name);
-    const xUserId = String(raw?.x_user_id ?? raw?.xUserId ?? "").trim();
-    if (!handle && !xUserId) return;
+    const incomingHandle = toNormalizedHandle(raw?.handle ?? raw?.username ?? raw?.screen_name);
+    const incomingXUserId = toNonEmptyString(raw?.x_user_id ?? raw?.xUserId);
+    if (!incomingHandle && !incomingXUserId) return;
 
     let rec =
-      (xUserId && byXid.get(xUserId)) ||
-      (handle && byHandle.get(handle)) ||
+      (incomingXUserId && byXid.get(incomingXUserId)) ||
+      (incomingHandle && byHandle.get(incomingHandle)) ||
       null;
     if (!rec) {
       rec = {};
       merged.push(rec);
     }
 
-    // Prefer DB values when present; seeded fills gaps.
-    const base = source === "db" ? { ...rec, ...raw } : { ...raw, ...rec };
-    Object.assign(rec, base);
+    // Fill missing non-protected fields without clobbering existing values.
+    for (const [key, value] of Object.entries(raw)) {
+      const existing = rec[key];
+      if (existing == null || (typeof existing === "string" && existing.trim() === "")) {
+        rec[key] = value;
+      }
+    }
 
-    if (handle) rec.handle = handle;
-    if (xUserId) rec.x_user_id = xUserId;
+    const existingHandle = toNormalizedHandle(rec.handle ?? rec.username ?? rec.screen_name);
+    const existingXUserId = toNonEmptyString(rec.x_user_id ?? rec.xUserId);
+    const bestHandle = chooseString(existingHandle, incomingHandle, source);
+    const bestXUserId = chooseString(existingXUserId, incomingXUserId, source);
+    if (bestHandle) rec.handle = bestHandle;
+    if (bestXUserId) rec.x_user_id = bestXUserId;
 
-    const stanceNorm = normalizeStanceValue(rec.stance ?? raw.stance);
+    const existingName = toNonEmptyString(rec.name);
+    const incomingName = toNonEmptyString(raw.name);
+    const bestName = chooseString(existingName, incomingName, source);
+    if (bestName) rec.name = bestName;
+
+    const existingBio = toNonEmptyString(rec.bio);
+    const incomingBio = toNonEmptyString(raw.bio);
+    const bestBio = chooseString(existingBio, incomingBio, source);
+    if (bestBio) rec.bio = bestBio;
+
+    const existingAvatarUrl = toAvatarUrl(rec);
+    const incomingAvatarUrl = toAvatarUrl(raw);
+    const bestAvatarUrl = chooseString(existingAvatarUrl, incomingAvatarUrl, source);
+    if (bestAvatarUrl) rec.avatar_url = bestAvatarUrl;
+
+    const existingFollowers = toFiniteFollowers(rec.followers_count);
+    const incomingFollowers = toFiniteFollowers(raw.followers_count);
+    const bestFollowers = chooseFollowers(existingFollowers, incomingFollowers, source);
+    if (bestFollowers != null) rec.followers_count = bestFollowers;
+
+    const existingAccountCreatedAt = toNonEmptyString(rec.account_created_at ?? rec.accountCreatedAt);
+    const incomingAccountCreatedAt = toAccountCreatedAt(raw);
+    const bestAccountCreatedAt = chooseString(existingAccountCreatedAt, incomingAccountCreatedAt, source);
+    if (bestAccountCreatedAt) {
+      rec.account_created_at = bestAccountCreatedAt;
+      rec.accountCreatedAt = bestAccountCreatedAt;
+    }
+
+    const stanceNorm = normalizeStanceValue(source === "db" ? (raw.stance ?? rec.stance) : (rec.stance ?? raw.stance));
     if (stanceNorm) rec.stance = stanceNorm;
 
     if (source === "db") {
       rec.accountCreatedAt = rec.accountCreatedAt ?? rec.account_created_at ?? null;
     }
 
-    if (xUserId) byXid.set(xUserId, rec);
-    if (handle) byHandle.set(handle, rec);
+    const finalHandle = toNormalizedHandle(rec.handle ?? rec.username ?? rec.screen_name);
+    const finalXUserId = toNonEmptyString(rec.x_user_id ?? rec.xUserId);
+    if (finalXUserId) byXid.set(finalXUserId, rec);
+    if (finalHandle) byHandle.set(finalHandle, rec);
   };
 
   for (const r of seededRows) upsert(r, "seeded");
@@ -707,11 +790,11 @@ app.get("/auth/x/callback", async (req, res, next) => {
       typeof data.public_metrics?.followers_count === "number" ? data.public_metrics.followers_count : null;
     let enrichedBio: string | null = null;
     let enrichedAccountCreatedAt: string | null = null;
-    if (TWITTERAPI_IO_KEY) {
+    if (LOCAL_PROFILE_ENRICHMENT_KEY) {
       try {
         const enrichment = await fetchProfileEnrichmentFromTwitterApiIo(
           { xUserId, handle },
-          TWITTERAPI_IO_KEY
+          LOCAL_PROFILE_ENRICHMENT_KEY
         );
         if (enrichment) {
           enrichedBio = enrichment.bio;
@@ -719,7 +802,7 @@ app.get("/auth/x/callback", async (req, res, next) => {
         }
       } catch (e) {
         if (process.env.NODE_ENV !== "production") {
-          console.warn("[auth-callback] twitterapi.io enrichment failed:", e);
+          console.warn("[auth-callback] local profile enrichment failed:", e);
         }
       }
     }
