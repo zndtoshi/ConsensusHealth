@@ -1348,14 +1348,15 @@ export default function App() {
       .alphaDecay(0.08)
       .velocityDecay(0.4)
       .force("center", forceCenter(w / 2, h / 2))
-      .force("stanceX", forceX(stanceCenterX).strength(0.11))
-      .force("stanceAnchor", forceStanceAnchor(regionRef, labelsRef, isFirefox ? 0.012 : 0.016))
-      .force("stanceBounds", forceStanceBounds(regionRef, labelsRef, 0.07))
-      .force("pullY", forceY(h / 2).strength(0.03))
-      .force("charge", forceManyBody().strength(-4))
+      // Plebs mode uses denser per-stance blobs by relaxing hard X bounds and using slightly stronger packing.
+      .force("stanceX", forceX(stanceCenterX).strength(plebsMode ? 0.075 : 0.11))
+      .force("stanceAnchor", forceStanceAnchor(regionRef, labelsRef, plebsMode ? (isFirefox ? 0.01 : 0.013) : (isFirefox ? 0.012 : 0.016)))
+      .force("stanceBounds", plebsMode ? null : forceStanceBounds(regionRef, labelsRef, 0.07))
+      .force("pullY", forceY(h / 2).strength(plebsMode ? 0.06 : 0.03))
+      .force("charge", forceManyBody().strength(plebsMode ? -6 : -4))
       .force(
         "collide",
-        forceCollide((d) => Math.sqrt(2) * d.half + 0.6).iterations(2)
+        forceCollide((d) => Math.sqrt(2) * d.half + 0.6).iterations(plebsMode ? 3 : 2)
       );
 
     simRef.current = sim;
@@ -1363,7 +1364,9 @@ export default function App() {
     // Pre-tick offscreen so first paint is settled; then stop (static layout, no ongoing CPU)
     sim.alpha(1).restart();
     for (let i = 0; i < 180; i++) sim.tick();
-    normalizeIslandEdgeGaps(nodes, labelsRef.current, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
+    if (!plebsMode) {
+      normalizeIslandEdgeGaps(nodes, labelsRef.current, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
+    }
     sim.stop();
 
     sim.on("tick", () => {
@@ -1378,7 +1381,7 @@ export default function App() {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, err, visibleAccounts.length, w, h]);
+  }, [loading, err, visibleAccounts.length, w, h, plebsMode]);
 
   // On resize: recompute stance regions and update forces
   useEffect(() => {
@@ -1993,7 +1996,7 @@ export default function App() {
                         checked={plebsMode}
                         onChange={(e) => setPlebsMode(e.target.checked)}
                       />
-                      <span>Plebs</span>
+                      <span>Plebs (&lt;3k followers)</span>
                       <span style={styles.optionsState}>{plebsMode ? "ON" : "OFF"}</span>
                     </label>
                   </div>
