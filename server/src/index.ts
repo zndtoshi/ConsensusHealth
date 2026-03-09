@@ -424,7 +424,7 @@ function mergeCommunityUsers(
     if (bestName) rec.name = bestName;
 
     const existingBio = toNonEmptyString(rec.bio);
-    const incomingBio = toNonEmptyString(raw.bio);
+    const incomingBio = toNonEmptyString(raw.bio ?? raw.bio_snippet ?? raw.description);
     const bestBio = chooseString(existingBio, incomingBio, source);
     if (bestBio) rec.bio = bestBio;
 
