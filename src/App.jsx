@@ -1435,6 +1435,11 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedHandle]);
 
+  useEffect(() => {
+    draw();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dimSeededUsersEnabled]);
+
   function updateHoverOverlay(nextHover) {
     const tip = tooltipRef.current;
     if (!tip) return;
@@ -1611,8 +1616,9 @@ export default function App() {
       if (shouldDim) {
         ctx.globalAlpha *= 0.6;
       }
+      const seededDimFactor = shouldDimSeeded ? 0.4 : 1;
       if (shouldDimSeeded) {
-        ctx.globalAlpha *= 0.62;
+        ctx.globalAlpha *= seededDimFactor;
       }
       const drawHalf = (n.side * scaleFactor) / 2;
       const drawX = n.x - drawHalf;
@@ -1639,7 +1645,7 @@ export default function App() {
         if (glow && glow.canvas) {
           ctx.save();
           ctx.globalCompositeOperation = "lighter";
-          ctx.globalAlpha = emphasize ? 1 : 1;
+          ctx.globalAlpha = (emphasize ? 1 : 1) * seededDimFactor;
           ctx.drawImage(glow.canvas, drawX - glow.pad, drawY - glow.pad);
           if (!emphasize) {
             // Multi-pass only on non-Firefox profile.
@@ -2017,7 +2023,7 @@ export default function App() {
                         checked={dimSeededUsersEnabled}
                         onChange={(e) => setDimSeededUsersEnabled(e.target.checked)}
                       />
-                      <span>Dim seeded users</span>
+                      <span>Dim Auto-set users</span>
                       <span style={styles.optionsState}>{dimSeededUsersEnabled ? "ON" : "OFF"}</span>
                     </label>
                   </div>
