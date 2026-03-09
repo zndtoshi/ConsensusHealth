@@ -5,6 +5,9 @@ export type CommunityUser = {
   followers_count?: number | null;
   stance?: string | null;
   x_user_id?: string | null;
+  bio?: string | null;
+  accountCreatedAt?: string | null;
+  account_created_at?: string | null;
 };
 
 export async function fetchCommunityUsers(): Promise<CommunityUser[]> {

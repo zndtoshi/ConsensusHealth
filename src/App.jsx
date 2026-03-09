@@ -22,6 +22,23 @@ function safeLower(s) {
   return (s ?? "").toString().toLowerCase();
 }
 
+function formatAccountAge(accountCreatedAt) {
+  if (!accountCreatedAt) return "";
+  const created = new Date(accountCreatedAt);
+  if (!Number.isFinite(created.getTime())) return "";
+  const now = Date.now();
+  const diffMs = Math.max(0, now - created.getTime());
+  const years = Math.floor(diffMs / (365.25 * 24 * 60 * 60 * 1000));
+  return `${years}y on X`;
+}
+
+function normalizeAccountCreatedAt(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (!Number.isFinite(d.getTime())) return null;
+  return d.toISOString();
+}
+
 function normalizeHandleToken(s) {
   return safeLower(s).trim().replace(/^@+/, "");
 }
@@ -436,6 +453,22 @@ async function loadAccounts() {
     if (incomingName) {
       if (!rec.name || source === "seeded") rec.name = incomingName;
     }
+    const incomingBio = String(raw?.bio ?? "").trim();
+    if (incomingBio) {
+      const currentBio = String(rec?.bio ?? "").trim();
+      if (!currentBio || source === "community") rec.bio = incomingBio;
+    }
+    const incomingAccountCreatedAt = normalizeAccountCreatedAt(
+      raw?.accountCreatedAt ?? raw?.account_created_at
+    );
+    if (incomingAccountCreatedAt) {
+      const currentAccountCreatedAt = normalizeAccountCreatedAt(
+        rec?.accountCreatedAt ?? rec?.account_created_at
+      );
+      if (!currentAccountCreatedAt || source === "community") {
+        rec.accountCreatedAt = incomingAccountCreatedAt;
+      }
+    }
 
     // Prefer any non-empty avatar value across known profile fields.
     const avatarCandidate = firstNonEmptyAvatarField(raw);
@@ -519,6 +552,10 @@ async function loadAccounts() {
       rec.followers_count = Math.max(0, toInt(rec.followers_count));
     }
     rec.avatar_url = firstNonEmptyAvatarField(rec) || rec.avatar_url || null;
+    rec.bio = String(rec.bio ?? "").trim() || null;
+    rec.accountCreatedAt = normalizeAccountCreatedAt(
+      rec.accountCreatedAt ?? rec.account_created_at
+    );
     if (isDevRuntime && rec.stance && !rec.avatar_path && !rec.avatar_url) {
       console.log("[auth-merge][missing-avatar-after-merge]", {
         handle: normalizeHandle(rec.handle),
@@ -1168,6 +1205,8 @@ export default function App() {
   const tooltipRef = useRef(null);
   const tooltipHandleRef = useRef(null);
   const tooltipFollowersRef = useRef(null);
+  const tooltipAgeRef = useRef(null);
+  const tooltipBioRef = useRef(null);
   const tooltipSelfRef = useRef(null);
   const avatarWarnedHandlesRef = useRef(new Set());
   const avatarHookedRef = useRef(new WeakSet());
@@ -1220,6 +1259,8 @@ export default function App() {
           handle: a.handle,
           seedStance,
           followers: rawFollowers,
+          bio: String(a.bio ?? "").trim() || null,
+          accountCreatedAt: a.accountCreatedAt ?? a.account_created_at ?? null,
           side,
           half: side / 2,
           tweetCount,
@@ -1392,7 +1433,7 @@ export default function App() {
       return;
     }
     const left = clamp(nextHover.x + 12, 8, Math.max(8, w - 260));
-    const top = clamp(nextHover.y + 12, 8, Math.max(8, h - 90));
+    const top = clamp(nextHover.y + 12, 8, Math.max(8, h - 160));
     tip.style.display = "block";
     tip.style.left = `${left}px`;
     tip.style.top = `${top}px`;
@@ -1400,6 +1441,16 @@ export default function App() {
     if (tooltipHandleRef.current) tooltipHandleRef.current.textContent = `@${nextHover.handle}`;
     if (tooltipFollowersRef.current) {
       tooltipFollowersRef.current.textContent = `followers: ${formatNum(nextHover.followers)}`;
+    }
+    const accountAge = formatAccountAge(nextHover.accountCreatedAt);
+    const bio = String(nextHover.bio ?? "").trim();
+    if (tooltipAgeRef.current) {
+      tooltipAgeRef.current.style.display = accountAge ? "block" : "none";
+      tooltipAgeRef.current.textContent = accountAge;
+    }
+    if (tooltipBioRef.current) {
+      tooltipBioRef.current.style.display = bio ? "block" : "none";
+      tooltipBioRef.current.textContent = bio;
     }
     if (tooltipSelfRef.current) {
       tooltipSelfRef.current.style.display = isSelfHover ? "inline-block" : "none";
@@ -1733,7 +1784,15 @@ export default function App() {
     const my = e.clientY - rect.top;
     const n = hitTest(mx, my);
     const nextHover = n
-      ? { x: mx, y: my, handle: n.handle, followers: n.followers, tweetCount: n.tweetCount }
+      ? {
+          x: mx,
+          y: my,
+          handle: n.handle,
+          followers: n.followers,
+          tweetCount: n.tweetCount,
+          bio: n.bio,
+          accountCreatedAt: n.accountCreatedAt,
+        }
       : null;
     hoverRef.current = nextHover;
     if (!hoverRafScheduledRef.current) {
@@ -2071,6 +2130,8 @@ export default function App() {
             <div ref={tooltipHandleRef} style={{ fontWeight: 700 }} />
             <div ref={tooltipSelfRef} style={styles.tooltipSelf}>You</div>
             <div ref={tooltipFollowersRef} style={{ opacity: 0.9 }} />
+            <div ref={tooltipAgeRef} style={styles.tooltipAge} />
+            <div ref={tooltipBioRef} style={styles.tooltipBio} />
           </div>
         </div>
       </div>
@@ -2435,6 +2496,20 @@ const styles = {
     borderRadius: 999,
     border: "1px solid rgba(255,255,255,0.75)",
     background: "rgba(255,255,255,0.12)",
+  },
+  tooltipAge: {
+    display: "none",
+    marginTop: 4,
+    opacity: 0.86,
+  },
+  tooltipBio: {
+    display: "none",
+    marginTop: 4,
+    lineHeight: 1.3,
+    opacity: 0.92,
+    maxHeight: "3.9em",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
   },
   side: {
     borderLeft: "1px solid rgba(0,0,0,0.08)",

@@ -1,0 +1,173 @@
+{
+  "generated_at": "2026-03-09T04:53:17.617Z",
+  "users_json_total_raw": 302,
+  "users_json_total_dedup": 302,
+  "community_users_total_rows": 216,
+  "matched_with_bio": 200,
+  "matched_without_bio": 15,
+  "missing_in_db": 87,
+  "sample_missing_in_db": [
+    {
+      "xUserId": "14527699",
+      "handle": "udiwertheimer"
+    },
+    {
+      "xUserId": "",
+      "handle": "hodlonaut"
+    },
+    {
+      "xUserId": "",
+      "handle": "btc_for_freedom"
+    },
+    {
+      "xUserId": "",
+      "handle": "theguyswann"
+    },
+    {
+      "xUserId": "",
+      "handle": "lukedashjr"
+    },
+    {
+      "xUserId": "",
+      "handle": "knutsvanholm"
+    },
+    {
+      "xUserId": "",
+      "handle": "tomerstrolight"
+    },
+    {
+      "xUserId": "",
+      "handle": "parman_the"
+    },
+    {
+      "xUserId": "",
+      "handle": "mattkratter"
+    },
+    {
+      "xUserId": "",
+      "handle": "princey21m"
+    },
+    {
+      "xUserId": "721049861399949300",
+      "handle": "brian_trollz"
+    },
+    {
+      "xUserId": "1192169304889987000",
+      "handle": "lifofifo"
+    },
+    {
+      "xUserId": "",
+      "handle": "1914ad"
+    },
+    {
+      "xUserId": "",
+      "handle": "bigseanharris"
+    },
+    {
+      "xUserId": "",
+      "handle": "beautyon_"
+    },
+    {
+      "xUserId": "",
+      "handle": "grassfedbitcoin"
+    },
+    {
+      "xUserId": "1386812674156253200",
+      "handle": "mononautical"
+    },
+    {
+      "xUserId": "",
+      "handle": "boomer_btc"
+    },
+    {
+      "xUserId": "937317022064558100",
+      "handle": "heavilyarmedc"
+    },
+    {
+      "xUserId": "",
+      "handle": "needcreations"
+    },
+    {
+      "xUserId": "3066008697",
+      "handle": "matteopelleg"
+    },
+    {
+      "xUserId": "",
+      "handle": "dudejlebowski"
+    },
+    {
+      "xUserId": "",
+      "handle": "adamsimecka"
+    },
+    {
+      "xUserId": "1565721906959028200",
+      "handle": "elinagar"
+    },
+    {
+      "xUserId": "",
+      "handle": "bitcoinbeachbr"
+    }
+  ],
+  "sample_matched_without_bio": [
+    {
+      "xUserId": "10446482",
+      "handle": "nvk"
+    },
+    {
+      "xUserId": "958392815347642368",
+      "handle": "1440000bytes"
+    },
+    {
+      "xUserId": "1144866965540003840",
+      "handle": "g_4601"
+    },
+    {
+      "xUserId": "770092226",
+      "handle": "jirvoz"
+    },
+    {
+      "xUserId": "1485303993135996928",
+      "handle": "pledditor"
+    },
+    {
+      "xUserId": "86169677",
+      "handle": "danoprey"
+    },
+    {
+      "xUserId": "811069134",
+      "handle": "_hytrax_"
+    },
+    {
+      "xUserId": "1521981362432921600",
+      "handle": "yarglesplarg"
+    },
+    {
+      "xUserId": "39735829",
+      "handle": "etsiot"
+    },
+    {
+      "xUserId": "1917056253957967875",
+      "handle": "sovereign1200"
+    },
+    {
+      "xUserId": "1128925696217288704",
+      "handle": "ondrejhajek0"
+    },
+    {
+      "xUserId": "34265146",
+      "handle": "piter239"
+    },
+    {
+      "xUserId": "1459706412792221709",
+      "handle": "ogtherabbit"
+    },
+    {
+      "xUserId": "1791495408981565441",
+      "handle": "nbizness67062"
+    },
+    {
+      "xUserId": "1497549750710775810",
+      "handle": "nightnosr"
+    }
+  ]
+}
