@@ -179,6 +179,7 @@ const LABELS_STORAGE_KEY = "consensushealth:bip110:labels:v1";
 const GLOW_CACHE_VERSION = 3;
 const AVATAR_REV = "20260305d";
 const DATA_REV = "20260305d";
+const EQUAL_AVATAR_SIDE = 26;
 const API_BASE = ((import.meta.env && import.meta.env.VITE_API_BASE) || "").replace(/\/$/, "");
 
 function createStanceZoneSprite(color, radius, alpha) {
@@ -634,7 +635,7 @@ export default function App() {
   const [showDonateModal, setShowDonateModal] = useState(false);
   const [adminOptionsOpen, setAdminOptionsOpen] = useState(false);
   const [plebsMode, setPlebsMode] = useState(false);
-  const [dimSeededUsersEnabled, setDimSeededUsersEnabled] = useState(false);
+  const [equalAvatarSizeEnabled, setEqualAvatarSizeEnabled] = useState(false);
   const [dimOthersEnabled, setDimOthersEnabled] = useState(false);
   const [pulseSelectedEnabled, setPulseSelectedEnabled] = useState(false);
   const [manualEditMode, setManualEditMode] = useState(false);
@@ -1247,7 +1248,7 @@ export default function App() {
       .map(({ a, tweetCount, seedStance }) => {
         const rawFollowers = Number(a.followers_count || 0);
         const followersForSize = rawFollowers > 0 ? rawFollowers : (seedStance ? 5000 : 0);
-        const side = sideFromFollowers(followersForSize);
+        const side = equalAvatarSizeEnabled ? EQUAL_AVATAR_SIDE : sideFromFollowers(followersForSize);
         const resolvedAvatar = avatarSrc(a);
         const hasStance = Boolean(seedStance);
         if (hasStance && resolvedAvatar === missingSrc && !import.meta.env.PROD) {
@@ -1389,7 +1390,7 @@ export default function App() {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, err, visibleAccounts.length, w, h, plebsMode]);
+  }, [loading, err, visibleAccounts.length, w, h, plebsMode, equalAvatarSizeEnabled]);
 
   // On resize: recompute stance regions and update forces
   useEffect(() => {
@@ -1434,11 +1435,6 @@ export default function App() {
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedHandle]);
-
-  useEffect(() => {
-    draw();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dimSeededUsersEnabled]);
 
   function updateHoverOverlay(nextHover) {
     const tip = tooltipRef.current;
@@ -1611,14 +1607,9 @@ export default function App() {
         dimOthersEnabled &&
         Boolean(curSelected) &&
         n.handle !== curSelected;
-      const shouldDimSeeded = dimSeededUsersEnabled && !n.hasUserStanceChange;
       ctx.save();
       if (shouldDim) {
         ctx.globalAlpha *= 0.6;
-      }
-      const seededDimFactor = shouldDimSeeded ? 0.4 : 1;
-      if (shouldDimSeeded) {
-        ctx.globalAlpha *= seededDimFactor;
       }
       const drawHalf = (n.side * scaleFactor) / 2;
       const drawX = n.x - drawHalf;
@@ -1645,7 +1636,7 @@ export default function App() {
         if (glow && glow.canvas) {
           ctx.save();
           ctx.globalCompositeOperation = "lighter";
-          ctx.globalAlpha = (emphasize ? 1 : 1) * seededDimFactor;
+          ctx.globalAlpha = emphasize ? 1 : 1;
           ctx.drawImage(glow.canvas, drawX - glow.pad, drawY - glow.pad);
           if (!emphasize) {
             // Multi-pass only on non-Firefox profile.
@@ -2020,11 +2011,11 @@ export default function App() {
                     <label style={styles.optionsItem}>
                       <input
                         type="checkbox"
-                        checked={dimSeededUsersEnabled}
-                        onChange={(e) => setDimSeededUsersEnabled(e.target.checked)}
+                        checked={equalAvatarSizeEnabled}
+                        onChange={(e) => setEqualAvatarSizeEnabled(e.target.checked)}
                       />
-                      <span>Dim Auto-set users</span>
-                      <span style={styles.optionsState}>{dimSeededUsersEnabled ? "ON" : "OFF"}</span>
+                      <span>Equal avatar size</span>
+                      <span style={styles.optionsState}>{equalAvatarSizeEnabled ? "ON" : "OFF"}</span>
                     </label>
                   </div>
                 )}
