@@ -663,6 +663,7 @@ export default function App() {
       const data = await res.json();
       const authenticated = Boolean(data && data.x_user_id);
       setMe(authenticated ? { authenticated: true, ...data } : { authenticated: false });
+      setEqualAvatarSizeEnabled(authenticated ? Boolean(data?.equal_avatar_size) : false);
       if (authenticated && data?.handle && data?.stance) {
         setLabels((prev) => ({ ...prev, [String(data.handle).toLowerCase()]: normalizedStance(data.stance) }));
       }
@@ -683,6 +684,7 @@ export default function App() {
       });
     } finally {
       setMe(null);
+      setEqualAvatarSizeEnabled(false);
     }
   }
 
@@ -704,6 +706,21 @@ export default function App() {
       await loadMe();
     } finally {
       setAuthBusy(false);
+    }
+  }
+
+  async function setEqualAvatarSizePreference(nextValue) {
+    setEqualAvatarSizeEnabled(Boolean(nextValue));
+    if (!me?.authenticated) return;
+    try {
+      await fetch(`${API_BASE}/api/me/preferences`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ equal_avatar_size: Boolean(nextValue) }),
+      });
+    } catch {
+      // ignore transient preference save failures; UI remains responsive
     }
   }
 
@@ -2012,7 +2029,7 @@ export default function App() {
                       <input
                         type="checkbox"
                         checked={equalAvatarSizeEnabled}
-                        onChange={(e) => setEqualAvatarSizeEnabled(e.target.checked)}
+                        onChange={(e) => setEqualAvatarSizePreference(e.target.checked)}
                       />
                       <span>Equal avatar size</span>
                       <span style={styles.optionsState}>{equalAvatarSizeEnabled ? "ON" : "OFF"}</span>

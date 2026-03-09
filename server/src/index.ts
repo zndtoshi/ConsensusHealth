@@ -141,6 +141,7 @@ type SessionUser = {
   avatar_url: string | null;
   followers_count: number | null;
   stance: string | null;
+  equal_avatar_size: boolean;
 };
 
 const pendingAuth = new Map<string, PendingAuth>();
@@ -503,6 +504,7 @@ async function initDb(): Promise<void> {
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();`);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS bio TEXT;`);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS account_created_at TIMESTAMPTZ;`);
+  await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS equal_avatar_size BOOLEAN DEFAULT FALSE;`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS stance_events (
       id SERIAL PRIMARY KEY,
@@ -584,6 +586,7 @@ function getSessionUser(req: Request): SessionUser | null {
         ? followers_count
         : Number(followers_count || 0) || null,
     stance: null,
+    equal_avatar_size: false,
   };
 }
 
@@ -1071,6 +1074,32 @@ app.get("/api/me", async (req, res, next) => {
     );
 
     res.json(result.rows[0] || null);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/me/preferences", async (req, res, next) => {
+  try {
+    const user = getSessionUser(req);
+    if (!user) {
+      res.status(401).json({ error: "not_logged_in" });
+      return;
+    }
+
+    const equalAvatarSize = Boolean(req.body?.equal_avatar_size);
+    const result = await pool.query(
+      `
+      UPDATE community_users
+      SET equal_avatar_size = $2,
+          updated_at = NOW()
+      WHERE x_user_id = $1
+      RETURNING x_user_id, equal_avatar_size
+      `,
+      [user.x_user_id, equalAvatarSize]
+    );
+
+    res.json(result.rows[0] || { x_user_id: user.x_user_id, equal_avatar_size: equalAvatarSize });
   } catch (err) {
     next(err);
   }
