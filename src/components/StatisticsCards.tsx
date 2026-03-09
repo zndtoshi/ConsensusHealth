@@ -471,7 +471,7 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
         {data.topFlowsLast7Days.length === 0 ? (
           <div style={{ fontSize: 12, color: "rgba(255,255,255,0.85)" }}>No flows in the last 7 days.</div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
             {data.topFlowsLast7Days.slice(0, 8).map((f, idx) => {
               const fromLabel = f.from ? STANCE[f.from].label : "Unset";
               const fromColor = f.from ? STANCE[f.from].color : "rgba(255,255,255,0.45)";
@@ -483,22 +483,24 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
                     borderRadius: 14,
                     border: "1px solid rgba(255,255,255,0.08)",
                     background: "rgba(0,0,0,0.40)",
-                    padding: "8px 9px",
+                    padding: "6px 8px",
                     display: "flex",
-                    justifyContent: "space-between",
+                    justifyContent: "flex-start",
                     alignItems: "center",
-                    gap: 8,
-                    minHeight: 36,
+                    gap: 6,
+                    minHeight: 30,
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                     <span style={{ width: 10, height: 10, borderRadius: 999, background: fromColor }} />
                     <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{fromLabel}</span>
                     <span style={{ opacity: 0.5 }}>→</span>
                     <span style={{ width: 10, height: 10, borderRadius: 999, background: to.color }} />
                     <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{to.label}</span>
                   </div>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{formatInt(f.count)}</div>
+                  <div style={{ marginLeft: 8, fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>
+                    {formatInt(f.count)}
+                  </div>
                 </div>
               );
             })}
