@@ -754,7 +754,7 @@ app.get("/auth/x/callback", async (req, res, next) => {
     }
 
     const meRes = await fetch(
-      "https://api.x.com/2/users/me?user.fields=profile_image_url,public_metrics",
+      "https://api.x.com/2/users/me?user.fields=profile_image_url,public_metrics,description,created_at",
       {
         headers: { Authorization: `Bearer ${accessToken}` },
       }
@@ -771,6 +771,8 @@ app.get("/auth/x/callback", async (req, res, next) => {
         username?: string;
         name?: string;
         profile_image_url?: string;
+        description?: string;
+        created_at?: string;
         public_metrics?: { followers_count?: number };
       };
     };
@@ -786,6 +788,8 @@ app.get("/auth/x/callback", async (req, res, next) => {
     const name = data.name ? String(data.name) : null;
     const rawProfileImageUrl = data.profile_image_url ? String(data.profile_image_url) : null;
     const avatarUrl = rawProfileImageUrl ? rawProfileImageUrl.replace("_normal", "") : null;
+    const xBio = String(data.description ?? "").trim() || null;
+    const xAccountCreatedAt = String(data.created_at ?? "").trim() || null;
     const followersCount =
       typeof data.public_metrics?.followers_count === "number" ? data.public_metrics.followers_count : null;
     let enrichedBio: string | null = null;
@@ -813,10 +817,14 @@ app.get("/auth/x/callback", async (req, res, next) => {
         profile_image_url: rawProfileImageUrl,
         persisted_avatar_url: avatarUrl,
         followers_count: followersCount,
+        x_bio: Boolean(xBio),
+        x_account_created_at: xAccountCreatedAt || null,
         enriched_bio: Boolean(enrichedBio),
         enriched_account_created_at: enrichedAccountCreatedAt || null,
       });
     }
+    const persistedBio = xBio || enrichedBio;
+    const persistedAccountCreatedAt = xAccountCreatedAt || enrichedAccountCreatedAt;
 
     // Link/login logic:
     // 1) find by x_user_id and update profile fields (preserve stance)
@@ -854,15 +862,18 @@ app.get("/auth/x/callback", async (req, res, next) => {
           UPDATE community_users
           SET x_user_id = $1,
               handle = $2,
-              name = $3,
-              avatar_url = $4,
-              followers_count = $5,
-              bio = COALESCE(NULLIF(community_users.bio, ''), $6),
+              name = COALESCE(NULLIF($3, ''), community_users.name),
+              avatar_url = COALESCE(NULLIF($4, ''), community_users.avatar_url),
+              followers_count = COALESCE(NULLIF($5, 0), community_users.followers_count),
+              bio = CASE
+                WHEN NULLIF($6, '') IS NOT NULL THEN $6
+                ELSE community_users.bio
+              END,
               account_created_at = COALESCE(community_users.account_created_at, $7::timestamptz),
               updated_at = now()
           WHERE id = $8
         `,
-          [xUserId, handle, name, avatarUrl, followersCount, enrichedBio, enrichedAccountCreatedAt, winner.id]
+          [xUserId, handle, name, avatarUrl, followersCount, persistedBio, persistedAccountCreatedAt, winner.id]
         );
         await client.query(`DELETE FROM community_users WHERE id = $1`, [loser.id]);
       } else if (byId) {
@@ -870,15 +881,18 @@ app.get("/auth/x/callback", async (req, res, next) => {
           `
           UPDATE community_users
           SET handle = $2,
-              name = $3,
-              avatar_url = $4,
-              followers_count = $5,
-              bio = COALESCE(NULLIF(community_users.bio, ''), $6),
+              name = COALESCE(NULLIF($3, ''), community_users.name),
+              avatar_url = COALESCE(NULLIF($4, ''), community_users.avatar_url),
+              followers_count = COALESCE(NULLIF($5, 0), community_users.followers_count),
+              bio = CASE
+                WHEN NULLIF($6, '') IS NOT NULL THEN $6
+                ELSE community_users.bio
+              END,
               account_created_at = COALESCE(community_users.account_created_at, $7::timestamptz),
               updated_at = now()
           WHERE x_user_id = $1
         `,
-          [xUserId, handle, name, avatarUrl, followersCount, enrichedBio, enrichedAccountCreatedAt]
+          [xUserId, handle, name, avatarUrl, followersCount, persistedBio, persistedAccountCreatedAt]
         );
       } else {
         if (byHandle) {
@@ -887,15 +901,18 @@ app.get("/auth/x/callback", async (req, res, next) => {
             UPDATE community_users
             SET x_user_id = $1,
                 handle = $2,
-                name = $3,
-                avatar_url = $4,
-                followers_count = $5,
-                bio = COALESCE(NULLIF(community_users.bio, ''), $6),
+                name = COALESCE(NULLIF($3, ''), community_users.name),
+                avatar_url = COALESCE(NULLIF($4, ''), community_users.avatar_url),
+                followers_count = COALESCE(NULLIF($5, 0), community_users.followers_count),
+                bio = CASE
+                  WHEN NULLIF($6, '') IS NOT NULL THEN $6
+                  ELSE community_users.bio
+                END,
                 account_created_at = COALESCE(community_users.account_created_at, $7::timestamptz),
                 updated_at = now()
             WHERE id = $8
           `,
-            [xUserId, handle, name, avatarUrl, followersCount, enrichedBio, enrichedAccountCreatedAt, byHandle.id]
+            [xUserId, handle, name, avatarUrl, followersCount, persistedBio, persistedAccountCreatedAt, byHandle.id]
           );
         } else {
           await client.query(
@@ -913,7 +930,7 @@ app.get("/auth/x/callback", async (req, res, next) => {
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, NULL, now())
           `,
-            [xUserId, handle, name, avatarUrl, followersCount, enrichedBio, enrichedAccountCreatedAt]
+            [xUserId, handle, name, avatarUrl, followersCount, persistedBio, persistedAccountCreatedAt]
           );
         }
       }
