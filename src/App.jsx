@@ -1467,6 +1467,8 @@ export default function App() {
     if (!visibleAccounts.length || w < 10 || h < 10) return;
 
     zoomCuePlayedRef.current = true;
+    const baselinePanX = Number.isFinite(camRef.current.panX) ? camRef.current.panX : 0;
+    const baselinePanY = Number.isFinite(camRef.current.panY) ? camRef.current.panY : 0;
     const baseline = Number.isFinite(camRef.current.scaleMul) && camRef.current.scaleMul > 0
       ? camRef.current.scaleMul
       : 1;
@@ -1474,6 +1476,16 @@ export default function App() {
     const startDelayMs = 180;
     const durationMs = 560;
     const startAt = performance.now() + startDelayMs;
+    const centerX = w / 2;
+    const centerY = h / 2;
+    const fitAtStart = fitRef.current || { scale: 1, tx: 0, ty: 0 };
+    const viewAtStart = viewRef.current || {
+      scale: fitAtStart.scale * baseline,
+      tx: fitAtStart.tx + baselinePanX,
+      ty: fitAtStart.ty + baselinePanY,
+    };
+    const worldAnchorX = (centerX - viewAtStart.tx) / (viewAtStart.scale || 1);
+    const worldAnchorY = (centerY - viewAtStart.ty) / (viewAtStart.scale || 1);
 
     const step = (now) => {
       if (now < startAt) {
@@ -1484,12 +1496,16 @@ export default function App() {
       // 0 -> 1 -> 0 curve so we zoom out then return smoothly.
       const wave = Math.sin(Math.PI * t);
       const nextScaleMul = baseline - (baseline - zoomOutMul) * wave;
-      camRef.current = { ...camRef.current, scaleMul: nextScaleMul };
+      const fit = fitRef.current || fitAtStart;
+      const nextWorldScale = (fit.scale || 1) * nextScaleMul;
+      const nextPanX = centerX - fit.tx - worldAnchorX * nextWorldScale;
+      const nextPanY = centerY - fit.ty - worldAnchorY * nextWorldScale;
+      camRef.current = { ...camRef.current, scaleMul: nextScaleMul, panX: nextPanX, panY: nextPanY };
       drawRef.current();
       if (t < 1) {
         zoomCueRafRef.current = requestAnimationFrame(step);
       } else {
-        camRef.current = { ...camRef.current, scaleMul: baseline };
+        camRef.current = { ...camRef.current, scaleMul: baseline, panX: baselinePanX, panY: baselinePanY };
         drawRef.current();
         zoomCueRafRef.current = 0;
       }
