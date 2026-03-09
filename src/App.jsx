@@ -1349,14 +1349,14 @@ export default function App() {
       .velocityDecay(0.4)
       .force("center", forceCenter(w / 2, h / 2))
       // Plebs mode uses denser per-stance blobs by relaxing hard X bounds and using slightly stronger packing.
-      .force("stanceX", forceX(stanceCenterX).strength(plebsMode ? 0.075 : 0.11))
-      .force("stanceAnchor", forceStanceAnchor(regionRef, labelsRef, plebsMode ? (isFirefox ? 0.01 : 0.013) : (isFirefox ? 0.012 : 0.016)))
+      .force("stanceX", forceX(stanceCenterX).strength(plebsMode ? 0.09 : 0.11))
+      .force("stanceAnchor", forceStanceAnchor(regionRef, labelsRef, plebsMode ? (isFirefox ? 0.012 : 0.015) : (isFirefox ? 0.012 : 0.016)))
       .force("stanceBounds", plebsMode ? null : forceStanceBounds(regionRef, labelsRef, 0.07))
       .force("pullY", forceY(h / 2).strength(plebsMode ? 0.06 : 0.03))
-      .force("charge", forceManyBody().strength(plebsMode ? -6 : -4))
+      .force("charge", forceManyBody().strength(plebsMode ? -5 : -4))
       .force(
         "collide",
-        forceCollide((d) => Math.sqrt(2) * d.half + 0.6).iterations(plebsMode ? 3 : 2)
+        forceCollide((d) => Math.sqrt(2) * d.half + (plebsMode ? 0.3 : 0.6)).iterations(plebsMode ? 3 : 2)
       );
 
     simRef.current = sim;
