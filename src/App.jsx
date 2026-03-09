@@ -731,7 +731,10 @@ export default function App() {
   const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
   const visibleAccounts = useMemo(() => {
     if (!plebsMode) return accounts;
-    return accounts.filter((a) => getFollowersFromUser(a).followers < 3000);
+    return accounts.filter((a) => {
+      const info = getFollowersFromUser(a);
+      return info.source !== "none" && info.followers < 3000;
+    });
   }, [accounts, plebsMode]);
   const accountByHandle = useMemo(() => {
     const m = new Map();
@@ -1001,10 +1004,6 @@ export default function App() {
 
   useEffect(() => {
     if (isPrivilegedEditor) return;
-    setAdminOptionsOpen(false);
-    setPlebsMode(false);
-    setDimOthersEnabled(false);
-    setPulseSelectedEnabled(false);
     setManualEditMode(false);
     setManualEditTarget(null);
     setManualEditChoice("neutral");
@@ -1977,58 +1976,29 @@ export default function App() {
             </button>
           ) : (
             <>
-              {isPrivilegedEditor && (
-                <div ref={adminOptionsRef} style={styles.optionsWrap}>
-                  <button
-                    style={styles.btn}
-                    onClick={() => setAdminOptionsOpen((v) => !v)}
-                    disabled={authBusy}
-                    title="Admin options"
-                  >
-                    Options
-                  </button>
-                  {adminOptionsOpen && (
-                    <div style={styles.optionsMenu}>
-                      <label style={styles.optionsItem}>
-                        <input
-                          type="checkbox"
-                          checked={manualEditMode}
-                          onChange={(e) => setManualEditMode(e.target.checked)}
-                        />
-                        <span>Edit stances</span>
-                        <span style={styles.optionsState}>{manualEditMode ? "ON" : "OFF"}</span>
-                      </label>
-                      <label style={styles.optionsItem}>
-                        <input
-                          type="checkbox"
-                          checked={plebsMode}
-                          onChange={(e) => setPlebsMode(e.target.checked)}
-                        />
-                        <span>Plebs</span>
-                        <span style={styles.optionsState}>{plebsMode ? "ON" : "OFF"}</span>
-                      </label>
-                      <label style={styles.optionsItem}>
-                        <input
-                          type="checkbox"
-                          checked={dimOthersEnabled}
-                          onChange={(e) => setDimOthersEnabled(e.target.checked)}
-                        />
-                        <span>Dim others</span>
-                        <span style={styles.optionsState}>{dimOthersEnabled ? "ON" : "OFF"}</span>
-                      </label>
-                      <label style={styles.optionsItem}>
-                        <input
-                          type="checkbox"
-                          checked={pulseSelectedEnabled}
-                          onChange={(e) => setPulseSelectedEnabled(e.target.checked)}
-                        />
-                        <span>Pulse selected</span>
-                        <span style={styles.optionsState}>{pulseSelectedEnabled ? "ON" : "OFF"}</span>
-                      </label>
-                    </div>
-                  )}
-                </div>
-              )}
+              <div ref={adminOptionsRef} style={styles.optionsWrap}>
+                <button
+                  style={styles.btn}
+                  onClick={() => setAdminOptionsOpen((v) => !v)}
+                  disabled={authBusy}
+                  title="Options"
+                >
+                  Options
+                </button>
+                {adminOptionsOpen && (
+                  <div style={styles.optionsMenu}>
+                    <label style={styles.optionsItem}>
+                      <input
+                        type="checkbox"
+                        checked={plebsMode}
+                        onChange={(e) => setPlebsMode(e.target.checked)}
+                      />
+                      <span>Plebs</span>
+                      <span style={styles.optionsState}>{plebsMode ? "ON" : "OFF"}</span>
+                    </label>
+                  </div>
+                )}
+              </div>
               <div style={styles.userChip}>
                 <img
                   src={me.avatar_url || `${getBase()}/avatars/_missing.svg`}

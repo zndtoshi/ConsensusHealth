@@ -12,7 +12,7 @@ function normalizeHandle(value: unknown): string {
 }
 
 export function isPrivilegedManualEditor(handle: unknown): boolean {
-  return normalizeHandle(handle) === "zndtoshi";
+  return false;
 }
 
 export function applyManualStanceUpdate<T extends AccountRecord>(
