@@ -276,6 +276,16 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
     if (from === "approve") return 3;
     return 4;
   };
+  const sortedTopFlows = [...data.topFlowsLast7Days]
+    .sort((a, b) => {
+      const byFrom = flowFromOrder(a.from) - flowFromOrder(b.from);
+      if (byFrom !== 0) return byFrom;
+      return b.count - a.count;
+    })
+    .slice(0, 8);
+  const flowsPerColumn = Math.ceil(sortedTopFlows.length / 2);
+  const leftFlows = sortedTopFlows.slice(0, flowsPerColumn);
+  const rightFlows = sortedTopFlows.slice(flowsPerColumn);
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
@@ -479,14 +489,8 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
           <div style={{ fontSize: 12, color: "rgba(255,255,255,0.85)" }}>No flows in the last 7 days.</div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-            {[...data.topFlowsLast7Days]
-              .sort((a, b) => {
-                const byFrom = flowFromOrder(a.from) - flowFromOrder(b.from);
-                if (byFrom !== 0) return byFrom;
-                return b.count - a.count;
-              })
-              .slice(0, 8)
-              .map((f, idx) => {
+            <div style={{ display: "grid", gap: 6 }}>
+              {leftFlows.map((f, idx) => {
               const fromLabel = f.from ? STANCE[f.from].label : "Unset";
               const fromColor = f.from ? STANCE[f.from].color : "rgba(255,255,255,0.45)";
               const to = STANCE[f.to];
@@ -499,7 +503,7 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
                     background: "rgba(0,0,0,0.40)",
                     padding: "6px 8px",
                     display: "flex",
-                    justifyContent: "flex-start",
+                    justifyContent: "center",
                     alignItems: "center",
                     gap: 6,
                     minHeight: 30,
@@ -518,6 +522,41 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
                 </div>
               );
             })}
+            </div>
+            <div style={{ display: "grid", gap: 6 }}>
+              {rightFlows.map((f, idx) => {
+              const fromLabel = f.from ? STANCE[f.from].label : "Unset";
+              const fromColor = f.from ? STANCE[f.from].color : "rgba(255,255,255,0.45)";
+              const to = STANCE[f.to];
+              return (
+                <div
+                  key={`right-${idx}`}
+                  style={{
+                    borderRadius: 14,
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    background: "rgba(0,0,0,0.40)",
+                    padding: "6px 8px",
+                    display: "flex",
+                    justifyContent: "center",
+                    alignItems: "center",
+                    gap: 6,
+                    minHeight: 30,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 999, background: fromColor }} />
+                    <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{fromLabel}</span>
+                    <span style={{ opacity: 0.5 }}>→</span>
+                    <span style={{ width: 10, height: 10, borderRadius: 999, background: to.color }} />
+                    <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{to.label}</span>
+                  </div>
+                  <div style={{ marginLeft: 8, fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>
+                    {formatInt(f.count)}
+                  </div>
+                </div>
+              );
+            })}
+            </div>
           </div>
         )}
       </Card>
