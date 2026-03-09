@@ -1219,6 +1219,8 @@ export default function App() {
   const fitRef = useRef({ scale: 1, tx: 0, ty: 0 });
   const viewRef = useRef({ scale: 1, tx: 0, ty: 0 });
   const isPanningRef = useRef(false);
+  const zoomCuePlayedRef = useRef(false);
+  const zoomCueRafRef = useRef(0);
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const labelsRef = useRef({});
   const selectedHandleRef = useRef(null);
@@ -1452,6 +1454,53 @@ export default function App() {
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedHandle]);
+
+  useEffect(() => {
+    return () => {
+      if (zoomCueRafRef.current) cancelAnimationFrame(zoomCueRafRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (zoomCuePlayedRef.current) return;
+    if (loading || err) return;
+    if (!visibleAccounts.length || w < 10 || h < 10) return;
+
+    zoomCuePlayedRef.current = true;
+    const baseline = Number.isFinite(camRef.current.scaleMul) && camRef.current.scaleMul > 0
+      ? camRef.current.scaleMul
+      : 1;
+    const zoomOutMul = baseline * 0.96; // subtle ~4% zoom-out cue
+    const startDelayMs = 180;
+    const durationMs = 560;
+    const startAt = performance.now() + startDelayMs;
+
+    const step = (now) => {
+      if (now < startAt) {
+        zoomCueRafRef.current = requestAnimationFrame(step);
+        return;
+      }
+      const t = Math.min(1, (now - startAt) / durationMs);
+      // 0 -> 1 -> 0 curve so we zoom out then return smoothly.
+      const wave = Math.sin(Math.PI * t);
+      const nextScaleMul = baseline - (baseline - zoomOutMul) * wave;
+      camRef.current = { ...camRef.current, scaleMul: nextScaleMul };
+      drawRef.current();
+      if (t < 1) {
+        zoomCueRafRef.current = requestAnimationFrame(step);
+      } else {
+        camRef.current = { ...camRef.current, scaleMul: baseline };
+        drawRef.current();
+        zoomCueRafRef.current = 0;
+      }
+    };
+
+    zoomCueRafRef.current = requestAnimationFrame(step);
+    return () => {
+      if (zoomCueRafRef.current) cancelAnimationFrame(zoomCueRafRef.current);
+      zoomCueRafRef.current = 0;
+    };
+  }, [loading, err, visibleAccounts.length, w, h]);
 
   function updateHoverOverlay(nextHover) {
     const tip = tooltipRef.current;
