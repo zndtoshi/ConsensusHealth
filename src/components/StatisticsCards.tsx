@@ -269,6 +269,13 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
     color: STANCE[k].color,
     label: STANCE[k].label,
   }));
+  const flowFromOrder = (from: StanceKey | null): number => {
+    if (from === null) return 0; // Unset first
+    if (from === "neutral") return 1;
+    if (from === "against") return 2;
+    if (from === "approve") return 3;
+    return 4;
+  };
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
@@ -472,7 +479,14 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
           <div style={{ fontSize: 12, color: "rgba(255,255,255,0.85)" }}>No flows in the last 7 days.</div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-            {data.topFlowsLast7Days.slice(0, 8).map((f, idx) => {
+            {[...data.topFlowsLast7Days]
+              .sort((a, b) => {
+                const byFrom = flowFromOrder(a.from) - flowFromOrder(b.from);
+                if (byFrom !== 0) return byFrom;
+                return b.count - a.count;
+              })
+              .slice(0, 8)
+              .map((f, idx) => {
               const fromLabel = f.from ? STANCE[f.from].label : "Unset";
               const fromColor = f.from ? STANCE[f.from].color : "rgba(255,255,255,0.45)";
               const to = STANCE[f.to];
