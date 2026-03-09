@@ -1442,12 +1442,7 @@ export default function App() {
     if (tooltipFollowersRef.current) {
       tooltipFollowersRef.current.textContent = `followers: ${formatNum(nextHover.followers)}`;
     }
-    const accountAge = formatAccountAge(nextHover.accountCreatedAt);
     const bio = String(nextHover.bio ?? "").trim();
-    if (tooltipAgeRef.current) {
-      tooltipAgeRef.current.style.display = accountAge ? "block" : "none";
-      tooltipAgeRef.current.textContent = accountAge;
-    }
     if (tooltipBioRef.current) {
       tooltipBioRef.current.style.display = bio ? "block" : "none";
       tooltipBioRef.current.textContent = bio;
