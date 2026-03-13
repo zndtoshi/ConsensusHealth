@@ -116,10 +116,10 @@ test("history summary computes totals and transitions", () => {
   assert.equal(summary.transitionCounts["against->neutral"], 1);
 });
 
-test("manual admin privilege check is disabled for all users", () => {
-  assert.equal(isPrivilegedManualEditorHandle("zndtoshi"), false);
-  assert.equal(isPrivilegedManualEditorHandle("@zndtoshi"), false);
-  assert.equal(isPrivilegedManualEditorHandle("ZndToshi "), false);
+test("manual admin privilege check only allows zndtoshi", () => {
+  assert.equal(isPrivilegedManualEditorHandle("zndtoshi"), true);
+  assert.equal(isPrivilegedManualEditorHandle("@zndtoshi"), true);
+  assert.equal(isPrivilegedManualEditorHandle("ZndToshi "), true);
   assert.equal(isPrivilegedManualEditorHandle("other"), false);
 });
 

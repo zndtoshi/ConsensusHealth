@@ -555,7 +555,7 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
                   </div>
                 </div>
               );
-            })}
+              })}
             </div>
           </div>
         )}

@@ -1,0 +1,63 @@
+* [33m984e3f5[m[33m ([m[1;36mHEAD -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m sharp avatars3
+* [33mb2bb2d3[m sharp avatars2
+* [33m80c1aaa[m sharp avatars
+* [33mfe15074[m Add subtle zoom cue on initial visualization load2
+* [33m642d8af[m Add subtle zoom cue on initial visualization load
+* [33m51050a0[m Stats cards 2
+* [33m11104ef[m sTATS CARDS
+* [33mab7dacb[m Tighten flows statistics layout2
+* [33m49dd3f1[m Tighten flows statistics layout
+* [33m5723be7[m Persist equal avatar size preference per logged-in user
+* [33m289eb3c[m Add option to render all avatars at equal size
+* [33m3a08316[m Revert "Tighten plebs blob cluster layout"
+* [33ma9c43b0[m Changed dim manually seeded users
+* [33mdc4959d[m Add option to dim manually seeded users
+* [33meb59c92[m Tighten plebs blob cluster layout
+* [33maee2d92[m Add blob cluster layout for Plebs mode and update option label
+* [33md52c5d1[m Remove admin mode and add plebs filter option
+* [33me358402[m Fetch and persist bio for new OAuth users during login
+* [33m6af1a7c[m Remove account age from hover tooltip
+* [33me388694[m Fix seeded user bio mapping in /api/community merge
+* [33m8f7f9f8[m Fix community merge to preserve seeded and DB bios
+* [33m0bee076[m WIP hover tooltip: add bio + account age support
+* [33m1b23483[m Populate all community
+* [33me2a51ec[m Add twitterapi profile enrichment for existing and new users
+* [33mccfa7bb[m Normalize stance island edge gaps for visual symmetry
+* [33mfe98ed9[m Make backend stance canonical and stop local cache overrides
+* [33m4ce11e4[m Revert "Add stance explanation source with tweet preview snippet"
+* [33m77636d8[m Add stance explanation source with tweet preview snippet
+* [33m071eb5d[m Add subtle stance-center anchor force for more balanced clusters
+* [33mf08a37b[m Add subtle cached stance background glow zones
+* [33mc0bca87[m Rename Statistics button to Stats and group bottom-right controls
+* [33m00bc07f[m Balance stance layout so neutral cluster stays visually centered
+* [33m200df1e[m Add admin god-mode visualization toggles: dim others and pulse selected
+* [33m704a24a[m Add admin options dropdown with edit stance and plebs view
+* [33m36b6927[m Add selected user avatar and rebalance header metadata
+* [33mad7d2a1[m Reduce Firefox canvas cost with safe single-canvas optimizations
+* [33m343b9b9[m Add privileged manual stance edit mode for zndtoshi
+* [33m0958d93[m Add persistent stance history tracking (stance_events table + backend logging + statistics support)
+* [33mced6b53[m Preserve profile fields when updating user stance
+* [33m8267972[m Revert "Add admin click-to-edit stance flow for zndtoshi"
+* [33m3f837a2[m Add admin click-to-edit stance flow for zndtoshi
+* [33mf54b915[m Fix Firefox avatar loading compatibility
+* [33md63bbb8[m Checkpoint before fixing X-auth avatar persistence
+* [33mba6b99e[m Improve readability of followers impact legend in statistics modal
+* [33m3d5a3f9[m Add follower percentage breakdown to statistics modal
+* [33m0f4f3d5[m Use root icon.png as favicon
+* [33mdcb9922[m Improve statistics modal readability by reducing transparency
+* [33mbe076e8[m Fix statistics follower counts to use latest profile followers_count
+* [33meeeda37[m Redesign statistics modal into dashboard cards with SVG donut charts
+* [33m6956afb[m Add statistics modal + /api/stats + stance change tracking
+* [33mecd62e0[m Perf: cheaper aura on Firefox only
+* [33m0177a91[m UI: rename Support stance to Approve
+* [33m8d06259[m Fix donate QR rendering on Firefox (SVG QR)
+* [33m954a30e[m Revert "Perf: Firefox perf-lite mode + lazy avatar decoding"
+* [33m72d0996[m Perf: Firefox perf-lite mode + lazy avatar decoding
+* [33mcc3b038[m UI improvements: stance aura, header changes, title fix
+* [33m1b4cc0a[m Fix OAuth redirect base URL
+* [33m61f0025[m UI: remove stance label from header; highlight selected stance button
+* [33ma2ed9cc[m Add favicon icon.png
+* [33m0d479df[m Fix: derive X OAuth redirect_uri from APP_URL
+* [33m2109557[m Deploy: build server TS + start script + serve dist in production
+* [33meaa87a6[m[33m ([m[1;33mtag: v0.1.0[m[33m)[m UI polish: BIP110 header, island labels, stats, share, disclaimer, branding
+* [33mbadf1b8[m Initial ConsensusHealth version

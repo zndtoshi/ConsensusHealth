@@ -2081,6 +2081,17 @@ export default function App() {
                 </button>
                 {adminOptionsOpen && (
                   <div style={styles.optionsMenu}>
+                    {isPrivilegedEditor && (
+                      <label style={styles.optionsItem}>
+                        <input
+                          type="checkbox"
+                          checked={manualEditMode}
+                          onChange={(e) => setManualEditMode(e.target.checked)}
+                        />
+                        <span>Edit stances</span>
+                        <span style={styles.optionsState}>{manualEditMode ? "ON" : "OFF"}</span>
+                      </label>
+                    )}
                     <label style={styles.optionsItem}>
                       <input
                         type="checkbox"

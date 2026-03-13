@@ -2,10 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./manualEditState";
 
-test("privileged manual editor is disabled for all users", () => {
-  assert.equal(isPrivilegedManualEditor("zndtoshi"), false);
-  assert.equal(isPrivilegedManualEditor("@zndtoshi"), false);
-  assert.equal(isPrivilegedManualEditor("ZndToshi "), false);
+test("privileged manual editor is only zndtoshi", () => {
+  assert.equal(isPrivilegedManualEditor("zndtoshi"), true);
+  assert.equal(isPrivilegedManualEditor("@zndtoshi"), true);
+  assert.equal(isPrivilegedManualEditor("ZndToshi "), true);
   assert.equal(isPrivilegedManualEditor("someone_else"), false);
 });
 
