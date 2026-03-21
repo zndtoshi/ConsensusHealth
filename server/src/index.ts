@@ -1255,6 +1255,51 @@ app.post("/api/admin/stance", async (req, res, next) => {
   }
 });
 
+app.get("/api/admin/stance-playback-sequence", async (req, res, next) => {
+  try {
+    const user = getSessionUser(req);
+    if (!user || !isPrivilegedManualEditorHandle(user.handle)) {
+      res.status(403).json({ error: "forbidden" });
+      return;
+    }
+
+    const rowsRes = await pool.query(
+      `
+      WITH first_user AS (
+        SELECT DISTINCT ON (sh.x_user_id)
+          sh.x_user_id,
+          sh.changed_at AS first_at,
+          sh.new_stance
+        FROM stance_history sh
+        WHERE sh.changed_by = 'user'
+        ORDER BY sh.x_user_id ASC, sh.changed_at ASC
+      )
+      SELECT
+        f.x_user_id,
+        lower(trim(coalesce(cu.handle, ''))) AS handle,
+        f.new_stance AS stance,
+        f.first_at
+      FROM first_user f
+      INNER JOIN community_users cu ON cu.x_user_id = f.x_user_id
+      WHERE trim(coalesce(cu.handle, '')) <> ''
+      ORDER BY f.first_at ASC
+      LIMIT 2000
+      `
+    );
+
+    const items = rowsRes.rows.map((r) => ({
+      x_user_id: String(r.x_user_id ?? ""),
+      handle: String(r.handle ?? "").trim(),
+      stance: String(r.stance ?? "").trim(),
+      changed_at: new Date(r.first_at).toISOString(),
+    }));
+
+    res.json({ items });
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.get("/api/stance-history", async (req, res, next) => {
   try {
     const xUserId = String(req.query.x_user_id ?? "").trim();

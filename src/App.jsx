@@ -637,6 +637,10 @@ export default function App() {
   const [plebsMode, setPlebsMode] = useState(false);
   const [equalAvatarSizeEnabled, setEqualAvatarSizeEnabled] = useState(false);
   const [dimOthersEnabled, setDimOthersEnabled] = useState(false);
+  const [historyPlaybackPlaying, setHistoryPlaybackPlaying] = useState(false);
+  const [historyPlaybackHasFinishedOnce, setHistoryPlaybackHasFinishedOnce] = useState(false);
+  /** Server-reported stance playback rows; null = not loaded (non-admin or not fetched). */
+  const [stancePlaybackSequenceCount, setStancePlaybackSequenceCount] = useState(null);
   const [pulseSelectedEnabled, setPulseSelectedEnabled] = useState(false);
   const [manualEditMode, setManualEditMode] = useState(false);
   const [manualEditTarget, setManualEditTarget] = useState(null);
@@ -646,6 +650,20 @@ export default function App() {
   const [labels, setLabels] = useState(() => ({}));
   const [dropdownHoverHandle, setDropdownHoverHandle] = useState(null);
   const adminOptionsRef = useRef(null);
+  const stancePlaybackItemsRef = useRef(null);
+  const historyPlaybackRef = useRef({
+    active: false,
+    sequence: [],
+    played: new Set(),
+    index: 0,
+    phase: "idle",
+    phaseStart: 0,
+    holdMs: 100,
+    moveMs: 280,
+    gapMs: 20,
+    rafId: 0,
+    currentHandle: null,
+  });
 
   useEffect(() => {
     // Cleanup legacy persisted stance overrides so backend data is canonical across devices.
@@ -754,6 +772,49 @@ export default function App() {
   const meStance = me?.stance ? normalizedStance(me.stance) : "";
   const meHandleLower = safeLower(me?.handle);
   const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
+
+  useEffect(() => {
+    if (!isPrivilegedEditor || !me?.authenticated) {
+      stancePlaybackItemsRef.current = null;
+      setStancePlaybackSequenceCount(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/admin/stance-playback-sequence`, { credentials: "include" });
+        if (cancelled) return;
+        if (!res.ok) {
+          stancePlaybackItemsRef.current = [];
+          setStancePlaybackSequenceCount(0);
+          return;
+        }
+        const data = await res.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+        stancePlaybackItemsRef.current = items;
+        setStancePlaybackSequenceCount(items.length);
+      } catch {
+        if (!cancelled) {
+          stancePlaybackItemsRef.current = [];
+          setStancePlaybackSequenceCount(0);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isPrivilegedEditor, me?.authenticated]);
+
+  useEffect(
+    () => () => {
+      const pb = historyPlaybackRef.current;
+      if (pb.rafId) cancelAnimationFrame(pb.rafId);
+      pb.rafId = 0;
+      pb.active = false;
+    },
+    []
+  );
+
   const visibleAccounts = useMemo(() => {
     if (!plebsMode) return accounts;
     return accounts.filter((a) => {
@@ -1602,12 +1663,32 @@ export default function App() {
     const nodes = nodesRef.current;
     const qset = filteredHandlesSet;
     const avatarCache = avatarCacheRef.current;
+    const pb = historyPlaybackRef.current;
+    const playbackActive = Boolean(pb.active);
 
     if (!nodes || nodes.length === 0) return;
+
+    const contributesToPlaybackFit = (n) => {
+      if (!playbackActive) return true;
+      if (!n.hasUserStanceChange) return true;
+      const h = normalizeHandle(n.handle);
+      return pb.played.has(h);
+    };
+
+    const playbackShowsWorldNode = (n) => {
+      if (!playbackActive) return true;
+      if (!n.hasUserStanceChange) return true;
+      const h = normalizeHandle(n.handle);
+      if (pb.played.has(h)) return true;
+      const cur = pb.currentHandle ? normalizeHandle(pb.currentHandle) : "";
+      if (cur === h && (pb.phase === "hold" || pb.phase === "move")) return false;
+      return false;
+    };
 
     const maxDrawScale = 2;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const n of nodes) {
+      if (playbackActive && !contributesToPlaybackFit(n)) continue;
       const half = (n.side * maxDrawScale) / 2;
       const x0 = n.x - half, y0 = n.y - half, x1 = n.x + half, y1 = n.y + half;
       if (x0 < minX) minX = x0;
@@ -1686,6 +1767,7 @@ export default function App() {
     };
     const drawNode = (n, scaleFactor, emphasize = false) => {
       const shouldDim =
+        !playbackActive &&
         dimOthersEnabled &&
         Boolean(curSelected) &&
         n.handle !== curSelected;
@@ -1701,7 +1783,7 @@ export default function App() {
       const isSelected = curSelected && n.handle === curSelected;
       const isHovered = curHover && n.handle === curHover.handle;
       const isInSearch = qset ? qset.has(n.handle) : true;
-      const alpha = isInSearch ? 1 : 0.12;
+      const alpha = playbackActive || isInSearch ? 1 : 0.12;
       const stance = getNodeStance(n, labels);
       const aura = stanceColor(stance);
       const baseFill =
@@ -1787,6 +1869,7 @@ export default function App() {
       );
     };
     for (const n of nodes) {
+      if (!playbackShowsWorldNode(n)) continue;
       if (curSelected && n.handle === curSelected) {
         if (isVisible(n, selectedScale)) selected.push(n);
       } else if (curHover && n.handle === curHover.handle) {
@@ -1800,6 +1883,191 @@ export default function App() {
     for (const n of selected) drawNode(n, selectedScale, true);
 
     ctx.restore();
+
+    if (playbackActive && pb.currentHandle && (pb.phase === "hold" || pb.phase === "move")) {
+      const nowOv = performance.now();
+      const nh = normalizeHandle(pb.currentHandle);
+      const nin = nodes.find((nn) => normalizeHandle(nn.handle) === nh);
+      if (nin) {
+        const stanceOv = getNodeStance(nin, labels);
+        const auraOv = stanceColor(stanceOv);
+        const finalCx = nin.x * scale + tx;
+        const finalCy = nin.y * scale + ty;
+        const finalSide = nin.side * scale;
+        const bigMult = 2.45;
+        const centerCx = cw / 2;
+        const centerCy = ch / 2;
+        const bigSide = Math.max(finalSide * bigMult, Math.min(cw, ch) * 0.2);
+        let cx = centerCx;
+        let cy = centerCy;
+        let sidePx = bigSide;
+        if (pb.phase === "move") {
+          const tm = pb.moveMs > 0 ? clamp((nowOv - pb.phaseStart) / pb.moveMs, 0, 1) : 1;
+          const e = tm < 0.5 ? 2 * tm * tm : 1 - (-2 * tm + 2) ** 2 / 2;
+          cx = centerCx + (finalCx - centerCx) * e;
+          cy = centerCy + (finalCy - centerCy) * e;
+          sidePx = bigSide + (finalSide - bigSide) * e;
+        }
+        const drawX = cx - sidePx / 2;
+        const drawY = cy - sidePx / 2;
+        const rOv = Math.min(14, sidePx * 0.22);
+        if (auraOv) {
+          const glow = getGlow(auraOv, sidePx, true);
+          if (glow?.canvas) {
+            ctx.save();
+            ctx.globalCompositeOperation = "lighter";
+            ctx.drawImage(glow.canvas, drawX - glow.pad, drawY - glow.pad);
+            ctx.restore();
+          }
+        }
+        const img = nin.avatarUrl ? avatarCache.get(nin.avatarUrl) : null;
+        if (img?.complete && img.naturalWidth > 0) {
+          ctx.save();
+          ctx.beginPath();
+          if (typeof ctx.roundRect === "function") {
+            ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+          } else {
+            ctx.rect(drawX, drawY, sidePx, sidePx);
+          }
+          ctx.clip();
+          ctx.drawImage(img, drawX, drawY, sidePx, sidePx);
+          ctx.restore();
+        } else {
+          ctx.fillStyle = auraOv ? auraOv.replace(/[\d.]+\)$/, "0.22)") : "rgba(70,75,85,0.35)";
+          ctx.beginPath();
+          if (typeof ctx.roundRect === "function") {
+            ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+          } else {
+            ctx.rect(drawX, drawY, sidePx, sidePx);
+          }
+          ctx.fill();
+        }
+        ctx.strokeStyle = auraOv ? auraOv.replace(/[\d.]+\)$/, "0.85)") : "rgba(120,130,150,0.9)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        if (typeof ctx.roundRect === "function") {
+          ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+        } else {
+          ctx.rect(drawX, drawY, sidePx, sidePx);
+        }
+        ctx.stroke();
+      }
+    }
+  }
+
+  function historyPlaybackResolvePlayable() {
+    const raw = stancePlaybackItemsRef.current;
+    const nodeList = nodesRef.current || [];
+    if (!raw?.length || !nodeList.length) return [];
+    const out = [];
+    const seen = new Set();
+    for (const it of raw) {
+      const h = normalizeHandle(it.handle);
+      if (!h || seen.has(h)) continue;
+      const n = nodeList.find((nn) => normalizeHandle(nn.handle) === h);
+      if (!n || !n.hasUserStanceChange) continue;
+      const stance = getNodeStance(n, labelsRef.current);
+      if (!stance) continue;
+      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+      seen.add(h);
+      out.push({ handle: n.handle });
+    }
+    return out;
+  }
+
+  function historyPlaybackAdvance(pb, now) {
+    while (pb.index < pb.sequence.length) {
+      const item = pb.sequence[pb.index];
+      const h = normalizeHandle(item?.handle);
+      const n = nodesRef.current.find((nn) => normalizeHandle(nn.handle) === h);
+      pb.index += 1;
+      if (!n || !n.hasUserStanceChange) continue;
+      const stance = getNodeStance(n, labelsRef.current);
+      if (!stance || !Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+      pb.currentHandle = n.handle;
+      pb.phase = "hold";
+      pb.phaseStart = now;
+      return true;
+    }
+    return false;
+  }
+
+  function historyPlaybackTick() {
+    const pb = historyPlaybackRef.current;
+    if (!pb.active) return;
+    const now = performance.now();
+    const elapsed = now - pb.phaseStart;
+    if (pb.phase === "hold") {
+      if (elapsed >= pb.holdMs) {
+        pb.phase = "move";
+        pb.phaseStart = now;
+      }
+    } else if (pb.phase === "move") {
+      if (elapsed >= pb.moveMs) {
+        const ch = pb.currentHandle;
+        if (ch) pb.played.add(normalizeHandle(ch));
+        pb.phase = "gap";
+        pb.phaseStart = now;
+      }
+    } else if (pb.phase === "gap") {
+      if (elapsed >= pb.gapMs) {
+        if (!historyPlaybackAdvance(pb, now)) {
+          if (pb.rafId) cancelAnimationFrame(pb.rafId);
+          pb.rafId = 0;
+          pb.active = false;
+          pb.currentHandle = null;
+          pb.phase = "idle";
+          pb.played = new Set();
+          pb.sequence = [];
+          setHistoryPlaybackHasFinishedOnce(true);
+          setHistoryPlaybackPlaying(false);
+          drawRef.current();
+          return;
+        }
+      }
+    }
+    drawRef.current();
+    pb.rafId = requestAnimationFrame(historyPlaybackTick);
+  }
+
+  function beginHistoryPlayback() {
+    const pb = historyPlaybackRef.current;
+    if (pb.rafId) cancelAnimationFrame(pb.rafId);
+    pb.rafId = 0;
+    pb.active = false;
+    pb.currentHandle = null;
+    pb.phase = "idle";
+    pb.played = new Set();
+    pb.sequence = [];
+    pb.index = 0;
+
+    const sequence = historyPlaybackResolvePlayable();
+    if (!sequence.length) return;
+
+    const count = sequence.length;
+    const totalBudget = 60000;
+    const stepDuration = clamp(Math.round(totalBudget / count), 200, 520);
+    const holdMs = clamp(Math.round(stepDuration * 0.24), 80, 120);
+    const moveMs = clamp(Math.round(stepDuration * 0.62), 200, 340);
+    const gapMs = Math.max(12, stepDuration - holdMs - moveMs);
+
+    pb.active = true;
+    pb.sequence = sequence;
+    pb.index = 0;
+    pb.holdMs = holdMs;
+    pb.moveMs = moveMs;
+    pb.gapMs = gapMs;
+    setHistoryPlaybackPlaying(true);
+
+    const t0 = performance.now();
+    if (!historyPlaybackAdvance(pb, t0)) {
+      pb.active = false;
+      setHistoryPlaybackPlaying(false);
+      drawRef.current();
+      return;
+    }
+    pb.rafId = requestAnimationFrame(historyPlaybackTick);
+    drawRef.current();
   }
 
   // Hit test squares (screen -> world using current view)
@@ -2203,6 +2471,7 @@ export default function App() {
               ...styles.canvas,
               touchAction: "none",
               cursor: manualEditMode && isPrivilegedEditor ? "crosshair" : "default",
+              pointerEvents: historyPlaybackPlaying ? "none" : "auto",
             }}
           />
           <div ref={tooltipRef} style={{ ...styles.tooltip, display: "none" }}>
@@ -2219,8 +2488,13 @@ export default function App() {
         <div>Size of avatars is proportional to number of followers.</div>
       </div>
       <div style={styles.bottomControls}>
-        <button style={styles.bottomControlBtn} onClick={() => setShowStatsModal(true)}>Stats</button>
-        <button style={styles.bottomControlBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
+        <button type="button" style={styles.bottomControlBtn} onClick={() => setShowStatsModal(true)}>Stats</button>
+        <button type="button" style={styles.bottomControlBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
+        {isPrivilegedEditor && stancePlaybackSequenceCount > 0 ? (
+          <button type="button" style={styles.bottomControlBtn} onClick={() => beginHistoryPlayback()}>
+            {historyPlaybackPlaying ? "Playing…" : historyPlaybackHasFinishedOnce ? "Replay History" : "Play History"}
+          </button>
+        ) : null}
       </div>
       <StatisticsModal
         open={showStatsModal}
