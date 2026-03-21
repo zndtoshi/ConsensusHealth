@@ -774,15 +774,15 @@ export default function App() {
   const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
 
   useEffect(() => {
-    if (!isPrivilegedEditor || !me?.authenticated) {
-      stancePlaybackItemsRef.current = null;
-      setStancePlaybackSequenceCount(null);
+    if (!API_BASE) {
+      stancePlaybackItemsRef.current = [];
+      setStancePlaybackSequenceCount(0);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/admin/stance-playback-sequence`, { credentials: "include" });
+        const res = await fetch(`${API_BASE}/api/stance-playback-sequence`, { credentials: "include" });
         if (cancelled) return;
         if (!res.ok) {
           stancePlaybackItemsRef.current = [];
@@ -803,7 +803,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [isPrivilegedEditor, me?.authenticated]);
+  }, []);
 
   useEffect(
     () => () => {
@@ -2504,7 +2504,7 @@ export default function App() {
       <div style={styles.bottomControls}>
         <button type="button" style={styles.bottomControlBtn} onClick={() => setShowStatsModal(true)}>Stats</button>
         <button type="button" style={styles.bottomControlBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
-        {isPrivilegedEditor && stancePlaybackSequenceCount > 0 ? (
+        {stancePlaybackSequenceCount > 0 ? (
           <button
             type="button"
             style={styles.bottomControlBtn}

@@ -1255,14 +1255,8 @@ app.post("/api/admin/stance", async (req, res, next) => {
   }
 });
 
-app.get("/api/admin/stance-playback-sequence", async (req, res, next) => {
+app.get("/api/stance-playback-sequence", async (req, res, next) => {
   try {
-    const user = getSessionUser(req);
-    if (!user || !isPrivilegedManualEditorHandle(user.handle)) {
-      res.status(403).json({ error: "forbidden" });
-      return;
-    }
-
     const rowsRes = await pool.query(
       `
       WITH first_user AS (
