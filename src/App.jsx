@@ -2030,6 +2030,20 @@ export default function App() {
     pb.rafId = requestAnimationFrame(historyPlaybackTick);
   }
 
+  function stopHistoryPlayback() {
+    const pb = historyPlaybackRef.current;
+    if (pb.rafId) cancelAnimationFrame(pb.rafId);
+    pb.rafId = 0;
+    pb.active = false;
+    pb.currentHandle = null;
+    pb.phase = "idle";
+    pb.played = new Set();
+    pb.sequence = [];
+    pb.index = 0;
+    setHistoryPlaybackPlaying(false);
+    drawRef.current();
+  }
+
   function beginHistoryPlayback() {
     const pb = historyPlaybackRef.current;
     if (pb.rafId) cancelAnimationFrame(pb.rafId);
@@ -2491,8 +2505,12 @@ export default function App() {
         <button type="button" style={styles.bottomControlBtn} onClick={() => setShowStatsModal(true)}>Stats</button>
         <button type="button" style={styles.bottomControlBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
         {isPrivilegedEditor && stancePlaybackSequenceCount > 0 ? (
-          <button type="button" style={styles.bottomControlBtn} onClick={() => beginHistoryPlayback()}>
-            {historyPlaybackPlaying ? "Playing…" : historyPlaybackHasFinishedOnce ? "Replay History" : "Play History"}
+          <button
+            type="button"
+            style={styles.bottomControlBtn}
+            onClick={() => (historyPlaybackPlaying ? stopHistoryPlayback() : beginHistoryPlayback())}
+          >
+            {historyPlaybackPlaying ? "Stop" : historyPlaybackHasFinishedOnce ? "Replay History" : "Play History"}
           </button>
         ) : null}
       </div>
