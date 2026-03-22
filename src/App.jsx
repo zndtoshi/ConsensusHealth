@@ -639,6 +639,8 @@ export default function App() {
   const [statsData, setStatsData] = useState(null);
   const [showDonateModal, setShowDonateModal] = useState(false);
   const [adminOptionsOpen, setAdminOptionsOpen] = useState(false);
+  /** Three scrollable stance columns (avatars + names) instead of force graph; mutually exclusive with Plebs / equal size / manual edit. */
+  const [stanceListsViewEnabled, setStanceListsViewEnabled] = useState(false);
   const [plebsMode, setPlebsMode] = useState(false);
   const [equalAvatarSizeEnabled, setEqualAvatarSizeEnabled] = useState(false);
   const [dimOthersEnabled, setDimOthersEnabled] = useState(false);
@@ -827,6 +829,7 @@ export default function App() {
       return info.source !== "none" && info.followers < 3000;
     });
   }, [accounts, plebsMode]);
+
   const accountByHandle = useMemo(() => {
     const m = new Map();
     for (const a of visibleAccounts) {
@@ -1229,6 +1232,46 @@ export default function App() {
     return map;
   }, [visibleAccounts, mentionsByHandle]);
 
+  const stanceListRowsByStance = useMemo(() => {
+    const baseNoSlash = getBase().replace(/\/$/, "");
+    const missingSrc = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
+    const included = visibleAccounts.filter((a) => {
+      const tweetCount = tweetCountByHandle.get(a.handle) || 0;
+      const seedStance = String(a.stance ?? a.position ?? "").trim()
+        ? normalizedStance(a.stance ?? a.position)
+        : "";
+      const hasManualStance = Boolean(getStanceForHandle(labels, a.handle) || seedStance);
+      return tweetCount > 0 || hasManualStance;
+    });
+    const mkRow = (a) => {
+      const info = getFollowersFromUser(a);
+      return {
+        handle: a.handle,
+        normHandle: normalizeHandle(a.handle) || String(a.handle ?? "").replace(/^@+/, ""),
+        name: String(a.name ?? "").trim(),
+        followers: info.followers,
+        avatarSrc: resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc),
+      };
+    };
+    const out = {
+      [STANCE.AGAINST]: [],
+      [STANCE.NEUTRAL]: [],
+      [STANCE.APPROVE]: [],
+    };
+    for (const a of included) {
+      const stance = getAccountStanceValue(a, labels);
+      const row = mkRow(a);
+      if (stance === STANCE.AGAINST) out[STANCE.AGAINST].push(row);
+      else if (stance === STANCE.APPROVE) out[STANCE.APPROVE].push(row);
+      else out[STANCE.NEUTRAL].push(row);
+    }
+    const sortDesc = (x, y) => y.followers - x.followers;
+    out[STANCE.AGAINST].sort(sortDesc);
+    out[STANCE.NEUTRAL].sort(sortDesc);
+    out[STANCE.APPROVE].sort(sortDesc);
+    return out;
+  }, [visibleAccounts, tweetCountByHandle, labels]);
+
   const filteredHandlesSet = useMemo(() => {
     const q = normalizeHandleToken(search);
     if (!q) return null;
@@ -1315,6 +1358,14 @@ export default function App() {
   // (Re)create simulation when size/data/shake changes
   useEffect(() => {
     if (loading || err) return;
+    if (stanceListsViewEnabled) {
+      if (simRef.current) {
+        simRef.current.stop();
+        simRef.current = null;
+      }
+      nodesRef.current = [];
+      return;
+    }
     if (!visibleAccounts.length) return;
     if (w < 10 || h < 10) return;
 
@@ -1479,10 +1530,11 @@ export default function App() {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, err, visibleAccounts.length, w, h, plebsMode, equalAvatarSizeEnabled]);
+  }, [loading, err, visibleAccounts.length, w, h, plebsMode, equalAvatarSizeEnabled, stanceListsViewEnabled]);
 
   // On resize: recompute stance regions and update forces
   useEffect(() => {
+    if (stanceListsViewEnabled) return;
     const sim = simRef.current;
     const nodes = nodesRef.current;
     if (!sim || !nodes || nodes.length === 0) return;
@@ -1497,7 +1549,7 @@ export default function App() {
     normalizeIslandEdgeGaps(nodes, labelsRef.current, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.4);
     drawRef.current();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [w, h]);
+  }, [w, h, stanceListsViewEnabled]);
 
   // On stance change: recompute regions, update forces, run short reflow then stop (keeps layout static, no lag)
   useEffect(() => {
@@ -1534,6 +1586,7 @@ export default function App() {
   useEffect(() => {
     if (zoomCuePlayedRef.current) return;
     if (loading || err) return;
+    if (stanceListsViewEnabled) return;
     if (!visibleAccounts.length || w < 10 || h < 10) return;
 
     zoomCuePlayedRef.current = true;
@@ -1586,7 +1639,7 @@ export default function App() {
       if (zoomCueRafRef.current) cancelAnimationFrame(zoomCueRafRef.current);
       zoomCueRafRef.current = 0;
     };
-  }, [loading, err, visibleAccounts.length, w, h]);
+  }, [loading, err, visibleAccounts.length, w, h, stanceListsViewEnabled]);
 
   function updateHoverOverlay(nextHover) {
     const tip = tooltipRef.current;
@@ -2053,6 +2106,18 @@ export default function App() {
     drawRef.current();
   }
 
+  function applyStanceListsView(on) {
+    if (on) {
+      stopHistoryPlayback();
+      setPlebsMode(false);
+      setManualEditMode(false);
+      void setEqualAvatarSizePreference(false);
+      setStanceListsViewEnabled(true);
+    } else {
+      setStanceListsViewEnabled(false);
+    }
+  }
+
   function beginHistoryPlayback() {
     const pb = historyPlaybackRef.current;
     if (pb.rafId) cancelAnimationFrame(pb.rafId);
@@ -2347,8 +2412,85 @@ export default function App() {
           )}
         </div>
         <div style={styles.controls}>
+          <div ref={adminOptionsRef} style={styles.optionsWrap}>
+            <button
+              type="button"
+              style={styles.btn}
+              onClick={() => setAdminOptionsOpen((v) => !v)}
+              disabled={Boolean(me?.authenticated) && authBusy}
+              title="Options"
+            >
+              Options
+            </button>
+            {adminOptionsOpen && (
+              <div style={styles.optionsMenu}>
+                <label style={styles.optionsItem}>
+                  <input
+                    type="checkbox"
+                    checked={stanceListsViewEnabled}
+                    onChange={(e) => {
+                      if (e.target.checked) applyStanceListsView(true);
+                      else setStanceListsViewEnabled(false);
+                    }}
+                  />
+                  <span>Lists by stance (3 columns)</span>
+                  <span style={styles.optionsState}>{stanceListsViewEnabled ? "ON" : "OFF"}</span>
+                </label>
+                {isPrivilegedEditor && (
+                  <label style={styles.optionsItem}>
+                    <input
+                      type="checkbox"
+                      checked={manualEditMode}
+                      onChange={(e) => {
+                        const v = e.target.checked;
+                        if (v) {
+                          stopHistoryPlayback();
+                          setStanceListsViewEnabled(false);
+                        }
+                        setManualEditMode(v);
+                      }}
+                    />
+                    <span>Edit stances</span>
+                    <span style={styles.optionsState}>{manualEditMode ? "ON" : "OFF"}</span>
+                  </label>
+                )}
+                <label style={styles.optionsItem}>
+                  <input
+                    type="checkbox"
+                    checked={plebsMode}
+                    onChange={(e) => {
+                      const v = e.target.checked;
+                      if (v) {
+                        stopHistoryPlayback();
+                        setStanceListsViewEnabled(false);
+                      }
+                      setPlebsMode(v);
+                    }}
+                  />
+                  <span>Plebs (&lt;3k followers)</span>
+                  <span style={styles.optionsState}>{plebsMode ? "ON" : "OFF"}</span>
+                </label>
+                <label style={styles.optionsItem}>
+                  <input
+                    type="checkbox"
+                    checked={equalAvatarSizeEnabled}
+                    onChange={(e) => {
+                      const v = e.target.checked;
+                      if (v) {
+                        stopHistoryPlayback();
+                        setStanceListsViewEnabled(false);
+                      }
+                      setEqualAvatarSizePreference(v);
+                    }}
+                  />
+                  <span>Equal avatar size</span>
+                  <span style={styles.optionsState}>{equalAvatarSizeEnabled ? "ON" : "OFF"}</span>
+                </label>
+              </div>
+            )}
+          </div>
           {!me?.authenticated ? (
-            <button style={styles.btn} onClick={beginLogin}>
+            <button type="button" style={styles.btn} onClick={beginLogin}>
               <span style={styles.btnInline}>
                 <span>Login with</span>
                 <svg viewBox="0 0 24 24" aria-hidden="true" style={styles.xLogoIcon}>
@@ -2361,49 +2503,6 @@ export default function App() {
             </button>
           ) : (
             <>
-              <div ref={adminOptionsRef} style={styles.optionsWrap}>
-                <button
-                  style={styles.btn}
-                  onClick={() => setAdminOptionsOpen((v) => !v)}
-                  disabled={authBusy}
-                  title="Options"
-                >
-                  Options
-                </button>
-                {adminOptionsOpen && (
-                  <div style={styles.optionsMenu}>
-                    {isPrivilegedEditor && (
-                      <label style={styles.optionsItem}>
-                        <input
-                          type="checkbox"
-                          checked={manualEditMode}
-                          onChange={(e) => setManualEditMode(e.target.checked)}
-                        />
-                        <span>Edit stances</span>
-                        <span style={styles.optionsState}>{manualEditMode ? "ON" : "OFF"}</span>
-                      </label>
-                    )}
-                    <label style={styles.optionsItem}>
-                      <input
-                        type="checkbox"
-                        checked={plebsMode}
-                        onChange={(e) => setPlebsMode(e.target.checked)}
-                      />
-                      <span>Plebs (&lt;3k followers)</span>
-                      <span style={styles.optionsState}>{plebsMode ? "ON" : "OFF"}</span>
-                    </label>
-                    <label style={styles.optionsItem}>
-                      <input
-                        type="checkbox"
-                        checked={equalAvatarSizeEnabled}
-                        onChange={(e) => setEqualAvatarSizePreference(e.target.checked)}
-                      />
-                      <span>Equal avatar size</span>
-                      <span style={styles.optionsState}>{equalAvatarSizeEnabled ? "ON" : "OFF"}</span>
-                    </label>
-                  </div>
-                )}
-              </div>
               <div style={styles.userChip}>
                 <img
                   src={meChipAvatarSrc}
@@ -2476,44 +2575,116 @@ export default function App() {
 
       <div style={styles.main}>
         <div ref={containerRef} style={styles.canvasWrap}>
-          <canvas
-            ref={canvasRef}
-            onWheel={onWheel}
-            onMouseDown={onMouseDown}
-            onMouseUp={onMouseUp}
-            onMouseLeave={() => {
-              onMouseUp();
-              hoverRef.current = null;
-              hoverDrawHandleRef.current = null;
-              updateHoverOverlay(null);
-              drawRef.current();
-            }}
-            onMouseMove={onMouseMove}
-            onClick={onClick}
-            style={{
-              ...styles.canvas,
-              touchAction: "none",
-              cursor: manualEditMode && isPrivilegedEditor ? "crosshair" : "default",
-              pointerEvents: historyPlaybackPlaying ? "none" : "auto",
-            }}
-          />
-          <div ref={tooltipRef} style={{ ...styles.tooltip, display: "none" }}>
-            <div ref={tooltipHandleRef} style={{ fontWeight: 700 }} />
-            <div ref={tooltipSelfRef} style={styles.tooltipSelf}>You</div>
-            <div ref={tooltipFollowersRef} style={{ opacity: 0.9 }} />
-            <div ref={tooltipAgeRef} style={styles.tooltipAge} />
-            <div ref={tooltipBioRef} style={styles.tooltipBio} />
-          </div>
+          {!stanceListsViewEnabled ? (
+            <>
+              <canvas
+                ref={canvasRef}
+                onWheel={onWheel}
+                onMouseDown={onMouseDown}
+                onMouseUp={onMouseUp}
+                onMouseLeave={() => {
+                  onMouseUp();
+                  hoverRef.current = null;
+                  hoverDrawHandleRef.current = null;
+                  updateHoverOverlay(null);
+                  drawRef.current();
+                }}
+                onMouseMove={onMouseMove}
+                onClick={onClick}
+                style={{
+                  ...styles.canvas,
+                  touchAction: "none",
+                  cursor: manualEditMode && isPrivilegedEditor ? "crosshair" : "default",
+                  pointerEvents: historyPlaybackPlaying ? "none" : "auto",
+                }}
+              />
+              <div ref={tooltipRef} style={{ ...styles.tooltip, display: "none" }}>
+                <div ref={tooltipHandleRef} style={{ fontWeight: 700 }} />
+                <div ref={tooltipSelfRef} style={styles.tooltipSelf}>You</div>
+                <div ref={tooltipFollowersRef} style={{ opacity: 0.9 }} />
+                <div ref={tooltipAgeRef} style={styles.tooltipAge} />
+                <div ref={tooltipBioRef} style={styles.tooltipBio} />
+              </div>
+            </>
+          ) : (
+            <div
+              style={{
+                ...styles.stanceListsRoot,
+                flexDirection: w < 720 ? "column" : "row",
+              }}
+            >
+              {[
+                { key: STANCE.AGAINST, title: "Against", color: "#ef4444" },
+                { key: STANCE.NEUTRAL, title: "Neutral", color: "#cbd5e1" },
+                { key: STANCE.APPROVE, title: "Approve", color: "#22c55e" },
+              ].map(({ key, title, color }) => {
+                const rows = stanceListRowsByStance[key] || [];
+                const sel = selectedHandle ? normalizeHandle(selectedHandle) : "";
+                return (
+                  <div
+                    key={key}
+                    style={{
+                      ...styles.stanceListColumn,
+                      ...(w < 720 ? { flex: "1 1 0", minHeight: 0 } : {}),
+                    }}
+                  >
+                    <div style={{ ...styles.stanceListHeader, color }}>{title}</div>
+                    <div style={styles.stanceListScroll}>
+                      {rows.map((row, i) => (
+                        <button
+                          key={row.normHandle}
+                          type="button"
+                          style={{
+                            ...styles.stanceListRow,
+                            background: sel === row.normHandle ? "rgba(255,255,255,0.1)" : "transparent",
+                          }}
+                          onClick={() => setSelectedHandle(row.handle)}
+                        >
+                          <span style={styles.stanceListIndex}>{i + 1}</span>
+                          <img
+                            src={row.avatarSrc}
+                            alt=""
+                            style={styles.stanceListAvatar}
+                            loading="lazy"
+                            decoding="async"
+                            referrerPolicy="no-referrer"
+                            onError={(e) => {
+                              const fb = missingAvatarSrcUrl();
+                              if (canonicalAvatarSrc(e.currentTarget.src) !== fb) e.currentTarget.src = fb;
+                            }}
+                          />
+                          <div style={{ minWidth: 0, textAlign: "left", overflow: "hidden" }}>
+                            {row.name ? (
+                              <>
+                                <div style={styles.stanceListName}>{row.name}</div>
+                                <div style={styles.stanceListHandle}>@{row.normHandle}</div>
+                              </>
+                            ) : (
+                              <div style={styles.stanceListName}>@{row.normHandle}</div>
+                            )}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
       <div style={styles.footerNote}>
         <div>Stances are self-reported or curated.</div>
-        <div>Size of avatars is proportional to number of followers.</div>
+        {stanceListsViewEnabled ? (
+          <div>Within each stance, accounts are listed by followers (highest first).</div>
+        ) : (
+          <div>Size of avatars is proportional to number of followers.</div>
+        )}
       </div>
       <div style={styles.bottomControls}>
         <button type="button" style={styles.bottomControlBtn} onClick={() => setShowStatsModal(true)}>Stats</button>
         <button type="button" style={styles.bottomControlBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
-        {stancePlaybackSequenceCount > 0 ? (
+        {stancePlaybackSequenceCount > 0 && !stanceListsViewEnabled ? (
           <button
             type="button"
             style={styles.bottomControlBtn}
@@ -2787,7 +2958,7 @@ const styles = {
     position: "absolute",
     top: "calc(100% + 6px)",
     right: 0,
-    minWidth: 180,
+    minWidth: 240,
     padding: 8,
     borderRadius: 10,
     border: "1px solid rgba(255,255,255,0.18)",
@@ -2854,6 +3025,87 @@ const styles = {
     overflow: "hidden",
   },
   canvas: { width: "100%", height: "100%", display: "block", cursor: "pointer" },
+  stanceListsRoot: {
+    position: "absolute",
+    inset: 0,
+    display: "flex",
+    flexDirection: "row",
+    gap: "clamp(6px, 1vmin, 14px)",
+    padding: "clamp(6px, 1.2vmin, 16px)",
+    boxSizing: "border-box",
+    overflow: "hidden",
+  },
+  stanceListColumn: {
+    flex: "1 1 0",
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.12)",
+    background: "rgba(15,23,42,0.55)",
+    overflow: "hidden",
+  },
+  stanceListHeader: {
+    padding: "clamp(6px, 1vmin, 14px)",
+    fontWeight: 900,
+    fontSize: "clamp(14px, 2.5vmin, 26px)",
+    letterSpacing: 0.02,
+    textAlign: "center",
+    borderBottom: "1px solid rgba(255,255,255,0.1)",
+    flexShrink: 0,
+  },
+  stanceListScroll: {
+    flex: 1,
+    minHeight: 0,
+    overflowY: "auto",
+    overflowX: "hidden",
+    padding: "clamp(4px, 0.8vmin, 10px)",
+  },
+  stanceListRow: {
+    display: "grid",
+    gridTemplateColumns: "auto auto minmax(0, 1fr)",
+    alignItems: "center",
+    gap: "clamp(6px, 1.2vmin, 14px)",
+    padding: "clamp(6px, 1vmin, 12px)",
+    borderRadius: 10,
+    marginBottom: 3,
+    border: "none",
+    color: "inherit",
+    font: "inherit",
+    width: "100%",
+    textAlign: "left",
+    cursor: "pointer",
+  },
+  stanceListIndex: {
+    fontWeight: 900,
+    fontVariantNumeric: "tabular-nums",
+    opacity: 0.88,
+    minWidth: "1.6em",
+    fontSize: "clamp(12px, 2vmin, 22px)",
+  },
+  stanceListAvatar: {
+    borderRadius: 999,
+    objectFit: "cover",
+    border: "1px solid rgba(255,255,255,0.22)",
+    width: "clamp(28px, 5.5vmin, 56px)",
+    height: "clamp(28px, 5.5vmin, 56px)",
+    flexShrink: 0,
+  },
+  stanceListName: {
+    fontWeight: 800,
+    fontSize: "clamp(12px, 2vmin, 22px)",
+    lineHeight: 1.25,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
+  stanceListHandle: {
+    fontSize: "clamp(10px, 1.65vmin, 18px)",
+    opacity: 0.82,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
   tooltip: {
     position: "absolute",
     width: 220,
