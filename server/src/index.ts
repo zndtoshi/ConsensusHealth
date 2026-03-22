@@ -1042,11 +1042,11 @@ app.get("/api/avatar-proxy", async (req, res, next) => {
     }
 
     const contentType = upstream.headers.get("content-type") || "image/jpeg";
-    const cacheControl =
-      upstream.headers.get("cache-control") || "public, max-age=86400, stale-while-revalidate=604800";
     const body = Buffer.from(await upstream.arrayBuffer());
     res.setHeader("Content-Type", contentType);
-    res.setHeader("Cache-Control", cacheControl);
+    // X/Twitter often sends cache headers that discourage browser caching (e.g. private).
+    // The image URL path usually changes when a user changes their photo, so long public caching is safe.
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
     res.send(body);
   } catch (err) {
     next(err);
@@ -1610,8 +1610,21 @@ if (IS_PROD) {
   if (!fs.existsSync(DIST_PATH)) {
     console.warn(`[ConsensusHealth server] dist folder not found at ${DIST_PATH}. Run: npm run build`);
   } else {
-    app.use(express.static(DIST_PATH, { index: false }));
+    app.use(
+      express.static(DIST_PATH, {
+        index: false,
+        setHeaders(res, filePath) {
+          const fp = filePath.replace(/\\/g, "/");
+          if (fp.includes("/avatars/")) {
+            res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          } else if (fp.includes("/assets/")) {
+            res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          }
+        },
+      })
+    );
     app.get(/^(?!\/(?:api|auth|dev)(?:\/|$)).*$/, (_req, res) => {
+      res.setHeader("Cache-Control", "no-cache");
       res.sendFile(path.join(DIST_PATH, "index.html"));
     });
   }

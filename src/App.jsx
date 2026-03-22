@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import { forceCollide, forceManyBody, forceCenter, forceSimulation, forceX, forceY } from "d3-force";
-import { getAvatar } from "./utils/avatarCache";
+import { canonicalAvatarSrc, getAvatar, preloadAvatarUrls } from "./utils/avatarCache";
 import { fetchCommunityUsers } from "./api/community";
 import { BitcoinQr } from "./components/BitcoinQr";
 import { StatisticsModal } from "./components/StatisticsModal";
@@ -117,10 +117,10 @@ function collectAvatarFieldValues(obj) {
 
 function resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc) {
   const path = String(a?.avatar_path ?? "").trim();
-  if (path) return `${baseNoSlash}${path}?v=${AVATAR_REV}`;
+  if (path) return canonicalAvatarSrc(`${baseNoSlash}${path}?v=${AVATAR_REV}`);
   const remote = firstNonEmptyAvatarField(a);
-  if (remote) return maybeProxyAvatarUrl(remote);
-  return missingSrc;
+  if (remote) return canonicalAvatarSrc(maybeProxyAvatarUrl(remote));
+  return canonicalAvatarSrc(missingSrc);
 }
 
 const STANCE = {
@@ -417,6 +417,11 @@ function getBase() {
   const raw = typeof import.meta !== "undefined" && import.meta.env && import.meta.env.BASE_URL;
   const base = (raw ?? "/").replace(/\/$/, "") || "";
   return base;
+}
+
+function missingAvatarSrcUrl() {
+  const baseNoSlash = getBase().replace(/\/$/, "");
+  return canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
 }
 
 /** Load canonical seeded accounts + community accounts and merge by handle. */
@@ -858,16 +863,25 @@ export default function App() {
   const donateAvatarSrc = useMemo(() => {
     const baseNoSlash = getBase().replace(/\/$/, "");
     const account = accounts.find((a) => safeLower(a.handle) === "zndtoshi");
-    if (account?.avatar_path) return `${baseNoSlash}${account.avatar_path}?v=${AVATAR_REV}`;
-    if (account?.avatar_url) return account.avatar_url;
-    return `${baseNoSlash}/avatars/zndtoshi.jpg?v=${AVATAR_REV}`;
+    if (account?.avatar_path) return canonicalAvatarSrc(`${baseNoSlash}${account.avatar_path}?v=${AVATAR_REV}`);
+    if (account?.avatar_url) {
+      return canonicalAvatarSrc(maybeProxyAvatarUrl(normalizeTwitterAvatarUrl(account.avatar_url)));
+    }
+    return canonicalAvatarSrc(`${baseNoSlash}/avatars/zndtoshi.jpg?v=${AVATAR_REV}`);
   }, [accounts]);
+  const meChipAvatarSrc = useMemo(() => {
+    const baseNoSlash = getBase().replace(/\/$/, "");
+    const missing = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
+    const raw = String(me?.avatar_url ?? "").trim();
+    if (!raw) return missing;
+    return canonicalAvatarSrc(maybeProxyAvatarUrl(normalizeTwitterAvatarUrl(raw))) || missing;
+  }, [me?.avatar_url]);
   const selectedHeaderAvatarSrc = useMemo(() => {
     if (!selectedHandle) return "";
     const key = normalizeHandle(selectedHandle);
     const account = accountByHandle.get(key) || null;
     const baseNoSlash = getBase().replace(/\/$/, "");
-    const missingSrc = `${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`;
+    const missingSrc = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
     return resolveAvatarUrlForAccount(account || { handle: key }, baseNoSlash, missingSrc);
   }, [selectedHandle, accountByHandle]);
   const selectedHeaderStance = useMemo(() => {
@@ -1254,18 +1268,13 @@ export default function App() {
     ).length;
   }, [visibleAccounts, tweetCountByHandle, labels]);
 
-  // Preload avatars once accounts are available.
+  // Preload avatars once accounts are available (deduped URLs; browser HTTP cache + session Image cache).
   useEffect(() => {
     if (!visibleAccounts.length) return;
-    const base = getBase();
-    const baseNoSlash = base.replace(/\/$/, "");
-    const missingSrc = `${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`;
-    getAvatar(missingSrc);
-    for (const a of visibleAccounts) {
-      const src = resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc);
-      const img = getAvatar(src);
-      if ("loading" in img) img.loading = "eager";
-    }
+    const baseNoSlash = getBase().replace(/\/$/, "");
+    const missingSrc = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
+    const urls = visibleAccounts.map((a) => resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc));
+    preloadAvatarUrls([missingSrc, ...urls], { eager: true });
   }, [visibleAccounts]);
 
   // Build nodes for simulation
@@ -1311,7 +1320,7 @@ export default function App() {
 
     const base = getBase();
     const baseNoSlash = base.replace(/\/$/, "");
-    const missingSrc = `${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`;
+    const missingSrc = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
     const avatarSrc = (a) => resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc);
 
     // Build nodes: accounts that tweeted about bip110, plus manually stance-labeled accounts
@@ -1407,7 +1416,7 @@ export default function App() {
               });
             }
           }
-          if (img.src !== missingSrc) img.src = missingSrc;
+          if (canonicalAvatarSrc(img.src) !== missingSrc) img.src = missingSrc;
           cache.set(url, missingImg);
           drawRef.current();
         };
@@ -2201,7 +2210,7 @@ export default function App() {
       );
       const base = getBase();
       const baseNoSlash = base.replace(/\/$/, "");
-      const missingSrc = `${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`;
+      const missingSrc = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
       setManualEditTarget({
         handle: targetHandle || n.handle,
         x_user_id: String(account?.x_user_id ?? "").trim(),
@@ -2306,8 +2315,8 @@ export default function App() {
                   decoding="async"
                   referrerPolicy="no-referrer"
                   onError={(e) => {
-                    const fallback = `${getBase()}/avatars/_missing.svg?v=${AVATAR_REV}`;
-                    if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+                    const fallback = missingAvatarSrcUrl();
+                    if (canonicalAvatarSrc(e.currentTarget.src) !== fallback) e.currentTarget.src = fallback;
                   }}
                   style={styles.selectedHeaderAvatar}
                 />
@@ -2397,14 +2406,14 @@ export default function App() {
               </div>
               <div style={styles.userChip}>
                 <img
-                  src={me.avatar_url || `${getBase()}/avatars/_missing.svg`}
+                  src={meChipAvatarSrc}
                   alt={`@${me.handle}`}
                   loading="eager"
                   decoding="async"
                   referrerPolicy="no-referrer"
                   onError={(e) => {
-                    const fallback = `${getBase()}/avatars/_missing.svg?v=${AVATAR_REV}`;
-                    if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+                    const fallback = missingAvatarSrcUrl();
+                    if (canonicalAvatarSrc(e.currentTarget.src) !== fallback) e.currentTarget.src = fallback;
                     if (!import.meta.env.PROD) {
                       // eslint-disable-next-line no-console
                       console.warn("[avatar-load-failed]", {
@@ -2533,8 +2542,8 @@ export default function App() {
                 decoding="async"
                 referrerPolicy="no-referrer"
                 onError={(e) => {
-                  const fallback = `${getBase()}/avatars/_missing.svg?v=${AVATAR_REV}`;
-                  if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+                  const fallback = missingAvatarSrcUrl();
+                  if (canonicalAvatarSrc(e.currentTarget.src) !== fallback) e.currentTarget.src = fallback;
                 }}
                 style={styles.manualEditAvatar}
               />
@@ -2585,8 +2594,8 @@ export default function App() {
               decoding="async"
               referrerPolicy="no-referrer"
               onError={(e) => {
-                const fallback = `${getBase()}/avatars/_missing.svg?v=${AVATAR_REV}`;
-                if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback;
+                const fallback = missingAvatarSrcUrl();
+                if (canonicalAvatarSrc(e.currentTarget.src) !== fallback) e.currentTarget.src = fallback;
                 if (!import.meta.env.PROD) {
                   // eslint-disable-next-line no-console
                   console.warn("[avatar-load-failed]", {
