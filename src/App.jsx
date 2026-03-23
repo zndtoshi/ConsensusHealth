@@ -1272,56 +1272,74 @@ export default function App() {
     return out;
   }, [visibleAccounts, tweetCountByHandle, labels]);
 
-  /** Fit all list rows without scrolling; row height = list body / max column count; three stance zones stay equal. */
+  /**
+   * Multi-column grid per stance: small avatar + @handle; min row height for legibility.
+   * Adds columns until rows fit; if still too tight, min row + scroll. Three stance panels stay equal width/height.
+   */
   const stanceListLayout = useMemo(() => {
     if (!stanceListsViewEnabled) return null;
     const na = stanceListRowsByStance[STANCE.AGAINST].length;
     const nn = stanceListRowsByStance[STANCE.NEUTRAL].length;
     const nap = stanceListRowsByStance[STANCE.APPROVE].length;
-    const maxRows = Math.max(1, na, nn, nap);
+    const maxN = Math.max(na, nn, nap);
     const isNarrow = w < 720;
 
-    // stanceListsRoot uses padding; content height is less than container h
-    const listRootPad = Math.min(36, Math.max(14, h * 0.022)) * 2;
+    const listRootPad = Math.min(36, Math.max(14, Math.min(h, w) * 0.022)) * 2;
     const innerH = Math.max(80, h - listRootPad);
+    const innerW = Math.max(100, w - listRootPad);
+    const flexGap = Math.min(14, Math.max(8, innerW * 0.012));
     const gap = Math.min(12, Math.max(6, innerH * 0.012));
 
     const colHeader = Math.max(26, Math.min(44, innerH * (isNarrow ? 0.062 : 0.072)));
-    const scrollPad = Math.max(2, Math.min(8, innerH * 0.01));
+    const scrollPad = Math.max(4, Math.min(10, innerH * 0.012));
 
     let bodyH;
     if (isNarrow) {
       const bandH = (innerH - gap * 2) / 3;
-      bodyH = Math.max(40, bandH - colHeader - scrollPad);
+      bodyH = Math.max(48, bandH - colHeader - scrollPad);
     } else {
-      bodyH = Math.max(50, innerH - colHeader - scrollPad);
+      bodyH = Math.max(60, innerH - colHeader - scrollPad);
     }
 
-    const rowH = bodyH / maxRows;
-    const padY = Math.max(0, Math.min(5, rowH * 0.1));
-    const padX = Math.max(2, Math.min(8, rowH * 0.16));
-    const gridGap = Math.max(2, Math.min(8, rowH * 0.14));
-    const fontName = Math.max(7, Math.min(19, rowH * 0.36));
-    const fontHandle = Math.max(6, Math.min(15, rowH * 0.3));
-    const fontIndex = Math.max(7, Math.min(17, rowH * 0.34));
-    const avatarPx = Math.max(12, Math.min(50, rowH * 0.78));
+    const panelW = isNarrow ? innerW - scrollPad : Math.max(70, (innerW - flexGap * 2) / 3 - scrollPad);
+
+    const MIN_ROW = 30;
+    const MIN_CELL_W = 104;
+    const maxColsByWidth = Math.max(1, Math.min(24, Math.floor(panelW / MIN_CELL_W)));
+
+    let gridCols = 1;
+    let rowsNeeded = maxN <= 0 ? 1 : Math.ceil(maxN / gridCols);
+    let rowH = bodyH / Math.max(1, rowsNeeded);
+
+    while (rowH < MIN_ROW && gridCols < maxColsByWidth && maxN > 0) {
+      gridCols += 1;
+      rowsNeeded = Math.ceil(maxN / gridCols);
+      rowH = bodyH / Math.max(1, rowsNeeded);
+    }
+
+    let scrollOverflow = "hidden";
+    if (maxN > 0 && rowH < MIN_ROW) {
+      rowH = MIN_ROW;
+      scrollOverflow = "auto";
+    }
+
+    const cellGap = Math.max(4, Math.min(10, rowH * 0.22));
+    const fontSize = Math.max(11, Math.min(14, rowH * 0.48));
+    const avatarPx = Math.max(16, Math.min(34, Math.floor(rowH - 8)));
     const headerFont = Math.max(11, Math.min(22, colHeader * 0.46));
-    const compactText = rowH < 24;
 
     return {
-      maxRows,
+      gridCols,
       rowH,
-      padY,
-      padX,
-      gridGap,
-      fontName,
-      fontHandle,
-      fontIndex,
+      cellGap,
+      fontSize,
       avatarPx,
       colHeader,
       headerFont,
-      compactText,
       isNarrow,
+      scrollOverflow,
+      bodyH,
+      scrollPad,
     };
   }, [stanceListsViewEnabled, stanceListRowsByStance, h, w]);
 
@@ -2703,42 +2721,42 @@ export default function App() {
                     <div
                       style={{
                         ...styles.stanceListScroll,
-                        padding: `${Math.max(1, L.padY)}px ${L.padX}px`,
+                        padding: `${Math.max(4, L.scrollPad * 0.5)}px ${L.scrollPad}px`,
+                        overflowY: L.scrollOverflow,
+                        display: "grid",
+                        gridTemplateColumns: `repeat(${L.gridCols}, minmax(0, 1fr))`,
+                        gridAutoRows: `${L.rowH}px`,
+                        gap: L.cellGap,
+                        alignContent: "start",
                       }}
                     >
-                      {rows.map((row, i) => (
+                      {rows.map((row) => (
                         <button
                           key={row.normHandle}
                           type="button"
                           style={{
-                            ...styles.stanceListRow,
+                            ...styles.stanceListHandleBtn,
                             height: L.rowH,
                             minHeight: L.rowH,
                             maxHeight: L.rowH,
-                            boxSizing: "border-box",
-                            padding: `${L.padY}px ${L.padX}px`,
-                            gap: L.gridGap,
-                            marginBottom: 0,
-                            background: sel === row.normHandle ? "rgba(255,255,255,0.1)" : "transparent",
+                            fontSize: L.fontSize,
+                            background:
+                              sel === row.normHandle ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.05)",
+                            borderColor: sel === row.normHandle ? "rgba(255,255,255,0.28)" : "rgba(255,255,255,0.12)",
                           }}
+                          title={`Open @${row.normHandle}`}
                           onClick={() => setSelectedHandle(row.handle)}
                         >
-                          <span
-                            style={{
-                              ...styles.stanceListIndex,
-                              fontSize: L.fontIndex,
-                              lineHeight: 1,
-                            }}
-                          >
-                            {i + 1}
-                          </span>
                           <img
                             src={row.avatarSrc}
                             alt=""
                             style={{
-                              ...styles.stanceListAvatar,
                               width: L.avatarPx,
                               height: L.avatarPx,
+                              borderRadius: 999,
+                              objectFit: "cover",
+                              flexShrink: 0,
+                              border: "1px solid rgba(255,255,255,0.2)",
                             }}
                             loading="lazy"
                             decoding="async"
@@ -2748,62 +2766,7 @@ export default function App() {
                               if (canonicalAvatarSrc(e.currentTarget.src) !== fb) e.currentTarget.src = fb;
                             }}
                           />
-                          <div
-                            style={{
-                              minWidth: 0,
-                              textAlign: "left",
-                              overflow: "hidden",
-                              display: "flex",
-                              flexDirection: "column",
-                              justifyContent: "center",
-                              lineHeight: 1.15,
-                            }}
-                          >
-                            {L.compactText ? (
-                              <div
-                                style={{
-                                  fontWeight: 800,
-                                  fontSize: L.fontName,
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {row.name ? `${row.name} (@${row.normHandle})` : `@${row.normHandle}`}
-                              </div>
-                            ) : row.name ? (
-                              <>
-                                <div
-                                  style={{
-                                    ...styles.stanceListName,
-                                    fontSize: L.fontName,
-                                    lineHeight: 1.15,
-                                  }}
-                                >
-                                  {row.name}
-                                </div>
-                                <div
-                                  style={{
-                                    ...styles.stanceListHandle,
-                                    fontSize: L.fontHandle,
-                                    lineHeight: 1.1,
-                                  }}
-                                >
-                                  @{row.normHandle}
-                                </div>
-                              </>
-                            ) : (
-                              <div
-                                style={{
-                                  ...styles.stanceListName,
-                                  fontSize: L.fontName,
-                                  lineHeight: 1.15,
-                                }}
-                              >
-                                @{row.normHandle}
-                              </div>
-                            )}
-                          </div>
+                          <span style={styles.stanceListHandleText}>@{row.normHandle}</span>
                         </button>
                       ))}
                     </div>
@@ -2817,7 +2780,7 @@ export default function App() {
       <div style={styles.footerNote}>
         <div>Stances are self-reported or curated.</div>
         {stanceListsViewEnabled ? (
-          <div>Within each stance, accounts are listed by followers (highest first); rows scale to fit the screen.</div>
+          <div>Within each stance: avatar + @username, multi-column grid, followers (highest first).</div>
         ) : (
           <div>Size of avatars is proportional to number of followers.</div>
         )}
@@ -3196,45 +3159,29 @@ const styles = {
   stanceListScroll: {
     flex: 1,
     minHeight: 0,
-    overflow: "hidden",
     overflowX: "hidden",
-    display: "flex",
-    flexDirection: "column",
-    justifyContent: "flex-start",
   },
-  stanceListRow: {
-    display: "grid",
-    gridTemplateColumns: "auto auto minmax(0, 1fr)",
-    alignItems: "center",
-    borderRadius: 8,
-    border: "none",
-    color: "inherit",
-    font: "inherit",
-    width: "100%",
-    textAlign: "left",
+  stanceListHandleBtn: {
+    boxSizing: "border-box",
+    margin: 0,
+    borderRadius: 6,
+    border: "1px solid rgba(255,255,255,0.12)",
+    color: "#e2e8f0",
+    fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial",
+    fontWeight: 700,
+    lineHeight: 1.2,
     cursor: "pointer",
-    flexShrink: 0,
-  },
-  stanceListIndex: {
-    fontWeight: 900,
-    fontVariantNumeric: "tabular-nums",
-    opacity: 0.88,
-    minWidth: "1.5em",
-  },
-  stanceListAvatar: {
-    borderRadius: 999,
-    objectFit: "cover",
-    border: "1px solid rgba(255,255,255,0.22)",
-    flexShrink: 0,
-  },
-  stanceListName: {
-    fontWeight: 800,
     overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
+    padding: "0 5px 0 4px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    gap: 6,
+    textAlign: "left",
   },
-  stanceListHandle: {
-    opacity: 0.82,
+  stanceListHandleText: {
+    minWidth: 0,
+    flex: 1,
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
