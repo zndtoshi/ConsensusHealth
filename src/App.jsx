@@ -1272,6 +1272,59 @@ export default function App() {
     return out;
   }, [visibleAccounts, tweetCountByHandle, labels]);
 
+  /** Fit all list rows without scrolling; row height = list body / max column count; three stance zones stay equal. */
+  const stanceListLayout = useMemo(() => {
+    if (!stanceListsViewEnabled) return null;
+    const na = stanceListRowsByStance[STANCE.AGAINST].length;
+    const nn = stanceListRowsByStance[STANCE.NEUTRAL].length;
+    const nap = stanceListRowsByStance[STANCE.APPROVE].length;
+    const maxRows = Math.max(1, na, nn, nap);
+    const isNarrow = w < 720;
+
+    // stanceListsRoot uses padding; content height is less than container h
+    const listRootPad = Math.min(36, Math.max(14, h * 0.022)) * 2;
+    const innerH = Math.max(80, h - listRootPad);
+    const gap = Math.min(12, Math.max(6, innerH * 0.012));
+
+    const colHeader = Math.max(26, Math.min(44, innerH * (isNarrow ? 0.062 : 0.072)));
+    const scrollPad = Math.max(2, Math.min(8, innerH * 0.01));
+
+    let bodyH;
+    if (isNarrow) {
+      const bandH = (innerH - gap * 2) / 3;
+      bodyH = Math.max(40, bandH - colHeader - scrollPad);
+    } else {
+      bodyH = Math.max(50, innerH - colHeader - scrollPad);
+    }
+
+    const rowH = bodyH / maxRows;
+    const padY = Math.max(0, Math.min(5, rowH * 0.1));
+    const padX = Math.max(2, Math.min(8, rowH * 0.16));
+    const gridGap = Math.max(2, Math.min(8, rowH * 0.14));
+    const fontName = Math.max(7, Math.min(19, rowH * 0.36));
+    const fontHandle = Math.max(6, Math.min(15, rowH * 0.3));
+    const fontIndex = Math.max(7, Math.min(17, rowH * 0.34));
+    const avatarPx = Math.max(12, Math.min(50, rowH * 0.78));
+    const headerFont = Math.max(11, Math.min(22, colHeader * 0.46));
+    const compactText = rowH < 24;
+
+    return {
+      maxRows,
+      rowH,
+      padY,
+      padX,
+      gridGap,
+      fontName,
+      fontHandle,
+      fontIndex,
+      avatarPx,
+      colHeader,
+      headerFont,
+      compactText,
+      isNarrow,
+    };
+  }, [stanceListsViewEnabled, stanceListRowsByStance, h, w]);
+
   const filteredHandlesSet = useMemo(() => {
     const q = normalizeHandleToken(search);
     if (!q) return null;
@@ -2606,11 +2659,11 @@ export default function App() {
                 <div ref={tooltipBioRef} style={styles.tooltipBio} />
               </div>
             </>
-          ) : (
+          ) : stanceListLayout ? (
             <div
               style={{
                 ...styles.stanceListsRoot,
-                flexDirection: w < 720 ? "column" : "row",
+                flexDirection: stanceListLayout.isNarrow ? "column" : "row",
               }}
             >
               {[
@@ -2620,31 +2673,73 @@ export default function App() {
               ].map(({ key, title, color }) => {
                 const rows = stanceListRowsByStance[key] || [];
                 const sel = selectedHandle ? normalizeHandle(selectedHandle) : "";
+                const L = stanceListLayout;
                 return (
                   <div
                     key={key}
                     style={{
                       ...styles.stanceListColumn,
-                      ...(w < 720 ? { flex: "1 1 0", minHeight: 0 } : {}),
+                      flex: "1 1 0",
+                      minWidth: 0,
+                      minHeight: 0,
                     }}
                   >
-                    <div style={{ ...styles.stanceListHeader, color }}>{title}</div>
-                    <div style={styles.stanceListScroll}>
+                    <div
+                      style={{
+                        ...styles.stanceListHeader,
+                        color,
+                        minHeight: L.colHeader,
+                        maxHeight: L.colHeader,
+                        fontSize: L.headerFont,
+                        padding: "4px 6px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        boxSizing: "border-box",
+                      }}
+                    >
+                      {title}
+                    </div>
+                    <div
+                      style={{
+                        ...styles.stanceListScroll,
+                        padding: `${Math.max(1, L.padY)}px ${L.padX}px`,
+                      }}
+                    >
                       {rows.map((row, i) => (
                         <button
                           key={row.normHandle}
                           type="button"
                           style={{
                             ...styles.stanceListRow,
+                            height: L.rowH,
+                            minHeight: L.rowH,
+                            maxHeight: L.rowH,
+                            boxSizing: "border-box",
+                            padding: `${L.padY}px ${L.padX}px`,
+                            gap: L.gridGap,
+                            marginBottom: 0,
                             background: sel === row.normHandle ? "rgba(255,255,255,0.1)" : "transparent",
                           }}
                           onClick={() => setSelectedHandle(row.handle)}
                         >
-                          <span style={styles.stanceListIndex}>{i + 1}</span>
+                          <span
+                            style={{
+                              ...styles.stanceListIndex,
+                              fontSize: L.fontIndex,
+                              lineHeight: 1,
+                            }}
+                          >
+                            {i + 1}
+                          </span>
                           <img
                             src={row.avatarSrc}
                             alt=""
-                            style={styles.stanceListAvatar}
+                            style={{
+                              ...styles.stanceListAvatar,
+                              width: L.avatarPx,
+                              height: L.avatarPx,
+                            }}
                             loading="lazy"
                             decoding="async"
                             referrerPolicy="no-referrer"
@@ -2653,14 +2748,60 @@ export default function App() {
                               if (canonicalAvatarSrc(e.currentTarget.src) !== fb) e.currentTarget.src = fb;
                             }}
                           />
-                          <div style={{ minWidth: 0, textAlign: "left", overflow: "hidden" }}>
-                            {row.name ? (
+                          <div
+                            style={{
+                              minWidth: 0,
+                              textAlign: "left",
+                              overflow: "hidden",
+                              display: "flex",
+                              flexDirection: "column",
+                              justifyContent: "center",
+                              lineHeight: 1.15,
+                            }}
+                          >
+                            {L.compactText ? (
+                              <div
+                                style={{
+                                  fontWeight: 800,
+                                  fontSize: L.fontName,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {row.name ? `${row.name} (@${row.normHandle})` : `@${row.normHandle}`}
+                              </div>
+                            ) : row.name ? (
                               <>
-                                <div style={styles.stanceListName}>{row.name}</div>
-                                <div style={styles.stanceListHandle}>@{row.normHandle}</div>
+                                <div
+                                  style={{
+                                    ...styles.stanceListName,
+                                    fontSize: L.fontName,
+                                    lineHeight: 1.15,
+                                  }}
+                                >
+                                  {row.name}
+                                </div>
+                                <div
+                                  style={{
+                                    ...styles.stanceListHandle,
+                                    fontSize: L.fontHandle,
+                                    lineHeight: 1.1,
+                                  }}
+                                >
+                                  @{row.normHandle}
+                                </div>
                               </>
                             ) : (
-                              <div style={styles.stanceListName}>@{row.normHandle}</div>
+                              <div
+                                style={{
+                                  ...styles.stanceListName,
+                                  fontSize: L.fontName,
+                                  lineHeight: 1.15,
+                                }}
+                              >
+                                @{row.normHandle}
+                              </div>
                             )}
                           </div>
                         </button>
@@ -2670,13 +2811,13 @@ export default function App() {
                 );
               })}
             </div>
-          )}
+          ) : null}
         </div>
       </div>
       <div style={styles.footerNote}>
         <div>Stances are self-reported or curated.</div>
         {stanceListsViewEnabled ? (
-          <div>Within each stance, accounts are listed by followers (highest first).</div>
+          <div>Within each stance, accounts are listed by followers (highest first); rows scale to fit the screen.</div>
         ) : (
           <div>Size of avatars is proportional to number of followers.</div>
         )}
@@ -3046,9 +3187,7 @@ const styles = {
     overflow: "hidden",
   },
   stanceListHeader: {
-    padding: "clamp(6px, 1vmin, 14px)",
     fontWeight: 900,
-    fontSize: "clamp(14px, 2.5vmin, 26px)",
     letterSpacing: 0.02,
     textAlign: "center",
     borderBottom: "1px solid rgba(255,255,255,0.1)",
@@ -3057,50 +3196,44 @@ const styles = {
   stanceListScroll: {
     flex: 1,
     minHeight: 0,
-    overflowY: "auto",
+    overflow: "hidden",
     overflowX: "hidden",
-    padding: "clamp(4px, 0.8vmin, 10px)",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "flex-start",
   },
   stanceListRow: {
     display: "grid",
     gridTemplateColumns: "auto auto minmax(0, 1fr)",
     alignItems: "center",
-    gap: "clamp(6px, 1.2vmin, 14px)",
-    padding: "clamp(6px, 1vmin, 12px)",
-    borderRadius: 10,
-    marginBottom: 3,
+    borderRadius: 8,
     border: "none",
     color: "inherit",
     font: "inherit",
     width: "100%",
     textAlign: "left",
     cursor: "pointer",
+    flexShrink: 0,
   },
   stanceListIndex: {
     fontWeight: 900,
     fontVariantNumeric: "tabular-nums",
     opacity: 0.88,
-    minWidth: "1.6em",
-    fontSize: "clamp(12px, 2vmin, 22px)",
+    minWidth: "1.5em",
   },
   stanceListAvatar: {
     borderRadius: 999,
     objectFit: "cover",
     border: "1px solid rgba(255,255,255,0.22)",
-    width: "clamp(28px, 5.5vmin, 56px)",
-    height: "clamp(28px, 5.5vmin, 56px)",
     flexShrink: 0,
   },
   stanceListName: {
     fontWeight: 800,
-    fontSize: "clamp(12px, 2vmin, 22px)",
-    lineHeight: 1.25,
     overflow: "hidden",
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
   },
   stanceListHandle: {
-    fontSize: "clamp(10px, 1.65vmin, 18px)",
     opacity: 0.82,
     overflow: "hidden",
     textOverflow: "ellipsis",
