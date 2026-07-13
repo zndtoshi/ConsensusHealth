@@ -1,5 +1,6 @@
 import React, { useEffect } from "react";
 import { StatisticsCards, type StatisticsData } from "./StatisticsCards";
+import { StanceCsvExportSection } from "./StanceCsvExportSection";
 
 export function StatisticsModal({
   open,
@@ -95,6 +96,10 @@ export function StatisticsModal({
         ) : (
           <div style={{ opacity: 0.85, fontSize: 13 }}>No statistics available.</div>
         )}
+
+        <div style={{ marginTop: 16 }}>
+          <StanceCsvExportSection />
+        </div>
       </div>
     </div>
   );

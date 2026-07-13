@@ -15,6 +15,7 @@ import {
   type ChangedByValue,
   type StanceValue,
 } from "./stanceHistory.js";
+import { buildStanceCsvExport } from "./stanceCsvExport.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
@@ -463,6 +464,25 @@ function mergeCommunityUsers(
   for (const r of seededRows) upsert(r, "seeded");
   for (const r of dbRows) upsert(r, "db");
   return merged;
+}
+
+async function loadMergedCommunityUsersWithStance(): Promise<Record<string, unknown>[]> {
+  const seededRows = await loadSeededAccountsForCommunity();
+  const { rows } = await pool.query(`
+    SELECT
+      cu.*,
+      cu.account_created_at AS "accountCreatedAt",
+      EXISTS (
+        SELECT 1
+        FROM stance_history sh
+        WHERE sh.x_user_id = cu.x_user_id
+          AND sh.changed_by = 'user'
+      ) AS "hasUserStanceChange"
+    FROM community_users cu
+  `);
+  const dbRows = rows as Record<string, unknown>[];
+  const mergedRows = mergeCommunityUsers(seededRows, dbRows);
+  return mergedRows.filter((r) => hasStanceValue(r.stance));
 }
 
 async function initDb(): Promise<void> {
@@ -969,27 +989,9 @@ app.get("/auth/x/callback", async (req, res, next) => {
 
 app.get("/api/community", async (_req, res, next) => {
   try {
-    const seededRows = await loadSeededAccountsForCommunity();
-    const { rows } = await pool.query(`
-      SELECT
-        cu.*,
-        cu.account_created_at AS "accountCreatedAt",
-        EXISTS (
-          SELECT 1
-          FROM stance_history sh
-          WHERE sh.x_user_id = cu.x_user_id
-            AND sh.changed_by = 'user'
-        ) AS "hasUserStanceChange"
-      FROM community_users cu
-    `);
-    const dbRows = rows as Record<string, unknown>[];
-    const mergedRows = mergeCommunityUsers(seededRows, dbRows);
-    const withStance = mergedRows.filter((r) => hasStanceValue(r.stance));
+    const withStance = await loadMergedCommunityUsersWithStance();
 
     console.log("[api/community] counts", {
-      manual_users_count: seededRows.length,
-      db_users_count: dbRows.length,
-      merged_total_count: mergedRows.length,
       final_with_stance_count: withStance.length,
     });
 
@@ -998,6 +1000,26 @@ app.get("/api/community", async (_req, res, next) => {
     next(err);
   }
 });
+
+const STANCE_CSV_EXPORT_ROUTES: Array<{ path: string; stance: StanceValue }> = [
+  { path: "/api/stances/export-against.csv", stance: "against" },
+  { path: "/api/stances/export-neutral.csv", stance: "neutral" },
+  { path: "/api/stances/export-approve.csv", stance: "approve" },
+];
+
+for (const route of STANCE_CSV_EXPORT_ROUTES) {
+  app.get(route.path, async (_req, res, next) => {
+    try {
+      const mergedRows = await loadMergedCommunityUsersWithStance();
+      const { filename, content } = buildStanceCsvExport(mergedRows, route.stance);
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.send(content);
+    } catch (err) {
+      next(err);
+    }
+  });
+}
 
 app.get("/api/avatar-proxy", async (req, res, next) => {
   try {
