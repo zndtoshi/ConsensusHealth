@@ -3,9 +3,11 @@ import { describe, it } from "node:test";
 import {
   buildStanceCsvContent,
   buildStanceCsvExport,
+  buildStanceCsvRows,
+  csvEscape,
   deduplicateCsvRowsByHandle,
-  escapeCsvValue,
   mapCommunityRowToCsvExport,
+  serializeStanceCsv,
   sortCsvRows,
 } from "./stanceCsvExport.js";
 
@@ -28,6 +30,17 @@ describe("stanceCsvExport", () => {
     assert.equal("profile_url" in row, false);
     assert.equal("avatar_url" in row, false);
     assert.equal("updated_at" in row, false);
+  });
+
+  it("does not modify or normalize display names", () => {
+    const row = mapCommunityRowToCsvExport({
+      handle: "needcreations",
+      name: "→ Cryptic Beer Lounge Derry, NH Feb. 20 6-8pm",
+      stance: "neutral",
+      followers_count: 1,
+    });
+    assert.ok(row);
+    assert.equal(row.display_name, "→ Cryptic Beer Lounge Derry, NH Feb. 20 6-8pm");
   });
 
   it("skips unset stances", () => {
@@ -80,33 +93,68 @@ describe("stanceCsvExport", () => {
     );
   });
 
-  it("escapes commas, quotes, and formula injection", () => {
-    assert.equal(escapeCsvValue("hello"), "hello");
-    assert.equal(escapeCsvValue('say "hi"'), '"say ""hi"""');
-    assert.equal(escapeCsvValue("John, Jr."), '"John, Jr."');
-    assert.equal(escapeCsvValue("=1+1"), "\"'=1+1\"");
-    assert.equal(escapeCsvValue("@mention"), "\"'@mention\"");
+  it("csvEscape always quotes and doubles embedded quotes", () => {
+    assert.equal(csvEscape("hello"), '"hello"');
+    assert.equal(csvEscape('Arthur "lynch mob" van Pelt'), '"Arthur ""lynch mob"" van Pelt"');
+    assert.equal(csvEscape("John, Jr."), '"John, Jr."');
+    assert.equal(csvEscape(""), '""');
   });
 
-  it("builds CSV with only handle and display_name plus UTF-8 BOM", () => {
+  it("serializes spaces, commas, quotes, emojis, hashtags, and Unicode as single fields", () => {
+    const rows = buildStanceCsvRows([
+      {
+        handle: "grassfedbitcoin",
+        display_name: "Mechanic #BIP-110",
+        followers_count: 300,
+      },
+      {
+        handle: "arthur_van_pelt",
+        display_name: 'Arthur "lynch mob" van Pelt',
+        followers_count: 200,
+      },
+      {
+        handle: "needcreations",
+        display_name: "→ Cryptic Beer Lounge Derry, NH Feb. 20 6-8pm",
+        followers_count: 100,
+      },
+      {
+        handle: "btcsessions",
+        display_name: "BTC Sessions 😎",
+        followers_count: 50,
+      },
+      {
+        handle: "jimmysong",
+        display_name: "Jimmy Song (송재준)",
+        followers_count: 40,
+      },
+    ]);
+
+    const content = serializeStanceCsv(rows);
+    assert.equal(
+      content,
+      [
+        "\uFEFF" + '"handle","display_name"',
+        '"grassfedbitcoin","Mechanic #BIP-110"',
+        '"arthur_van_pelt","Arthur ""lynch mob"" van Pelt"',
+        '"needcreations","→ Cryptic Beer Lounge Derry, NH Feb. 20 6-8pm"',
+        '"btcsessions","BTC Sessions 😎"',
+        '"jimmysong","Jimmy Song (송재준)"',
+      ].join("\r\n")
+    );
+
+    assert.ok(!content.includes("\t"));
+    assert.ok(!content.includes("followers_count"));
+  });
+
+  it("builds CSV with only two quoted columns and UTF-8 BOM", () => {
     const content = buildStanceCsvContent([
       {
         handle: "alice",
         display_name: "Alice",
         followers_count: 42,
       },
-      {
-        handle: "johnjr",
-        display_name: "John, Jr.",
-        followers_count: 10,
-      },
     ]);
-    assert.ok(content.startsWith("\uFEFF"));
-    assert.equal(content, "\uFEFFhandle,display_name\r\nalice,Alice\r\njohnjr,\"John, Jr.\"\r\n");
-    assert.ok(!content.includes("followers_count"));
-    assert.ok(!content.includes("profile_url"));
-    assert.ok(!content.includes("avatar_url"));
-    assert.ok(!content.includes("updated_at"));
+    assert.equal(content, '\uFEFF"handle","display_name"\r\n"alice","Alice"');
   });
 
   it("exports only matching stance from merged rows", () => {
@@ -116,7 +164,7 @@ describe("stanceCsvExport", () => {
       { handle: "p1", name: "P1", stance: "approve", followers_count: 30 },
     ];
     const against = buildStanceCsvExport(merged, "against");
-    assert.ok(against.content.includes("a1,A1"));
+    assert.ok(against.content.includes('"a1","A1"'));
     assert.ok(!against.content.includes("n1"));
     assert.ok(!against.content.includes("p1"));
     assert.match(against.filename, /^consensus-health-against-\d{4}-\d{2}-\d{2}\.csv$/);

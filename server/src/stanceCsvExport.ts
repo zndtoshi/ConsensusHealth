@@ -7,17 +7,11 @@ export type StanceCsvRow = {
   followers_count: number;
 };
 
-const CSV_COLUMNS = ["handle", "display_name"] as const;
-
 export function normalizeHandleForExport(value: unknown): string {
   return String(value ?? "")
     .trim()
     .toLowerCase()
     .replace(/^@+/, "");
-}
-
-function toDisplayName(value: unknown): string {
-  return String(value ?? "").trim();
 }
 
 function toFollowersCount(value: unknown): number {
@@ -35,7 +29,7 @@ export function mapCommunityRowToCsvExport(row: Record<string, unknown>): Stance
 
   return {
     handle,
-    display_name: toDisplayName(row.name),
+    display_name: String(row.name ?? ""),
     followers_count: toFollowersCount(row.followers_count),
   };
 }
@@ -67,29 +61,24 @@ export function sortCsvRows(rows: StanceCsvRow[]): StanceCsvRow[] {
   });
 }
 
-export function escapeCsvValue(raw: unknown): string {
-  let value = raw == null ? "" : String(raw);
-  const originalStartsWithFormulaChar = /^[=+\-@]/.test(value);
-  if (originalStartsWithFormulaChar) {
-    value = `'${value}`;
-  }
-  const needsQuotes =
-    originalStartsWithFormulaChar ||
-    /[",\r\n]/.test(value) ||
-    value.includes("'");
+export function csvEscape(value: unknown): string {
+  const text = String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
+}
 
-  if (needsQuotes) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
+export function buildStanceCsvRows(rows: StanceCsvRow[]): string[][] {
+  return [
+    ["handle", "display_name"],
+    ...rows.map((row) => [row.handle, row.display_name]),
+  ];
+}
+
+export function serializeStanceCsv(rows: string[][]): string {
+  return "\uFEFF" + rows.map((row) => row.map(csvEscape).join(",")).join("\r\n");
 }
 
 export function buildStanceCsvContent(rows: StanceCsvRow[]): string {
-  const lines = [CSV_COLUMNS.join(",")];
-  for (const row of rows) {
-    lines.push([escapeCsvValue(row.handle), escapeCsvValue(row.display_name)].join(","));
-  }
-  return `\uFEFF${lines.join("\r\n")}\r\n`;
+  return serializeStanceCsv(buildStanceCsvRows(rows));
 }
 
 export function buildStanceCsvFilename(stance: StanceValue, date = new Date()): string {
