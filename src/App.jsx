@@ -122,10 +122,11 @@ function collectAvatarFieldValues(obj) {
 }
 
 function resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc) {
+  // Seed accounts keep their locally hosted avatar file (fast, static, cached).
   const path = String(a?.avatar_path ?? "").trim();
   if (path) return canonicalAvatarSrc(`${baseNoSlash}${path}?v=${AVATAR_REV}`);
-  const remote = firstNonEmptyAvatarField(a);
-  if (remote) return canonicalAvatarSrc(maybeProxyAvatarUrl(remote));
+  // Everyone else: do NOT fetch a remote image (that routes through the server
+  // avatar proxy and slows down page load). Show the default placeholder.
   return canonicalAvatarSrc(missingSrc);
 }
 
