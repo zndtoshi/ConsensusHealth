@@ -1748,6 +1748,12 @@ export default function App() {
   const isPanningRef = useRef(false);
   const zoomCuePlayedRef = useRef(false);
   const zoomCueRafRef = useRef(0);
+  // Async layout settle bookkeeping. While `layoutSettlingRef` is true the graph
+  // computes its final positions across animation frames (so the main thread
+  // stays responsive and the Stats button opens instantly). Drawing is suppressed
+  // during this window so avatars do NOT visibly fly in — they appear once, settled.
+  const layoutSettlingRef = useRef(false);
+  const settleRafRef = useRef(0);
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   const labelsRef = useRef({});
   const selectedHandleRef = useRef(null);
@@ -1937,29 +1943,67 @@ export default function App() {
     const restored = cachedPos ? applyLayoutPositions(nodes, cachedPos) : 0;
     const cacheHit = nodes.length > 0 && restored >= Math.floor(nodes.length * 0.8);
 
-    if (!cacheHit) {
-      // Cache miss (first visit / resize / roster or stance change): seed each node
-      // near its stance region so the layout converges quickly, then compute the
-      // FINAL positions in a single pass. There is NO animation: nodes are settled
-      // before the first paint, so avatars simply appear in their final spots.
-      for (const n of nodes) {
-        n.x = stanceCenterX(n) + (Math.random() - 0.5) * 60;
-        n.y = h / 2 + (Math.random() - 0.5) * Math.min(h * 0.5, 400);
-        n.vx = 0;
-        n.vy = 0;
+    // Cancel any settle still in flight from a previous effect run so we never
+    // have two simulations driving the same nodes at once.
+    if (settleRafRef.current) {
+      cancelAnimationFrame(settleRafRef.current);
+      settleRafRef.current = 0;
+    }
+
+    if (cacheHit) {
+      // Previously settled positions restored from cache: paint the final layout
+      // immediately. No simulation, no delay.
+      layoutSettlingRef.current = false;
+      draw();
+      return () => {
+        sim.stop();
+      };
+    }
+
+    // Cache miss (first visit / resize / roster or stance change): seed each node
+    // near its stance region so the layout converges quickly, then compute the
+    // FINAL positions across animation frames. Drawing is suppressed until the
+    // layout has fully settled, so avatars appear ONCE in their final spots (no
+    // fly-in). Because the work is time-sliced, the main thread stays responsive
+    // and UI like the Stats button opens instantly instead of freezing.
+    for (const n of nodes) {
+      n.x = stanceCenterX(n) + (Math.random() - 0.5) * 60;
+      n.y = h / 2 + (Math.random() - 0.5) * Math.min(h * 0.5, 400);
+      n.vx = 0;
+      n.vy = 0;
+    }
+    sim.alpha(1);
+    layoutSettlingRef.current = true;
+
+    const TOTAL_TICKS = 180;
+    let ticksDone = 0;
+    const settleChunk = () => {
+      const budgetEnd = performance.now() + 8; // ~8ms/frame keeps the UI responsive
+      while (ticksDone < TOTAL_TICKS && performance.now() < budgetEnd) {
+        sim.tick();
+        ticksDone++;
       }
-      sim.alpha(1);
-      for (let i = 0; i < 180; i++) sim.tick();
+      if (ticksDone < TOTAL_TICKS) {
+        settleRafRef.current = requestAnimationFrame(settleChunk);
+        return;
+      }
       if (!plebsMode) {
         normalizeIslandEdgeGaps(nodes, labelsRef.current, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
       }
       sim.stop();
       saveLayoutPositions(layoutSig, nodes);
-    }
-
-    draw();
+      settleRafRef.current = 0;
+      layoutSettlingRef.current = false;
+      draw(); // single paint of the fully-settled layout
+    };
+    settleRafRef.current = requestAnimationFrame(settleChunk);
 
     return () => {
+      if (settleRafRef.current) {
+        cancelAnimationFrame(settleRafRef.current);
+        settleRafRef.current = 0;
+      }
+      layoutSettlingRef.current = false;
       sim.stop();
     };
 
@@ -1990,20 +2034,56 @@ export default function App() {
     labelsRef.current = labels;
     const sim = simRef.current;
     const nodes = nodesRef.current;
-    if (sim && nodes && nodes.length > 0) {
-      const regions = computeStanceRegions(nodes, labels, w);
-      regionRef.current = regions;
-      const stanceCenterX = regions
-        ? (d) => regions.stanceCenterX[getNodeStance(d, labels)] ?? w / 2
-        : () => w / 2;
-      sim.force("stanceX", forceX(stanceCenterX).strength(0.11));
-      // Reflow after a stance change in a single pass (no fly-in animation).
-      sim.alpha(0.8);
-      for (let i = 0; i < 90; i++) sim.tick();
+    if (!sim || !nodes || nodes.length === 0) {
+      draw();
+      return;
+    }
+    // The initial layout is still computing (it already uses the current labels).
+    // Don't start a competing settle; the mount effect will paint when done.
+    if (layoutSettlingRef.current) return;
+
+    const regions = computeStanceRegions(nodes, labels, w);
+    regionRef.current = regions;
+    const stanceCenterX = regions
+      ? (d) => regions.stanceCenterX[getNodeStance(d, labels)] ?? w / 2
+      : () => w / 2;
+    sim.force("stanceX", forceX(stanceCenterX).strength(0.11));
+
+    // Reflow after a stance change across animation frames (no fly-in: drawing is
+    // suppressed until the reflow settles, then painted once).
+    if (settleRafRef.current) {
+      cancelAnimationFrame(settleRafRef.current);
+      settleRafRef.current = 0;
+    }
+    sim.alpha(0.8);
+    layoutSettlingRef.current = true;
+    const TOTAL_TICKS = 90;
+    let ticksDone = 0;
+    const settleChunk = () => {
+      const budgetEnd = performance.now() + 8;
+      while (ticksDone < TOTAL_TICKS && performance.now() < budgetEnd) {
+        sim.tick();
+        ticksDone++;
+      }
+      if (ticksDone < TOTAL_TICKS) {
+        settleRafRef.current = requestAnimationFrame(settleChunk);
+        return;
+      }
       normalizeIslandEdgeGaps(nodes, labels, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
       sim.stop();
-    }
-    draw();
+      settleRafRef.current = 0;
+      layoutSettlingRef.current = false;
+      draw();
+    };
+    settleRafRef.current = requestAnimationFrame(settleChunk);
+
+    return () => {
+      if (settleRafRef.current) {
+        cancelAnimationFrame(settleRafRef.current);
+        settleRafRef.current = 0;
+      }
+      layoutSettlingRef.current = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [labels]);
 
@@ -2132,6 +2212,11 @@ export default function App() {
 
   function draw() {
     drawRef.current = draw;
+
+    // Suppress intermediate paints while the layout is settling off the main
+    // thread. This prevents avatar `load` events and simulation ticks from
+    // showing nodes mid-flight; we paint exactly once when settling completes.
+    if (layoutSettlingRef.current) return;
 
     const canvas = canvasRef.current;
     if (!canvas) return;
