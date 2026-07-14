@@ -18,6 +18,11 @@ import {
   type StanceValue,
 } from "./stanceHistory.js";
 import { buildStanceCsvExport } from "./stanceCsvExport.js";
+import {
+  createEnsureLocalAvatar,
+  createNodeAvatarDeps,
+  resolveAvatarsDir,
+} from "./avatarStorage.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
@@ -88,6 +93,19 @@ try {
 
 const pool = new Pool({ connectionString });
 console.log("[ConsensusHealth server] DB:", connectionString.replace(/:(?:[^@]*)@/, ":***@"));
+
+// Directory where downloaded avatars are stored and served from. Configurable
+// via AVATAR_STORAGE_DIR (e.g. a mounted persistent disk on the host).
+const AVATARS_DIR = resolveAvatarsDir({
+  envDir: process.env.AVATAR_STORAGE_DIR,
+  isProd: IS_PROD,
+  distPath: DIST_PATH,
+  cwd: process.cwd(),
+});
+// One-time permanent avatar provisioner (used by login/stance hooks + backfill).
+const ensureLocalAvatar = createEnsureLocalAvatar(
+  createNodeAvatarDeps({ pool, avatarsDir: AVATARS_DIR, isAllowedHost: isAllowedAvatarHost })
+);
 
 function withWwwVariant(origin: string): string[] {
   try {
@@ -634,6 +652,9 @@ async function initDb(): Promise<void> {
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS bio TEXT;`);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS account_created_at TIMESTAMPTZ;`);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS equal_avatar_size BOOLEAN DEFAULT FALSE;`);
+  // Permanent local avatar file path (e.g. "/avatars/<x_user_id>.jpg"). Immutable
+  // once set: see ensureLocalAvatar in avatarStorage.ts.
+  await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS avatar_path TEXT;`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS stance_events (
       id SERIAL PRIMARY KEY,
@@ -1086,6 +1107,10 @@ app.get("/auth/x/callback", async (req, res, next) => {
       client.release();
     }
 
+    // One-time permanent avatar capture. Fire-and-forget so a slow/failed
+    // download never blocks login; ensureLocalAvatar is idempotent + never throws.
+    void ensureLocalAvatar({ x_user_id: xUserId, avatar_url: avatarUrl }).catch(() => {});
+
     const sessionPayload: DevCookieUser = {
       x_user_id: xUserId,
       handle,
@@ -1141,6 +1166,19 @@ for (const route of STANCE_CSV_EXPORT_ROUTES) {
     }
   });
 }
+
+// Serve stored avatars (seed files + one-time downloaded profile images) from
+// the configured avatars directory. Immutable: filenames are content-stable.
+app.use(
+  "/avatars",
+  express.static(AVATARS_DIR, {
+    fallthrough: true,
+    setHeaders(res) {
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+    },
+  })
+);
 
 app.get("/api/avatar-proxy", async (req, res, next) => {
   try {
@@ -1305,6 +1343,14 @@ app.post("/api/stance", async (req, res, next) => {
         stance_persisted: row?.stance,
       });
     }
+
+    // One-time permanent avatar capture for new users choosing a stance.
+    // Fire-and-forget: never block or fail stance submission.
+    void ensureLocalAvatar({
+      x_user_id: user.x_user_id,
+      avatar_url: user.avatar_url ?? (row?.avatar_url != null ? String(row.avatar_url) : null),
+    }).catch(() => {});
+
     res.json(row);
   } catch (err) {
     next(err);
