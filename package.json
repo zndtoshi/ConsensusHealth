@@ -12,6 +12,7 @@
     "build": "npm run build:web && npm run build:server",
     "enrich:profiles": "tsx server/src/enrichProfilesFromUsersJson.ts",
     "backfill:avatars": "tsx server/src/scripts/backfillAvatars.ts",
+    "recover:avatars": "tsx server/src/scripts/recoverAvatars.ts",
     "start": "node server/dist/index.js",
     "lint": "eslint .",
     "test": "tsx --test server/src/**/*.test.ts src/**/*.test.ts",

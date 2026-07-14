@@ -6,6 +6,7 @@ type EnrichmentInput = {
 export type ProfileEnrichment = {
   bio: string | null;
   accountCreatedAt: string | null;
+  avatarUrl: string | null;
 };
 
 type TwitterApiIoUser = Record<string, unknown>;
@@ -35,13 +36,26 @@ function extractUser(data: Record<string, unknown> | null): TwitterApiIoUser | n
   return direct;
 }
 
+function normalizeAvatarUrl(value: unknown): string | null {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
+
 function mapEnrichment(user: TwitterApiIoUser | null): ProfileEnrichment | null {
   if (!user) return null;
   const bio = normalizeBio(user.description ?? user.bio ?? null);
   const accountCreatedAt = normalizeDate(
     user.created_at ?? user.createdAt ?? user.account_created_at ?? user.accountCreatedAt ?? null
   );
-  return { bio, accountCreatedAt };
+  const avatarUrl = normalizeAvatarUrl(
+    user.profilePicture ??
+      user.profile_image_url_https ??
+      user.profile_image_url ??
+      user.profileImageUrl ??
+      user.avatar_url ??
+      null
+  );
+  return { bio, accountCreatedAt, avatarUrl };
 }
 
 async function requestTwitterApiIo(
