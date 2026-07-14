@@ -121,11 +121,25 @@ function collectAvatarFieldValues(obj) {
   };
 }
 
+function hasStoredAvatarBlob(a) {
+  return a?.has_avatar_blob === true || a?.hasAvatarBlob === true;
+}
+
 function resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc) {
+  // 1) Seed accounts keep their repo-baked local avatar file (unchanged behavior).
   const path = String(a?.avatar_path ?? "").trim();
   if (path) return canonicalAvatarSrc(`${baseNoSlash}${path}?v=${AVATAR_REV}`);
+  // 2) Connected X users with a permanently stored blob: serve it by stable X
+  //    user ID from Postgres. Never route stored avatars through /api/avatar-proxy.
+  const xUserId = String(a?.x_user_id ?? a?.xUserId ?? "").trim();
+  if (xUserId && hasStoredAvatarBlob(a)) {
+    return canonicalAvatarSrc(`${baseNoSlash}/avatars/${encodeURIComponent(xUserId)}`);
+  }
+  // 3) Legacy rows without a stored blob yet: temporarily fall back to the old
+  //    remote URL (via proxy) until the user re-authenticates and it is stored.
   const remote = firstNonEmptyAvatarField(a);
   if (remote) return canonicalAvatarSrc(maybeProxyAvatarUrl(remote));
+  // 4) Generic placeholder; the graph/list <img> onError also falls back here.
   return canonicalAvatarSrc(missingSrc);
 }
 

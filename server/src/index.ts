@@ -18,6 +18,13 @@ import {
   type StanceValue,
 } from "./stanceHistory.js";
 import { buildStanceCsvExport } from "./stanceCsvExport.js";
+import {
+  createAvatarProvisioner,
+  resolveAvatarHttpResponse,
+  type AvatarBlob,
+  type AvatarBlobReader,
+  type AvatarBlobStore,
+} from "./avatarStore.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
@@ -160,6 +167,56 @@ function isAllowedAvatarHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
   return host === "pbs.twimg.com" || host.endsWith(".twimg.com");
 }
+
+// Postgres-backed permanent avatar storage. Blobs are keyed by the stable X user
+// ID and are immutable: inserted at most once and never overwritten. Uses
+// ON CONFLICT DO NOTHING so concurrent callbacks cannot replace an image.
+const avatarBlobStore: AvatarBlobStore = {
+  async has(xUserId) {
+    const r = await pool.query("SELECT 1 FROM avatar_blobs WHERE x_user_id = $1 LIMIT 1", [xUserId]);
+    return (r.rowCount ?? 0) > 0;
+  },
+  async insertIfAbsent(xUserId, mimeType, bytes) {
+    const r = await pool.query(
+      `INSERT INTO avatar_blobs (x_user_id, mime_type, image_bytes)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (x_user_id) DO NOTHING`,
+      [xUserId, mimeType, bytes]
+    );
+    return (r.rowCount ?? 0) > 0;
+  },
+};
+
+const avatarBlobReader: AvatarBlobReader = {
+  async get(xUserId): Promise<AvatarBlob | null> {
+    const r = await pool.query(
+      "SELECT mime_type, image_bytes FROM avatar_blobs WHERE x_user_id = $1 LIMIT 1",
+      [xUserId]
+    );
+    const row = r.rows[0] as { mime_type?: string; image_bytes?: Buffer } | undefined;
+    if (!row || !row.image_bytes) return null;
+    return { mimeType: String(row.mime_type ?? "application/octet-stream"), bytes: row.image_bytes };
+  },
+};
+
+const avatarProvisioner = createAvatarProvisioner({
+  store: avatarBlobStore,
+  fetchImage: async (url) => {
+    const resp = await fetch(url, {
+      redirect: "follow",
+      headers: { "user-agent": "ConsensusHealthAvatarFetcher/1.0", accept: "image/*" },
+    });
+    return {
+      ok: resp.ok,
+      status: resp.status,
+      contentType: resp.headers.get("content-type"),
+      arrayBuffer: () => resp.arrayBuffer(),
+    };
+  },
+  onError: (xUserId, reason) => {
+    if (!IS_PROD) console.warn("[avatar-store] provisioning skipped", { xUserId, reason });
+  },
+});
 
 function normalizeHandle(value: unknown): string {
   return String(value ?? "").trim().toLowerCase().replace(/^@+/, "");
@@ -490,7 +547,12 @@ async function loadMergedCommunityUsersWithStance(): Promise<Record<string, unkn
         FROM stance_history sh
         WHERE sh.x_user_id = cu.x_user_id
           AND sh.changed_by = 'user'
-      ) AS "hasUserStanceChange"
+      ) AS "hasUserStanceChange",
+      EXISTS (
+        SELECT 1
+        FROM avatar_blobs ab
+        WHERE ab.x_user_id = cu.x_user_id
+      ) AS "has_avatar_blob"
     FROM community_users cu
   `);
   const dbRows = rows as Record<string, unknown>[];
@@ -627,6 +689,17 @@ async function initDb(): Promise<void> {
       session_id TEXT PRIMARY KEY,
       x_user_id TEXT NOT NULL,
       expires_at TIMESTAMPTZ NOT NULL
+    );
+  `);
+  // Permanent, immutable avatar storage keyed by the stable X user ID. Bytes are
+  // stored in Postgres (not the ephemeral Render filesystem) so avatars survive
+  // deploys/restarts. A row is written at most once and never overwritten.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS avatar_blobs (
+      x_user_id TEXT PRIMARY KEY,
+      mime_type TEXT NOT NULL,
+      image_bytes BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();`);
@@ -1086,6 +1159,15 @@ app.get("/auth/x/callback", async (req, res, next) => {
       client.release();
     }
 
+    // Permanently store this user's avatar on first successful fetch (immutable;
+    // never overwritten). If a valid blob already exists we skip contacting X.
+    // Any failure is non-fatal: login proceeds and we retry on a future login.
+    try {
+      await avatarProvisioner.ensure(xUserId, avatarUrl);
+    } catch (e) {
+      if (!IS_PROD) console.warn("[auth-callback] avatar provisioning error:", e);
+    }
+
     const sessionPayload: DevCookieUser = {
       x_user_id: xUserId,
       handle,
@@ -1191,6 +1273,34 @@ app.get("/api/avatar-proxy", async (req, res, next) => {
     // The image URL path usually changes when a user changes their photo, so long public caching is safe.
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
     res.send(body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Serve permanently stored avatars by stable X user ID from Postgres. Only
+// numeric X user IDs are handled here; anything else (e.g. seed "<handle>.jpg"
+// files) falls through to the static/dist avatar handler.
+app.get("/avatars/:xUserId", async (req, res, next) => {
+  try {
+    const xUserId = String(req.params.xUserId ?? "").trim();
+    if (!/^\d+$/.test(xUserId)) {
+      next();
+      return;
+    }
+    const ifNoneMatchHeader = req.headers["if-none-match"];
+    const ifNoneMatch = Array.isArray(ifNoneMatchHeader) ? ifNoneMatchHeader[0] : ifNoneMatchHeader ?? null;
+    const response = await resolveAvatarHttpResponse(avatarBlobReader, xUserId, ifNoneMatch);
+    if (response.status === 404) {
+      res.status(404).end();
+      return;
+    }
+    for (const [key, value] of Object.entries(response.headers)) res.setHeader(key, value);
+    if (response.status === 304) {
+      res.status(304).end();
+      return;
+    }
+    res.status(200).send(response.body);
   } catch (err) {
     next(err);
   }
