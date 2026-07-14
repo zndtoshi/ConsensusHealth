@@ -9,6 +9,7 @@ export function StatisticsModal({
   loading,
   error,
   apiBase = "",
+  onRetryHistory,
 }: {
   open: boolean;
   onClose: () => void;
@@ -16,6 +17,7 @@ export function StatisticsModal({
   loading?: boolean;
   error?: string;
   apiBase?: string;
+  onRetryHistory?: () => void;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -89,12 +91,33 @@ export function StatisticsModal({
           </button>
         </div>
 
-        {loading ? (
+        {data ? (
+          <StatisticsCards data={data} apiBase={apiBase} onRetryHistory={onRetryHistory} />
+        ) : loading ? (
           <div style={{ opacity: 0.85, fontSize: 13 }}>Loading statistics...</div>
         ) : error ? (
-          <div style={{ color: "#fda4af", fontSize: 13 }}>{error}</div>
-        ) : data ? (
-          <StatisticsCards data={data} apiBase={apiBase} />
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ color: "#fda4af", fontSize: 13 }}>{error}</div>
+            {onRetryHistory ? (
+              <button
+                type="button"
+                onClick={onRetryHistory}
+                style={{
+                  borderRadius: 12,
+                  padding: "10px 12px",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                  background: "rgba(0,0,0,0.25)",
+                  color: "rgba(255,255,255,0.88)",
+                  cursor: "pointer",
+                  fontWeight: 800,
+                  fontSize: 12,
+                  width: "fit-content",
+                }}
+              >
+                Retry
+              </button>
+            ) : null}
+          </div>
         ) : (
           <div style={{ opacity: 0.85, fontSize: 13 }}>No statistics available.</div>
         )}

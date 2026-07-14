@@ -26,6 +26,8 @@ export type HistoryChangeItem = {
   changed_by: string | null;
 };
 
+export type StanceHistoryLoadStatus = "loading" | "loaded" | "error";
+
 export type StatisticsData = {
   totalUsersWithStance: number;
   counts: Record<StanceKey, number>;
@@ -40,6 +42,8 @@ export type StatisticsData = {
   recentChanges: HistoryChangeItem[];
   recentChangesNextCursor: string | null;
   recentChangesHasMore: boolean;
+  historyStatus: StanceHistoryLoadStatus;
+  historyError: string | null;
   topFlowsLast7Days: FlowItem[];
   generatedAtISO: string;
 };
@@ -262,9 +266,11 @@ function Pill({ children }: { children: React.ReactNode }) {
 export function StatisticsCards({
   data,
   apiBase = "",
+  onRetryHistory,
 }: {
   data: StatisticsData;
   apiBase?: string;
+  onRetryHistory?: () => void;
 }) {
   const total = data.totalUsersWithStance;
   const stanceSegments = (["against", "neutral", "approve"] as const).map((k) => ({
@@ -574,35 +580,121 @@ export function StatisticsCards({
       </Card>
 
       <Card title="Stance history" subtitle="Persisted events">
-        <div style={{ display: "grid", gap: 10 }}>
-          <div
-            style={{
-              borderRadius: 14,
-              border: "1px solid rgba(255,255,255,0.08)",
-              background: "rgba(0,0,0,0.40)",
-              padding: 12,
-            }}
-          >
-            <StatRow label="Total stance changes" value={formatInt(data.totalStanceChanges)} />
-            <StatRow label="Users who changed stance" value={formatInt(data.usersChangedStanceAtLeastOnce)} />
-            <StatRow
-              label="Top transition"
-              value={
-                data.transitionCounts.length
-                  ? `${data.transitionCounts[0].from ? STANCE[data.transitionCounts[0].from].label : "Unset"} -> ${STANCE[data.transitionCounts[0].to].label} (${formatInt(data.transitionCounts[0].count)})`
-                  : "None"
-              }
-            />
-          </div>
-          <StanceHistoryRecentList
-            apiBase={apiBase}
-            initialItems={data.recentChanges}
-            initialCursor={data.recentChangesNextCursor}
-            initialHasMore={data.recentChangesHasMore}
-            resetKey={data.generatedAtISO}
-          />
+        <div style={{ display: "grid", gap: 10, minHeight: 220 }}>
+          {data.historyStatus === "loading" ? (
+            <StanceHistoryLoadingSkeleton />
+          ) : data.historyStatus === "error" ? (
+            <div
+              style={{
+                borderRadius: 14,
+                border: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(0,0,0,0.40)",
+                padding: 12,
+                display: "grid",
+                gap: 10,
+              }}
+            >
+              <div style={{ color: "#fda4af", fontSize: 12 }}>
+                {data.historyError || "Unable to load stance history"}
+              </div>
+              {onRetryHistory ? (
+                <button
+                  type="button"
+                  onClick={onRetryHistory}
+                  aria-label="Retry loading stance history"
+                  style={{
+                    borderRadius: 12,
+                    padding: "10px 12px",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: "rgba(0,0,0,0.25)",
+                    color: "rgba(255,255,255,0.88)",
+                    cursor: "pointer",
+                    fontWeight: 800,
+                    fontSize: 12,
+                    width: "fit-content",
+                  }}
+                >
+                  Retry
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <>
+              <div
+                style={{
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  background: "rgba(0,0,0,0.40)",
+                  padding: 12,
+                }}
+              >
+                <StatRow label="Total stance changes" value={formatInt(data.totalStanceChanges)} />
+                <StatRow label="Users who changed stance" value={formatInt(data.usersChangedStanceAtLeastOnce)} />
+                <StatRow
+                  label="Top transition"
+                  value={
+                    data.transitionCounts.length
+                      ? `${data.transitionCounts[0].from ? STANCE[data.transitionCounts[0].from].label : "Unset"} -> ${STANCE[data.transitionCounts[0].to].label} (${formatInt(data.transitionCounts[0].count)})`
+                      : "None"
+                  }
+                />
+              </div>
+              <StanceHistoryRecentList
+                apiBase={apiBase}
+                initialItems={data.recentChanges}
+                initialCursor={data.recentChangesNextCursor}
+                initialHasMore={data.recentChangesHasMore}
+                resetKey={data.generatedAtISO}
+              />
+            </>
+          )}
         </div>
       </Card>
+    </div>
+  );
+}
+
+function StanceHistoryLoadingSkeleton() {
+  const bar = (width: string): React.CSSProperties => ({
+    height: 12,
+    width,
+    borderRadius: 6,
+    background: "rgba(255,255,255,0.10)",
+  });
+  return (
+    <div style={{ display: "grid", gap: 10 }} aria-busy="true" aria-live="polite">
+      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.70)" }}>Loading stance history…</div>
+      <div
+        style={{
+          borderRadius: 14,
+          border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(0,0,0,0.40)",
+          padding: 12,
+          display: "grid",
+          gap: 10,
+          minHeight: 84,
+        }}
+      >
+        <div style={bar("62%")} />
+        <div style={bar("54%")} />
+        <div style={bar("70%")} />
+      </div>
+      <div
+        style={{
+          borderRadius: 14,
+          border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(0,0,0,0.40)",
+          padding: 12,
+          display: "grid",
+          gap: 10,
+          minHeight: 120,
+        }}
+      >
+        <div style={bar("40%")} />
+        <div style={bar("88%")} />
+        <div style={bar("80%")} />
+        <div style={bar("84%")} />
+      </div>
     </div>
   );
 }

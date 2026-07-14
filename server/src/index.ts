@@ -33,6 +33,13 @@ const TWITTER_CLIENT_SECRET = process.env.X_CLIENT_SECRET || process.env.TWITTER
 const LOCAL_PROFILE_ENRICHMENT_KEY = IS_PROD ? "" : (process.env.TWITTERAPI_IO_KEY || "").trim();
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 30);
 const SESSION_SECRET = process.env.SESSION_SECRET || "";
+const STATS_CACHE_TTL_MS = 45_000;
+let statsResponseCache: { expiresAt: number; payload: Record<string, unknown> } | null = null;
+
+function invalidateStatsCache(): void {
+  statsResponseCache = null;
+}
+
 if (!SESSION_SECRET) {
   console.warn("SESSION_SECRET missing; signed cookies will not work");
 }
@@ -232,6 +239,10 @@ async function upsertStanceWithHistory(
     `,
       [xUserId, prevStance, nextStance]
     );
+  }
+
+  if (changed) {
+    invalidateStatsCache();
   }
 
   if (process.env.NODE_ENV !== "production") {
@@ -1531,36 +1542,141 @@ app.get("/api/stance-history", async (req, res, next) => {
 
 app.get("/api/stats", async (_req, res, next) => {
   try {
-    const aggRes = await pool.query(`
-      WITH normalized AS (
-        SELECT
-          CASE
-            WHEN lower(coalesce(stance, '')) = 'support' THEN 'approve'
-            WHEN lower(coalesce(stance, '')) IN ('against', 'neutral', 'approve') THEN lower(stance)
-            ELSE NULL
-          END AS stance_norm,
-          COALESCE(followers_count, 0) AS followers_count
-        FROM community_users
-      )
-      SELECT
-        COUNT(*) FILTER (WHERE stance_norm IS NOT NULL)::int AS total_users_with_stance,
-        COUNT(*) FILTER (WHERE stance_norm = 'against')::int AS against_count,
-        COUNT(*) FILTER (WHERE stance_norm = 'neutral')::int AS neutral_count,
-        COUNT(*) FILTER (WHERE stance_norm = 'approve')::int AS approve_count,
-        COALESCE(SUM(followers_count) FILTER (WHERE stance_norm = 'against'), 0)::bigint AS against_followers_total,
-        COALESCE(SUM(followers_count) FILTER (WHERE stance_norm = 'neutral'), 0)::bigint AS neutral_followers_total,
-        COALESCE(SUM(followers_count) FILTER (WHERE stance_norm = 'approve'), 0)::bigint AS approve_followers_total,
-        COALESCE(ROUND(AVG(followers_count) FILTER (WHERE stance_norm = 'against')), 0)::int AS against_followers_avg,
-        COALESCE(ROUND(AVG(followers_count) FILTER (WHERE stance_norm = 'neutral')), 0)::int AS neutral_followers_avg,
-        COALESCE(ROUND(AVG(followers_count) FILTER (WHERE stance_norm = 'approve')), 0)::int AS approve_followers_avg
-      FROM normalized
-    `);
-    const agg = aggRes.rows[0] || {};
+    const handlerStarted = Date.now();
+    const now = Date.now();
+    if (statsResponseCache && statsResponseCache.expiresAt > now) {
+      const cached = {
+        ...statsResponseCache.payload,
+        _timing: {
+          total_ms: Date.now() - handlerStarted,
+          db_ms: 0,
+          cache_hit: true,
+        },
+      };
+      if (!IS_PROD) {
+        console.log("[api/stats] timing", cached._timing);
+      }
+      res.json(cached);
+      return;
+    }
+
     const toNum = (v: unknown): number => {
       const n = Number(v);
       return Number.isFinite(n) ? n : 0;
     };
 
+    const dbStarted = Date.now();
+    const [
+      aggRes,
+      topRowsRes,
+      changedEverRes,
+      changes7dRes,
+      totalChangesRes,
+      transitionCountsRes,
+      recentPage,
+      flowsRes,
+    ] = await Promise.all([
+      pool.query(`
+        WITH normalized AS (
+          SELECT
+            CASE
+              WHEN lower(coalesce(stance, '')) = 'support' THEN 'approve'
+              WHEN lower(coalesce(stance, '')) IN ('against', 'neutral', 'approve') THEN lower(stance)
+              ELSE NULL
+            END AS stance_norm,
+            COALESCE(followers_count, 0) AS followers_count
+          FROM community_users
+        )
+        SELECT
+          COUNT(*) FILTER (WHERE stance_norm IS NOT NULL)::int AS total_users_with_stance,
+          COUNT(*) FILTER (WHERE stance_norm = 'against')::int AS against_count,
+          COUNT(*) FILTER (WHERE stance_norm = 'neutral')::int AS neutral_count,
+          COUNT(*) FILTER (WHERE stance_norm = 'approve')::int AS approve_count,
+          COALESCE(SUM(followers_count) FILTER (WHERE stance_norm = 'against'), 0)::bigint AS against_followers_total,
+          COALESCE(SUM(followers_count) FILTER (WHERE stance_norm = 'neutral'), 0)::bigint AS neutral_followers_total,
+          COALESCE(SUM(followers_count) FILTER (WHERE stance_norm = 'approve'), 0)::bigint AS approve_followers_total,
+          COALESCE(ROUND(AVG(followers_count) FILTER (WHERE stance_norm = 'against')), 0)::int AS against_followers_avg,
+          COALESCE(ROUND(AVG(followers_count) FILTER (WHERE stance_norm = 'neutral')), 0)::int AS neutral_followers_avg,
+          COALESCE(ROUND(AVG(followers_count) FILTER (WHERE stance_norm = 'approve')), 0)::int AS approve_followers_avg
+        FROM normalized
+      `),
+      pool.query(`
+        WITH ranked AS (
+          SELECT
+            handle,
+            followers_count,
+            CASE
+              WHEN lower(coalesce(stance, '')) = 'support' THEN 'approve'
+              WHEN lower(coalesce(stance, '')) IN ('against', 'neutral', 'approve') THEN lower(stance)
+              ELSE NULL
+            END AS stance_norm,
+            ROW_NUMBER() OVER (
+              PARTITION BY
+                CASE
+                  WHEN lower(coalesce(stance, '')) = 'support' THEN 'approve'
+                  WHEN lower(coalesce(stance, '')) IN ('against', 'neutral', 'approve') THEN lower(stance)
+                  ELSE NULL
+                END
+              ORDER BY COALESCE(followers_count, 0) DESC, handle ASC
+            ) AS rn
+          FROM community_users
+        )
+        SELECT stance_norm, handle, followers_count
+        FROM ranked
+        WHERE stance_norm IN ('against', 'neutral', 'approve') AND rn = 1
+      `),
+      pool.query(`
+        SELECT COUNT(DISTINCT x_user_id)::int AS changed_ever
+        FROM stance_history
+        WHERE previous_stance IS NOT NULL
+          AND previous_stance IS DISTINCT FROM new_stance
+      `),
+      pool.query(`
+        SELECT COUNT(*)::int AS changes_last_7d
+        FROM stance_history
+        WHERE changed_at >= now() - interval '7 days'
+          AND previous_stance IS DISTINCT FROM new_stance
+      `),
+      pool.query(`
+        SELECT COUNT(*)::int AS total_changes
+        FROM stance_history
+        WHERE previous_stance IS DISTINCT FROM new_stance
+      `),
+      pool.query(`
+        SELECT previous_stance AS "from", new_stance AS "to", COUNT(*)::int AS count
+        FROM stance_history
+        GROUP BY previous_stance, new_stance
+        HAVING COUNT(*) > 0
+        ORDER BY count DESC, previous_stance NULLS FIRST, new_stance
+      `),
+      queryRecentStanceHistoryPage({ limit: 10, cursor: null }),
+      pool.query(`
+        WITH norm AS (
+          SELECT
+            CASE
+              WHEN lower(coalesce(previous_stance, '')) = 'support' THEN 'approve'
+              WHEN lower(coalesce(previous_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(previous_stance)
+              ELSE NULL
+            END AS from_norm,
+            CASE
+              WHEN lower(coalesce(new_stance, '')) = 'support' THEN 'approve'
+              WHEN lower(coalesce(new_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(new_stance)
+              ELSE NULL
+            END AS to_norm
+          FROM stance_history
+          WHERE changed_at >= now() - interval '7 days'
+        )
+        SELECT from_norm AS "from", to_norm AS "to", COUNT(*)::int AS count
+        FROM norm
+        WHERE to_norm IN ('against', 'neutral', 'approve')
+        GROUP BY from_norm, to_norm
+        HAVING COUNT(*) > 0
+        ORDER BY count DESC, from_norm NULLS FIRST, to_norm
+      `),
+    ]);
+    const dbMs = Date.now() - dbStarted;
+
+    const agg = aggRes.rows[0] || {};
     const counts = {
       against: toNum(agg.against_count),
       neutral: toNum(agg.neutral_count),
@@ -1584,31 +1700,6 @@ app.get("/api/stats", async (_req, res, next) => {
       approve: toNum(agg.approve_followers_avg),
     };
 
-    const topRowsRes = await pool.query(`
-      WITH ranked AS (
-        SELECT
-          handle,
-          followers_count,
-          CASE
-            WHEN lower(coalesce(stance, '')) = 'support' THEN 'approve'
-            WHEN lower(coalesce(stance, '')) IN ('against', 'neutral', 'approve') THEN lower(stance)
-            ELSE NULL
-          END AS stance_norm,
-          ROW_NUMBER() OVER (
-            PARTITION BY
-              CASE
-                WHEN lower(coalesce(stance, '')) = 'support' THEN 'approve'
-                WHEN lower(coalesce(stance, '')) IN ('against', 'neutral', 'approve') THEN lower(stance)
-                ELSE NULL
-              END
-            ORDER BY COALESCE(followers_count, 0) DESC, handle ASC
-          ) AS rn
-        FROM community_users
-      )
-      SELECT stance_norm, handle, followers_count
-      FROM ranked
-      WHERE stance_norm IN ('against', 'neutral', 'approve') AND rn = 1
-    `);
     const topAccount: {
       against: { handle: string | null; followers_count: number | null };
       neutral: { handle: string | null; followers_count: number | null };
@@ -1628,39 +1719,6 @@ app.get("/api/stats", async (_req, res, next) => {
       }
     }
 
-    const changedEverRes = await pool.query(
-      `
-      SELECT COUNT(DISTINCT x_user_id)::int AS changed_ever
-      FROM stance_history
-      WHERE previous_stance IS NOT NULL
-        AND previous_stance IS DISTINCT FROM new_stance
-      `
-    );
-    const changes7dRes = await pool.query(
-      `
-      SELECT COUNT(*)::int AS changes_last_7d
-      FROM stance_history
-      WHERE changed_at >= now() - interval '7 days'
-        AND previous_stance IS DISTINCT FROM new_stance
-      `
-    );
-    const totalChangesRes = await pool.query(
-      `
-      SELECT COUNT(*)::int AS total_changes
-      FROM stance_history
-      WHERE previous_stance IS DISTINCT FROM new_stance
-      `
-    );
-    const transitionCountsRes = await pool.query(
-      `
-      SELECT previous_stance AS "from", new_stance AS "to", COUNT(*)::int AS count
-      FROM stance_history
-      GROUP BY previous_stance, new_stance
-      HAVING COUNT(*) > 0
-      ORDER BY count DESC, previous_stance NULLS FIRST, new_stance
-      `
-    );
-    const recentPage = await queryRecentStanceHistoryPage({ limit: 10, cursor: null });
     const recent_changes = recentPage.items.map((item) => ({
       id: item.id,
       handle: item.handle,
@@ -1674,31 +1732,7 @@ app.get("/api/stats", async (_req, res, next) => {
       changed_by: item.changed_by,
     }));
 
-    const flowsRes = await pool.query(`
-      WITH norm AS (
-        SELECT
-          CASE
-            WHEN lower(coalesce(previous_stance, '')) = 'support' THEN 'approve'
-            WHEN lower(coalesce(previous_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(previous_stance)
-            ELSE NULL
-          END AS from_norm,
-          CASE
-            WHEN lower(coalesce(new_stance, '')) = 'support' THEN 'approve'
-            WHEN lower(coalesce(new_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(new_stance)
-            ELSE NULL
-          END AS to_norm
-        FROM stance_history
-        WHERE changed_at >= now() - interval '7 days'
-      )
-      SELECT from_norm AS "from", to_norm AS "to", COUNT(*)::int AS count
-      FROM norm
-      WHERE to_norm IN ('against', 'neutral', 'approve')
-      GROUP BY from_norm, to_norm
-      HAVING COUNT(*) > 0
-      ORDER BY count DESC, from_norm NULLS FIRST, to_norm
-    `);
-
-    res.json({
+    const payload: Record<string, unknown> = {
       generated_at: new Date().toISOString(),
       total_users_with_stance: totalUsersWithStance,
       counts,
@@ -1722,6 +1756,25 @@ app.get("/api/stats", async (_req, res, next) => {
         to: String(r.to),
         count: toNum(r.count),
       })),
+    };
+
+    statsResponseCache = {
+      expiresAt: Date.now() + STATS_CACHE_TTL_MS,
+      payload,
+    };
+
+    const timing = {
+      total_ms: Date.now() - handlerStarted,
+      db_ms: dbMs,
+      cache_hit: false,
+    };
+    if (!IS_PROD) {
+      console.log("[api/stats] timing", timing);
+    }
+
+    res.json({
+      ...payload,
+      _timing: timing,
     });
   } catch (err) {
     next(err);

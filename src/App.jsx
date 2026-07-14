@@ -637,6 +637,8 @@ export default function App() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState("");
   const [statsData, setStatsData] = useState(null);
+  const statsDataRef = useRef(null);
+  const statsFetchStartedAtRef = useRef(0);
   const [showDonateModal, setShowDonateModal] = useState(false);
   const [adminOptionsOpen, setAdminOptionsOpen] = useState(false);
   /** Three scrollable stance columns (avatars + names) instead of force graph; mutually exclusive with Plebs / equal size / manual edit. */
@@ -750,26 +752,61 @@ export default function App() {
   }
 
   useEffect(() => {
+    statsDataRef.current = statsData;
+  }, [statsData]);
+
+  async function fetchStats({ forceLoading = false, cancelled } = {}) {
+    const isCancelled = () => (typeof cancelled === "function" ? cancelled() : false);
+    const mountToStartMs = statsFetchStartedAtRef.current
+      ? Math.round(performance.now() - statsFetchStartedAtRef.current)
+      : null;
+    const requestStarted = performance.now();
+    try {
+      if (forceLoading || !statsDataRef.current) setStatsLoading(true);
+      setStatsError("");
+      const res = await fetch(`${API_BASE}/api/stats`, { credentials: "include" });
+      if (!res.ok) throw new Error(`Failed to load stats (${res.status})`);
+      const data = await res.json();
+      if (isCancelled()) return;
+      setStatsData(data);
+      if (!(typeof import.meta !== "undefined" && import.meta.env && import.meta.env.PROD)) {
+        // eslint-disable-next-line no-console
+        console.log("[stats] timing", {
+          mount_to_request_start_ms: mountToStartMs,
+          frontend_request_ms: Math.round(performance.now() - requestStarted),
+          server_timing_ms: data?._timing?.total_ms ?? null,
+          server_db_ms: data?._timing?.db_ms ?? null,
+          server_cache_hit: Boolean(data?._timing?.cache_hit),
+        });
+      }
+    } catch (e) {
+      if (isCancelled()) return;
+      setStatsError(String(e?.message || e));
+    } finally {
+      if (!isCancelled()) setStatsLoading(false);
+    }
+  }
+
+  useEffect(() => {
     if (!showStatsModal) return;
     let dead = false;
-    (async () => {
-      try {
-        setStatsLoading(true);
-        setStatsError("");
-        const res = await fetch(`${API_BASE}/api/stats`, { credentials: "include" });
-        if (!res.ok) throw new Error(`Failed to load stats (${res.status})`);
-        const data = await res.json();
-        if (!dead) setStatsData(data);
-      } catch (e) {
-        if (!dead) setStatsError(String(e?.message || e));
-      } finally {
-        if (!dead) setStatsLoading(false);
-      }
-    })();
+    fetchStats({
+      forceLoading: !statsDataRef.current,
+      cancelled: () => dead,
+    });
     return () => {
       dead = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showStatsModal]);
+
+  function openStatsModal() {
+    statsFetchStartedAtRef.current = performance.now();
+    setStatsError("");
+    // Set loading before paint so Stance history never flashes fake zeros.
+    if (!statsDataRef.current) setStatsLoading(true);
+    setShowStatsModal(true);
+  }
 
   useEffect(() => {
     loadMe();
@@ -1037,6 +1074,14 @@ export default function App() {
         ? String(statsData.recent_changes_next_cursor)
         : null,
       recentChangesHasMore: !plebsMode && Boolean(statsData?.recent_changes_has_more),
+      historyStatus: plebsMode
+        ? "loaded"
+        : statsData
+          ? "loaded"
+          : statsError
+            ? "error"
+            : "loading",
+      historyError: statsError ? String(statsError) : null,
       topFlowsLast7Days: !plebsMode && Array.isArray(statsData?.flows_last_7d)
         ? statsData.flows_last_7d
             .map((f) => ({
@@ -1048,17 +1093,10 @@ export default function App() {
         : [],
       generatedAtISO: String(statsData?.generated_at || new Date().toISOString()),
     };
-  }, [statsData, visibleAccounts, labels, plebsMode]);
+  }, [statsData, visibleAccounts, labels, plebsMode, statsError]);
 
   async function refreshStatsNow() {
-    try {
-      const res = await fetch(`${API_BASE}/api/stats`, { credentials: "include" });
-      if (!res.ok) return;
-      const data = await res.json();
-      setStatsData(data);
-    } catch {
-      // ignore on-demand stats refresh failures
-    }
+    await fetchStats({ forceLoading: false });
   }
 
   async function saveManualStanceEdit() {
@@ -2797,7 +2835,7 @@ export default function App() {
         )}
       </div>
       <div style={styles.bottomControls}>
-        <button type="button" style={styles.bottomControlBtn} onClick={() => setShowStatsModal(true)}>Stats</button>
+        <button type="button" style={styles.bottomControlBtn} onClick={openStatsModal}>Stats</button>
         <button type="button" style={styles.bottomControlBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
         {stancePlaybackSequenceCount > 0 && !stanceListsViewEnabled ? (
           <button
@@ -2813,9 +2851,13 @@ export default function App() {
         open={showStatsModal}
         onClose={() => setShowStatsModal(false)}
         data={statisticsData}
-        loading={statsLoading}
+        loading={statsLoading && !statisticsData}
         error={statsError}
         apiBase={API_BASE}
+        onRetryHistory={() => {
+          statsFetchStartedAtRef.current = performance.now();
+          fetchStats({ forceLoading: true });
+        }}
       />
       {manualEditMode && isPrivilegedEditor && manualEditTarget && (
         <div style={styles.modalBackdrop} onClick={() => setManualEditTarget(null)}>
