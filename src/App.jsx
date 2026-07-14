@@ -859,6 +859,7 @@ export default function App() {
   /** Three scrollable stance columns (avatars + names) instead of force graph; mutually exclusive with Plebs / equal size / manual edit. */
   const [stanceListsViewEnabled, setStanceListsViewEnabled] = useState(false);
   const [plebsMode, setPlebsMode] = useState(false);
+  const [influencersMode, setInfluencersMode] = useState(false);
   const [equalAvatarSizeEnabled, setEqualAvatarSizeEnabled] = useState(false);
   const [dimOthersEnabled, setDimOthersEnabled] = useState(false);
   const [historyPlaybackPlaying, setHistoryPlaybackPlaying] = useState(false);
@@ -1192,12 +1193,23 @@ export default function App() {
   );
 
   const visibleAccounts = useMemo(() => {
-    if (!plebsMode) return accounts;
-    return accounts.filter((a) => {
-      const info = getFollowersFromUser(a);
-      return info.source !== "none" && info.followers < 3000;
-    });
-  }, [accounts, plebsMode]);
+    if (plebsMode) {
+      return accounts.filter((a) => {
+        const info = getFollowersFromUser(a);
+        return info.source !== "none" && info.followers < 3000;
+      });
+    }
+    if (influencersMode) {
+      return accounts.filter((a) => {
+        const info = getFollowersFromUser(a);
+        return info.source !== "none" && info.followers >= 3000;
+      });
+    }
+    return accounts;
+  }, [accounts, plebsMode, influencersMode]);
+
+  // A follower-filtered subset is active; dataset-wide change stats don't match it.
+  const followerFilterActive = plebsMode || influencersMode;
 
   const accountByHandle = useMemo(() => {
     const m = new Map();
@@ -1371,10 +1383,10 @@ export default function App() {
       totalFollowersByStance: followersTotal,
       avgFollowersByStance,
       topAccountByFollowers,
-      usersChangedStanceAtLeastOnce: plebsMode ? 0 : num(statsData?.changed_ever),
-      totalStanceChangesLast7Days: plebsMode ? 0 : num(statsData?.changes_last_7d),
-      totalStanceChanges: plebsMode ? 0 : num(statsData?.total_changes),
-      transitionCounts: !plebsMode && Array.isArray(statsData?.transition_counts)
+      usersChangedStanceAtLeastOnce: followerFilterActive ? 0 : num(statsData?.changed_ever),
+      totalStanceChangesLast7Days: followerFilterActive ? 0 : num(statsData?.changes_last_7d),
+      totalStanceChanges: followerFilterActive ? 0 : num(statsData?.total_changes),
+      transitionCounts: !followerFilterActive && Array.isArray(statsData?.transition_counts)
         ? statsData.transition_counts
             .map((f) => ({
               from: flowNorm(f.from),
@@ -1383,7 +1395,7 @@ export default function App() {
             }))
             .filter((f) => (f.from === null || f.from) && (f.to === "against" || f.to === "neutral" || f.to === "approve"))
         : [],
-      recentChanges: !plebsMode && Array.isArray(statsData?.recent_changes)
+      recentChanges: !followerFilterActive && Array.isArray(statsData?.recent_changes)
         ? statsData.recent_changes
             .map((r) => ({
               id: Number(r.id) || 0,
@@ -1402,11 +1414,11 @@ export default function App() {
             }))
             .filter((r) => r.to === "against" || r.to === "neutral" || r.to === "approve")
         : [],
-      recentChangesNextCursor: !plebsMode && statsData?.recent_changes_next_cursor
+      recentChangesNextCursor: !followerFilterActive && statsData?.recent_changes_next_cursor
         ? String(statsData.recent_changes_next_cursor)
         : null,
-      recentChangesHasMore: !plebsMode && Boolean(statsData?.recent_changes_has_more),
-      historyStatus: plebsMode
+      recentChangesHasMore: !followerFilterActive && Boolean(statsData?.recent_changes_has_more),
+      historyStatus: followerFilterActive
         ? "loaded"
         : statsData
           ? "loaded"
@@ -1414,7 +1426,7 @@ export default function App() {
             ? "error"
             : "loading",
       historyError: statsError ? String(statsError) : null,
-      topFlowsLast7Days: !plebsMode && Array.isArray(statsData?.flows_last_7d)
+      topFlowsLast7Days: !followerFilterActive && Array.isArray(statsData?.flows_last_7d)
         ? statsData.flows_last_7d
             .map((f) => ({
               from: flowNorm(f.from),
@@ -1425,7 +1437,7 @@ export default function App() {
         : [],
       generatedAtISO: String(statsData?.generated_at || new Date().toISOString()),
     };
-  }, [statsData, visibleAccounts, labels, plebsMode, statsError]);
+  }, [statsData, visibleAccounts, labels, followerFilterActive, statsError]);
 
   async function refreshStatsNow() {
     await fetchStats({ forceLoading: false });
@@ -2755,6 +2767,7 @@ export default function App() {
     if (on) {
       stopHistoryPlayback();
       setPlebsMode(false);
+      setInfluencersMode(false);
       setManualEditMode(false);
       void setEqualAvatarSizePreference(false);
       setStanceListsViewEnabled(true);
@@ -3072,14 +3085,17 @@ export default function App() {
                 <label style={styles.optionsItem}>
                   <input
                     type="checkbox"
-                    checked={stanceListsViewEnabled}
+                    checked={equalAvatarSizeEnabled}
                     onChange={(e) => {
-                      if (e.target.checked) applyStanceListsView(true);
-                      else setStanceListsViewEnabled(false);
+                      const v = e.target.checked;
+                      if (v) {
+                        stopHistoryPlayback();
+                      }
+                      setEqualAvatarSizePreference(v);
                     }}
                   />
-                  <span>Lists by stance (3 columns)</span>
-                  <span style={styles.optionsState}>{stanceListsViewEnabled ? "ON" : "OFF"}</span>
+                  <span>Equal avatar size</span>
+                  <span style={styles.optionsState}>{equalAvatarSizeEnabled ? "ON" : "OFF"}</span>
                 </label>
                 {isPrivilegedEditor && (
                   <label style={styles.optionsItem}>
@@ -3090,7 +3106,6 @@ export default function App() {
                         const v = e.target.checked;
                         if (v) {
                           stopHistoryPlayback();
-                          setStanceListsViewEnabled(false);
                         }
                         setManualEditMode(v);
                       }}
@@ -3107,7 +3122,7 @@ export default function App() {
                       const v = e.target.checked;
                       if (v) {
                         stopHistoryPlayback();
-                        setStanceListsViewEnabled(false);
+                        setInfluencersMode(false);
                       }
                       setPlebsMode(v);
                     }}
@@ -3118,18 +3133,18 @@ export default function App() {
                 <label style={styles.optionsItem}>
                   <input
                     type="checkbox"
-                    checked={equalAvatarSizeEnabled}
+                    checked={influencersMode}
                     onChange={(e) => {
                       const v = e.target.checked;
                       if (v) {
                         stopHistoryPlayback();
-                        setStanceListsViewEnabled(false);
+                        setPlebsMode(false);
                       }
-                      setEqualAvatarSizePreference(v);
+                      setInfluencersMode(v);
                     }}
                   />
-                  <span>Equal avatar size</span>
-                  <span style={styles.optionsState}>{equalAvatarSizeEnabled ? "ON" : "OFF"}</span>
+                  <span>Influencers (&gt;3k followers)</span>
+                  <span style={styles.optionsState}>{influencersMode ? "ON" : "OFF"}</span>
                 </label>
               </div>
             )}
