@@ -352,38 +352,6 @@ function normalizeIslandEdgeGaps(nodes, labelsMap, minGap = 18, blend = 0.45) {
   }
 }
 
-/**
- * Advance a d3-force simulation by `totalTicks` ticks WITHOUT blocking the main
- * thread. It runs as many ticks as fit in a small per-frame time budget, then
- * yields to the browser via requestAnimationFrame before continuing. This keeps
- * the UI responsive (clicks, the Stats modal, scrolling) while the graph settles,
- * instead of freezing for several seconds inside one synchronous `for` loop.
- * The pending frame id is stored on `rafRef.current` so callers can cancel it.
- */
-function runTimeSlicedSettle(sim, totalTicks, rafRef, { budgetMs = 8, onProgress, onDone } = {}) {
-  if (rafRef.current) {
-    cancelAnimationFrame(rafRef.current);
-    rafRef.current = 0;
-  }
-  const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
-  let done = 0;
-  const step = () => {
-    const start = now();
-    do {
-      sim.tick();
-      done += 1;
-    } while (done < totalTicks && now() - start < budgetMs);
-    if (onProgress) onProgress();
-    if (done < totalTicks) {
-      rafRef.current = requestAnimationFrame(step);
-    } else {
-      rafRef.current = 0;
-      if (onDone) onDone();
-    }
-  };
-  rafRef.current = requestAnimationFrame(step);
-}
-
 // Persisted graph layout so a reload shows the settled positions instantly
 // (no recompute, no fly-in animation). Keyed by a signature that captures
 // everything the layout depends on: the exact node set + each node's stance and
@@ -1769,7 +1737,6 @@ export default function App() {
   // Build nodes for simulation
   const nodesRef = useRef([]);
   const simRef = useRef(null);
-  const layoutRafRef = useRef(0); // pending time-sliced layout-settle frame
   const transformRef = useRef({ tx: 0, ty: 0, s: 1 });
   const avatarCacheRef = useRef(new Map());
   const glowCacheRef = useRef(new Map());
@@ -1956,7 +1923,7 @@ export default function App() {
       );
 
     simRef.current = sim;
-    sim.stop(); // we position nodes manually; halt d3's internal timer
+    sim.stop(); // static layout: we compute final positions once, then never move
 
     sim.on("tick", () => {
       draw();
@@ -1964,54 +1931,35 @@ export default function App() {
     });
 
     // Fast path: restore the previously settled positions from cache so the graph
-    // appears in its FINAL layout immediately on reload — no simulation, no fly-in.
+    // appears in its FINAL layout immediately on reload — no simulation at all.
     const layoutSig = computeLayoutSignature(nodes, labelsRef.current, w, h, plebsMode, equalAvatarSizeEnabled);
     const cachedPos = loadLayoutPositions(layoutSig);
     const restored = cachedPos ? applyLayoutPositions(nodes, cachedPos) : 0;
     const cacheHit = nodes.length > 0 && restored >= Math.floor(nodes.length * 0.8);
 
-    if (cacheHit) {
-      draw();
-      return () => {
-        if (layoutRafRef.current) {
-          cancelAnimationFrame(layoutRafRef.current);
-          layoutRafRef.current = 0;
-        }
-        sim.stop();
-      };
+    if (!cacheHit) {
+      // Cache miss (first visit / resize / roster or stance change): seed each node
+      // near its stance region so the layout converges quickly, then compute the
+      // FINAL positions in a single pass. There is NO animation: nodes are settled
+      // before the first paint, so avatars simply appear in their final spots.
+      for (const n of nodes) {
+        n.x = stanceCenterX(n) + (Math.random() - 0.5) * 60;
+        n.y = h / 2 + (Math.random() - 0.5) * Math.min(h * 0.5, 400);
+        n.vx = 0;
+        n.vy = 0;
+      }
+      sim.alpha(1);
+      for (let i = 0; i < 180; i++) sim.tick();
+      if (!plebsMode) {
+        normalizeIslandEdgeGaps(nodes, labelsRef.current, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
+      }
+      sim.stop();
+      saveLayoutPositions(layoutSig, nodes);
     }
 
-    // Cache miss (first visit / resize / roster or stance change): seed each node
-    // near its stance region so the layout is roughly correct from the first paint
-    // and converges quickly. Then settle time-sliced WITHOUT redrawing every frame
-    // (that per-frame redraw of every avatar is what made the graph "fly" for
-    // seconds). Draw once when settled, and cache the result for next time.
-    for (const n of nodes) {
-      n.x = stanceCenterX(n) + (Math.random() - 0.5) * 60;
-      n.y = h / 2 + (Math.random() - 0.5) * Math.min(h * 0.5, 400);
-      n.vx = 0;
-      n.vy = 0;
-    }
-    sim.alpha(1);
     draw();
 
-    runTimeSlicedSettle(sim, 180, layoutRafRef, {
-      budgetMs: 10,
-      onDone: () => {
-        if (!plebsMode) {
-          normalizeIslandEdgeGaps(nodes, labelsRef.current, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
-        }
-        sim.stop();
-        draw();
-        saveLayoutPositions(layoutSig, nodes);
-      },
-    });
-
     return () => {
-      if (layoutRafRef.current) {
-        cancelAnimationFrame(layoutRafRef.current);
-        layoutRafRef.current = 0;
-      }
       sim.stop();
     };
 
@@ -2049,18 +1997,11 @@ export default function App() {
         ? (d) => regions.stanceCenterX[getNodeStance(d, labels)] ?? w / 2
         : () => w / 2;
       sim.force("stanceX", forceX(stanceCenterX).strength(0.11));
-      // Reflow after a stance change, time-sliced so the UI never freezes and
-      // without redrawing every frame (no fly-in); draw once when settled.
+      // Reflow after a stance change in a single pass (no fly-in animation).
       sim.alpha(0.8);
+      for (let i = 0; i < 90; i++) sim.tick();
+      normalizeIslandEdgeGaps(nodes, labels, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
       sim.stop();
-      runTimeSlicedSettle(sim, 90, layoutRafRef, {
-        budgetMs: 10,
-        onDone: () => {
-          normalizeIslandEdgeGaps(nodes, labels, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
-          sim.stop();
-          drawRef.current();
-        },
-      });
     }
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
