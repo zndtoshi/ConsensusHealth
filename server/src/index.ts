@@ -18,13 +18,8 @@ import {
   type StanceValue,
 } from "./stanceHistory.js";
 import { buildStanceCsvExport } from "./stanceCsvExport.js";
-import {
-  createAvatarProvisioner,
-  resolveAvatarHttpResponse,
-  type AvatarBlob,
-  type AvatarBlobReader,
-  type AvatarBlobStore,
-} from "./avatarStore.js";
+import { resolveAvatarHttpResponse } from "./avatarStore.js";
+import { createDbAvatarProvisioner, ensureAvatarBlobsTable } from "./avatarProvisioning.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
@@ -169,53 +164,10 @@ function isAllowedAvatarHost(hostname: string): boolean {
 }
 
 // Postgres-backed permanent avatar storage. Blobs are keyed by the stable X user
-// ID and are immutable: inserted at most once and never overwritten. Uses
-// ON CONFLICT DO NOTHING so concurrent callbacks cannot replace an image.
-const avatarBlobStore: AvatarBlobStore = {
-  async has(xUserId) {
-    const r = await pool.query("SELECT 1 FROM avatar_blobs WHERE x_user_id = $1 LIMIT 1", [xUserId]);
-    return (r.rowCount ?? 0) > 0;
-  },
-  async insertIfAbsent(xUserId, mimeType, bytes) {
-    const r = await pool.query(
-      `INSERT INTO avatar_blobs (x_user_id, mime_type, image_bytes)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (x_user_id) DO NOTHING`,
-      [xUserId, mimeType, bytes]
-    );
-    return (r.rowCount ?? 0) > 0;
-  },
-};
-
-const avatarBlobReader: AvatarBlobReader = {
-  async get(xUserId): Promise<AvatarBlob | null> {
-    const r = await pool.query(
-      "SELECT mime_type, image_bytes FROM avatar_blobs WHERE x_user_id = $1 LIMIT 1",
-      [xUserId]
-    );
-    const row = r.rows[0] as { mime_type?: string; image_bytes?: Buffer } | undefined;
-    if (!row || !row.image_bytes) return null;
-    return { mimeType: String(row.mime_type ?? "application/octet-stream"), bytes: row.image_bytes };
-  },
-};
-
-const avatarProvisioner = createAvatarProvisioner({
-  store: avatarBlobStore,
-  fetchImage: async (url) => {
-    const resp = await fetch(url, {
-      redirect: "follow",
-      headers: { "user-agent": "ConsensusHealthAvatarFetcher/1.0", accept: "image/*" },
-    });
-    return {
-      ok: resp.ok,
-      status: resp.status,
-      contentType: resp.headers.get("content-type"),
-      arrayBuffer: () => resp.arrayBuffer(),
-    };
-  },
-  onError: (xUserId, reason) => {
-    if (!IS_PROD) console.warn("[avatar-store] provisioning skipped", { xUserId, reason });
-  },
+// ID and are immutable: inserted at most once and never overwritten. The shared
+// wiring lives in avatarProvisioning.ts and is reused by the backfill script.
+const { reader: avatarBlobReader, provisioner: avatarProvisioner } = createDbAvatarProvisioner(pool, {
+  isProd: IS_PROD,
 });
 
 function normalizeHandle(value: unknown): string {
@@ -694,14 +646,7 @@ async function initDb(): Promise<void> {
   // Permanent, immutable avatar storage keyed by the stable X user ID. Bytes are
   // stored in Postgres (not the ephemeral Render filesystem) so avatars survive
   // deploys/restarts. A row is written at most once and never overwritten.
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS avatar_blobs (
-      x_user_id TEXT PRIMARY KEY,
-      mime_type TEXT NOT NULL,
-      image_bytes BYTEA NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
+  await ensureAvatarBlobsTable(pool);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();`);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();`);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS bio TEXT;`);
