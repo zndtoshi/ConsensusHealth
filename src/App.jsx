@@ -352,6 +352,91 @@ function normalizeIslandEdgeGaps(nodes, labelsMap, minGap = 18, blend = 0.45) {
   }
 }
 
+/**
+ * "Equal avatar size" layout: pack every node into a screen-filling grid split
+ * into three stance columns (against | neutral | approve). All avatars are the
+ * same square size; a column's width is proportional to how many users it holds
+ * (more users -> more sub-columns -> wider band). Positions are written in world
+ * coordinates so the existing fit/zoom/pan pipeline scales the grid to fill the
+ * viewport. Returns per-stance band-center x (world coords) for the ambient stance
+ * zones, or null when there is nothing to lay out.
+ */
+function layoutEqualSizeGrid(nodes, labelsMap, w, h) {
+  if (!nodes || nodes.length === 0 || w < 10 || h < 10) return null;
+  const order = [STANCE.AGAINST, STANCE.NEUTRAL, STANCE.APPROVE];
+  const groups = {
+    [STANCE.AGAINST]: [],
+    [STANCE.NEUTRAL]: [],
+    [STANCE.APPROVE]: [],
+  };
+  for (const n of nodes) {
+    const st = getNodeStance(n, labelsMap);
+    (groups[st] || groups[STANCE.NEUTRAL]).push(n);
+  }
+  // Largest followers first within each column (stable, meaningful ordering).
+  for (const key of order) groups[key].sort((a, b) => (b.followers || 0) - (a.followers || 0));
+
+  const counts = order.map((k) => groups[k].length);
+  const total = counts.reduce((a, c) => a + c, 0);
+  if (total === 0) return null;
+
+  const margin = Math.max(8, Math.min(w, h) * 0.02);
+  const usableW = Math.max(20, w - margin * 2);
+  const usableH = Math.max(20, h - margin * 2);
+  const activeBands = counts.filter((c) => c > 0).length;
+  const bandGutter = Math.max(6, usableW * 0.015);
+  const gutterTotal = bandGutter * Math.max(0, activeBands - 1);
+  const gridW = Math.max(10, usableW - gutterTotal);
+
+  // Pick the row count that maximizes the uniform cell size while fitting every
+  // avatar inside the usable area.
+  let best = null;
+  const maxRows = Math.min(total, 500);
+  for (let R = 1; R <= maxRows; R++) {
+    let totalCols = 0;
+    for (const c of counts) if (c > 0) totalCols += Math.ceil(c / R);
+    if (totalCols === 0) continue;
+    const cell = Math.min(usableH / R, gridW / totalCols);
+    if (!best || cell > best.cell) best = { R, totalCols, cell };
+  }
+  if (!best) return null;
+
+  const { R, cell } = best;
+  const colsPerBand = counts.map((c) => (c > 0 ? Math.ceil(c / R) : 0));
+  const contentW = best.totalCols * cell + gutterTotal;
+  const contentH = R * cell;
+  const startX = (w - contentW) / 2;
+  const startY = (h - contentH) / 2;
+  const avatarSide = Math.max(6, cell * 0.9); // small uniform gap between avatars
+
+  const regionCenters = {};
+  let xCursor = startX;
+  for (let gi = 0; gi < order.length; gi++) {
+    const key = order[gi];
+    const list = groups[key];
+    const cols = colsPerBand[gi];
+    if (cols === 0) {
+      regionCenters[key] = xCursor;
+      continue;
+    }
+    const bandW = cols * cell;
+    regionCenters[key] = xCursor + bandW / 2;
+    for (let i = 0; i < list.length; i++) {
+      const col = Math.floor(i / R);
+      const row = i % R;
+      const n = list[i];
+      n.x = xCursor + col * cell + cell / 2;
+      n.y = startY + row * cell + cell / 2;
+      n.vx = 0;
+      n.vy = 0;
+      n.side = avatarSide;
+      n.half = avatarSide / 2;
+    }
+    xCursor += bandW + bandGutter;
+  }
+  return { stanceCenterX: regionCenters, gapPx: bandGutter };
+}
+
 // Persisted graph layout so a reload shows the settled positions instantly
 // (no recompute, no fly-in animation). Keyed by a signature that captures
 // everything the layout depends on: the exact node set + each node's stance and
@@ -774,7 +859,6 @@ export default function App() {
   /** Three scrollable stance columns (avatars + names) instead of force graph; mutually exclusive with Plebs / equal size / manual edit. */
   const [stanceListsViewEnabled, setStanceListsViewEnabled] = useState(false);
   const [plebsMode, setPlebsMode] = useState(false);
-  const [influencersMode, setInfluencersMode] = useState(false);
   const [equalAvatarSizeEnabled, setEqualAvatarSizeEnabled] = useState(false);
   const [dimOthersEnabled, setDimOthersEnabled] = useState(false);
   const [historyPlaybackPlaying, setHistoryPlaybackPlaying] = useState(false);
@@ -1108,24 +1192,12 @@ export default function App() {
   );
 
   const visibleAccounts = useMemo(() => {
-    if (plebsMode) {
-      return accounts.filter((a) => {
-        const info = getFollowersFromUser(a);
-        return info.source !== "none" && info.followers < 3000;
-      });
-    }
-    if (influencersMode) {
-      return accounts.filter((a) => {
-        const info = getFollowersFromUser(a);
-        return info.source !== "none" && info.followers >= 3000;
-      });
-    }
-    return accounts;
-  }, [accounts, plebsMode, influencersMode]);
-
-  // Both follower filters show a subset of users, so the server-computed global
-  // change stats (which cover everyone) would be misleading. Gate them like plebs.
-  const followerFilterActive = plebsMode || influencersMode;
+    if (!plebsMode) return accounts;
+    return accounts.filter((a) => {
+      const info = getFollowersFromUser(a);
+      return info.source !== "none" && info.followers < 3000;
+    });
+  }, [accounts, plebsMode]);
 
   const accountByHandle = useMemo(() => {
     const m = new Map();
@@ -1299,10 +1371,10 @@ export default function App() {
       totalFollowersByStance: followersTotal,
       avgFollowersByStance,
       topAccountByFollowers,
-      usersChangedStanceAtLeastOnce: followerFilterActive ? 0 : num(statsData?.changed_ever),
-      totalStanceChangesLast7Days: followerFilterActive ? 0 : num(statsData?.changes_last_7d),
-      totalStanceChanges: followerFilterActive ? 0 : num(statsData?.total_changes),
-      transitionCounts: !followerFilterActive && Array.isArray(statsData?.transition_counts)
+      usersChangedStanceAtLeastOnce: plebsMode ? 0 : num(statsData?.changed_ever),
+      totalStanceChangesLast7Days: plebsMode ? 0 : num(statsData?.changes_last_7d),
+      totalStanceChanges: plebsMode ? 0 : num(statsData?.total_changes),
+      transitionCounts: !plebsMode && Array.isArray(statsData?.transition_counts)
         ? statsData.transition_counts
             .map((f) => ({
               from: flowNorm(f.from),
@@ -1311,7 +1383,7 @@ export default function App() {
             }))
             .filter((f) => (f.from === null || f.from) && (f.to === "against" || f.to === "neutral" || f.to === "approve"))
         : [],
-      recentChanges: !followerFilterActive && Array.isArray(statsData?.recent_changes)
+      recentChanges: !plebsMode && Array.isArray(statsData?.recent_changes)
         ? statsData.recent_changes
             .map((r) => ({
               id: Number(r.id) || 0,
@@ -1330,11 +1402,11 @@ export default function App() {
             }))
             .filter((r) => r.to === "against" || r.to === "neutral" || r.to === "approve")
         : [],
-      recentChangesNextCursor: !followerFilterActive && statsData?.recent_changes_next_cursor
+      recentChangesNextCursor: !plebsMode && statsData?.recent_changes_next_cursor
         ? String(statsData.recent_changes_next_cursor)
         : null,
-      recentChangesHasMore: !followerFilterActive && Boolean(statsData?.recent_changes_has_more),
-      historyStatus: followerFilterActive
+      recentChangesHasMore: !plebsMode && Boolean(statsData?.recent_changes_has_more),
+      historyStatus: plebsMode
         ? "loaded"
         : statsData
           ? "loaded"
@@ -1342,7 +1414,7 @@ export default function App() {
             ? "error"
             : "loading",
       historyError: statsError ? String(statsError) : null,
-      topFlowsLast7Days: !followerFilterActive && Array.isArray(statsData?.flows_last_7d)
+      topFlowsLast7Days: !plebsMode && Array.isArray(statsData?.flows_last_7d)
         ? statsData.flows_last_7d
             .map((f) => ({
               from: flowNorm(f.from),
@@ -1353,7 +1425,7 @@ export default function App() {
         : [],
       generatedAtISO: String(statsData?.generated_at || new Date().toISOString()),
     };
-  }, [statsData, visibleAccounts, labels, followerFilterActive, statsError]);
+  }, [statsData, visibleAccounts, labels, plebsMode, statsError]);
 
   async function refreshStatsNow() {
     await fetchStats({ forceLoading: false });
@@ -1920,6 +1992,21 @@ export default function App() {
     // Stop old sim
     if (simRef.current) simRef.current.stop();
 
+    // "Equal avatar size" mode: skip the force simulation entirely and pack the
+    // avatars into a screen-filling grid (uniform size, per-stance columns). The
+    // starfield background, fit, and zoom/pan pipeline are all preserved by draw().
+    if (equalAvatarSizeEnabled) {
+      if (settleRafRef.current) {
+        cancelAnimationFrame(settleRafRef.current);
+        settleRafRef.current = 0;
+      }
+      layoutSettlingRef.current = false;
+      simRef.current = null;
+      regionRef.current = layoutEqualSizeGrid(nodes, labelsRef.current, w, h);
+      draw();
+      return () => {};
+    }
+
     // Proportional stance regions (weight = sum sqrt(followers) per stance)
     const regions = computeStanceRegions(nodes, labelsRef.current, w);
     regionRef.current = regions;
@@ -2050,6 +2137,15 @@ export default function App() {
     labelsRef.current = labels;
     const sim = simRef.current;
     const nodes = nodesRef.current;
+    // Equal-size grid mode: re-pack the grid so nodes move to their new stance
+    // column when a stance changes (no force sim involved).
+    if (equalAvatarSizeEnabled) {
+      if (nodes && nodes.length > 0) {
+        regionRef.current = layoutEqualSizeGrid(nodes, labels, w, h);
+      }
+      draw();
+      return;
+    }
     if (!sim || !nodes || nodes.length === 0) {
       draw();
       return;
@@ -2659,7 +2755,6 @@ export default function App() {
     if (on) {
       stopHistoryPlayback();
       setPlebsMode(false);
-      setInfluencersMode(false);
       setManualEditMode(false);
       void setEqualAvatarSizePreference(false);
       setStanceListsViewEnabled(true);
@@ -3013,30 +3108,12 @@ export default function App() {
                       if (v) {
                         stopHistoryPlayback();
                         setStanceListsViewEnabled(false);
-                        setInfluencersMode(false);
                       }
                       setPlebsMode(v);
                     }}
                   />
                   <span>Plebs (&lt;3k followers)</span>
                   <span style={styles.optionsState}>{plebsMode ? "ON" : "OFF"}</span>
-                </label>
-                <label style={styles.optionsItem}>
-                  <input
-                    type="checkbox"
-                    checked={influencersMode}
-                    onChange={(e) => {
-                      const v = e.target.checked;
-                      if (v) {
-                        stopHistoryPlayback();
-                        setStanceListsViewEnabled(false);
-                        setPlebsMode(false);
-                      }
-                      setInfluencersMode(v);
-                    }}
-                  />
-                  <span>Influencers (&gt;3k followers)</span>
-                  <span style={styles.optionsState}>{influencersMode ? "ON" : "OFF"}</span>
                 </label>
                 <label style={styles.optionsItem}>
                   <input
@@ -3278,6 +3355,8 @@ export default function App() {
         <div>Stances are self-reported or curated.</div>
         {stanceListsViewEnabled ? (
           <div>Within each stance: avatar + @username, multi-column grid, followers (highest first).</div>
+        ) : equalAvatarSizeEnabled ? (
+          <div>Equal-size avatars packed to fill the screen; each stance column&apos;s width reflects its number of users.</div>
         ) : (
           <div>Size of avatars is proportional to number of followers.</div>
         )}
