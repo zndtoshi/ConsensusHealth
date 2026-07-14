@@ -1741,6 +1741,9 @@ export default function App() {
   const avatarCacheRef = useRef(new Map());
   const glowCacheRef = useRef(new Map());
   const drawRef = useRef(() => {});
+  // Coalesces bursty redraws (e.g. hundreds of cached avatar `load` events firing
+  // in the same frame) into a single repaint per animation frame.
+  const drawRafRef = useRef(0);
 
   const camRef = useRef({ scaleMul: 1, panX: 0, panY: 0 });
   const fitRef = useRef({ scale: 1, tx: 0, ty: 0 });
@@ -1860,7 +1863,7 @@ export default function App() {
     if ("referrerPolicy" in missingImg) missingImg.referrerPolicy = "no-referrer";
     if (!hooked.has(missingImg)) {
       hooked.add(missingImg);
-      missingImg.addEventListener("load", () => drawRef.current());
+      missingImg.addEventListener("load", () => scheduleDraw());
     }
     const urls = [...new Set(nodes.map((n) => n.avatarUrl).filter(Boolean))];
     urls.forEach((url) => {
@@ -1889,13 +1892,13 @@ export default function App() {
           }
           if (canonicalAvatarSrc(img.src) !== missingSrc) img.src = missingSrc;
           cache.set(url, missingImg);
-          drawRef.current();
+          scheduleDraw();
         };
-        img.addEventListener("load", () => drawRef.current());
+        img.addEventListener("load", () => scheduleDraw());
         img.addEventListener("error", () => handleError(true));
         // If preload finished before listeners were attached, recover immediately.
         if (img.complete) {
-          if (img.naturalWidth > 0) drawRef.current();
+          if (img.naturalWidth > 0) scheduleDraw();
           else handleError(false);
         }
       }
@@ -2095,6 +2098,8 @@ export default function App() {
   useEffect(() => {
     return () => {
       if (zoomCueRafRef.current) cancelAnimationFrame(zoomCueRafRef.current);
+      if (drawRafRef.current) cancelAnimationFrame(drawRafRef.current);
+      if (settleRafRef.current) cancelAnimationFrame(settleRafRef.current);
     };
   }, []);
 
@@ -2208,6 +2213,17 @@ export default function App() {
     starfieldCanvasRef.current = off;
     starfieldKeyRef.current = key;
     return off;
+  }
+
+  // Batches redraw requests to at most one per frame. Use this (instead of
+  // calling draw() directly) for events that can fire in large bursts, such as
+  // cached avatar images all resolving their `load` handlers at once.
+  function scheduleDraw() {
+    if (drawRafRef.current) return;
+    drawRafRef.current = requestAnimationFrame(() => {
+      drawRafRef.current = 0;
+      drawRef.current();
+    });
   }
 
   function draw() {
