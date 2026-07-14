@@ -35,6 +35,45 @@ export function highestQualityAvatarUrl(url: string | null | undefined): string 
   return raw.replace(/_(?:normal|bigger|mini|\d+x\d+)(?=\.[a-zA-Z0-9]+(?:$|\?))/, "");
 }
 
+/**
+ * Square size (px) we normalize *future* avatar downloads to. The visualization
+ * renders avatars at ~16–34px (a large header/donate avatar tops out well under
+ * 200px), so storing full-resolution originals wastes Postgres and bandwidth.
+ * X serves pre-sized square variants via a `_WxH` suffix, so we can request a
+ * smaller, correctly-cropped image with no image-processing dependency.
+ */
+export const AVATAR_DOWNLOAD_SIZE = 400;
+
+/**
+ * Resolve the URL to download & store for a given source avatar URL, normalized
+ * to a reasonable square size for the visualization. For X/twimg image hosts we
+ * request the `_<size>x<size>` variant (X does the resize/crop on its CDN). Any
+ * other host falls back to the highest-quality original. Never mutates already
+ * stored blobs — this only affects what future downloads fetch.
+ */
+export function avatarDownloadUrl(
+  url: string | null | undefined,
+  size: number = AVATAR_DOWNLOAD_SIZE
+): string | null {
+  const base = highestQualityAvatarUrl(url);
+  if (!base) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(base);
+  } catch {
+    return base;
+  }
+  const host = parsed.hostname.toLowerCase();
+  const isTwimg = host === "pbs.twimg.com" || host.endsWith(".twimg.com");
+  if (!isTwimg) return base;
+  // Insert `_SIZExSIZE` before the file extension of the path (e.g.
+  // /profile_images/123/abc.jpg -> /profile_images/123/abc_400x400.jpg).
+  const nextPath = parsed.pathname.replace(/(\.[a-zA-Z0-9]+)$/, `_${size}x${size}$1`);
+  if (nextPath === parsed.pathname) return base;
+  parsed.pathname = nextPath;
+  return parsed.toString();
+}
+
 export type AvatarImageResponse = {
   ok: boolean;
   status: number;
@@ -119,7 +158,7 @@ export function createAvatarProvisioner(deps: {
 
   async function run(xUserId: string, imageUrl: string | null): Promise<EnsureAvatarResult> {
     if (await deps.store.has(xUserId)) return { status: "exists" };
-    const url = highestQualityAvatarUrl(imageUrl);
+    const url = avatarDownloadUrl(imageUrl);
     if (!url) return { status: "skipped_no_url" };
     const outcome = await fetchValidatedAvatarImage(url, deps.fetchImage, maxBytes);
     if (!outcome.ok) {
@@ -179,6 +218,7 @@ export async function resolveAvatarHttpResponse(
     "Content-Type": blob.mimeType || "application/octet-stream",
     "Cache-Control": "public, max-age=31536000, immutable",
     "Content-Length": String(blob.bytes.length),
+    "X-Content-Type-Options": "nosniff",
     ETag: etag,
   };
   if (ifNoneMatch && ifNoneMatch === etag) return { status: 304, headers };

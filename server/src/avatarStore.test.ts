@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  avatarDownloadUrl,
   createAvatarProvisioner,
   fetchValidatedAvatarImage,
   highestQualityAvatarUrl,
   normalizeAvatarMimeType,
   resolveAvatarHttpResponse,
+  AVATAR_DOWNLOAD_SIZE,
   MAX_AVATAR_BYTES,
   type AvatarBlob,
   type AvatarBlobReader,
@@ -228,9 +230,66 @@ test("avatar route returns 200 with correct headers when the blob exists", async
     assert.equal(response.headers["Content-Type"], "image/webp");
     assert.equal(response.headers["Cache-Control"], "public, max-age=31536000, immutable");
     assert.equal(response.headers["Content-Length"], String(bytes.length));
+    assert.equal(response.headers["X-Content-Type-Options"], "nosniff");
     assert.match(response.headers.ETag, /^"[0-9a-f]{40}"$/);
     assert.deepEqual(response.body, bytes);
   }
+});
+
+test("avatar 304 response still carries immutable cache + nosniff headers", async () => {
+  const bytes = Buffer.from("image-data");
+  const reader: AvatarBlobReader = { async get() { return { mimeType: "image/jpeg", bytes }; } };
+  const first = await resolveAvatarHttpResponse(reader, "888");
+  const etag = first.status === 200 ? first.headers.ETag : "";
+  const second = await resolveAvatarHttpResponse(reader, "888", etag);
+  assert.equal(second.status, 304);
+  if (second.status === 304) {
+    assert.equal(second.headers["Cache-Control"], "public, max-age=31536000, immutable");
+    assert.equal(second.headers["X-Content-Type-Options"], "nosniff");
+  }
+});
+
+test("avatarDownloadUrl normalizes twimg URLs to a square variant", () => {
+  assert.equal(AVATAR_DOWNLOAD_SIZE, 400);
+  assert.equal(
+    avatarDownloadUrl("https://pbs.twimg.com/profile_images/1/abc.jpg"),
+    "https://pbs.twimg.com/profile_images/1/abc_400x400.jpg"
+  );
+  // Existing size suffixes are stripped to the base first, then normalized.
+  assert.equal(
+    avatarDownloadUrl("https://pbs.twimg.com/profile_images/1/abc_normal.jpg"),
+    "https://pbs.twimg.com/profile_images/1/abc_400x400.jpg"
+  );
+  assert.equal(
+    avatarDownloadUrl("https://pbs.twimg.com/profile_images/1/abc_200x200.jpg"),
+    "https://pbs.twimg.com/profile_images/1/abc_400x400.jpg"
+  );
+  assert.equal(
+    avatarDownloadUrl("https://pbs.twimg.com/profile_images/1/abc.jpg", 256),
+    "https://pbs.twimg.com/profile_images/1/abc_256x256.jpg"
+  );
+});
+
+test("avatarDownloadUrl leaves non-twimg hosts as the highest-quality original", () => {
+  assert.equal(
+    avatarDownloadUrl("https://example.com/pics/me_normal.png"),
+    "https://example.com/pics/me.png"
+  );
+  assert.equal(avatarDownloadUrl(""), null);
+  assert.equal(avatarDownloadUrl(null), null);
+});
+
+test("provisioner downloads and stores the normalized square variant", async () => {
+  const store = createFakeStore();
+  const requested: string[] = [];
+  const fetchImage: AvatarImageFetcher = async (url) => {
+    requested.push(url);
+    return imageResponse({ ok: true, status: 200, contentType: "image/jpeg", bytes: Buffer.from("img") });
+  };
+  const provisioner = createAvatarProvisioner({ store, fetchImage });
+  const result = await provisioner.ensure("42", "https://pbs.twimg.com/profile_images/9/z.jpg");
+  assert.equal(result.status, "stored");
+  assert.deepEqual(requested, ["https://pbs.twimg.com/profile_images/9/z_400x400.jpg"]);
 });
 
 test("avatar route returns 304 when If-None-Match matches", async () => {

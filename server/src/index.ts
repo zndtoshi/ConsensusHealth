@@ -1214,6 +1214,7 @@ app.get("/api/avatar-proxy", async (req, res, next) => {
     const contentType = upstream.headers.get("content-type") || "image/jpeg";
     const body = Buffer.from(await upstream.arrayBuffer());
     res.setHeader("Content-Type", contentType);
+    res.setHeader("X-Content-Type-Options", "nosniff");
     // X/Twitter often sends cache headers that discourage browser caching (e.g. private).
     // The image URL path usually changes when a user changes their photo, so long public caching is safe.
     res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
@@ -1890,11 +1891,18 @@ if (IS_PROD) {
         index: false,
         setHeaders(res, filePath) {
           const fp = filePath.replace(/\\/g, "/");
-          if (fp.includes("/avatars/")) {
-            res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-          } else if (fp.includes("/assets/")) {
+          const isMissingPlaceholder = fp.endsWith("/avatars/_missing.svg");
+          if (isMissingPlaceholder) {
+            // The placeholder filename is not content-hashed, so it must stay
+            // revalidatable in case we ever change the SVG. It is tiny and the
+            // frontend requests it with a `?v=` version query anyway.
+            res.setHeader("Cache-Control", "public, max-age=3600, must-revalidate");
+          } else if (fp.includes("/avatars/") || fp.includes("/assets/")) {
+            // Seed avatars (repo-baked, versioned via `?v=`) and hashed build
+            // assets never change for a given URL -> long-lived immutable cache.
             res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
           }
+          res.setHeader("X-Content-Type-Options", "nosniff");
         },
       })
     );
