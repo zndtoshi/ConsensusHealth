@@ -384,6 +384,64 @@ function runTimeSlicedSettle(sim, totalTicks, rafRef, { budgetMs = 8, onProgress
   rafRef.current = requestAnimationFrame(step);
 }
 
+// Persisted graph layout so a reload shows the settled positions instantly
+// (no recompute, no fly-in animation). Keyed by a signature that captures
+// everything the layout depends on: the exact node set + each node's stance and
+// size, the viewport, and the layout-affecting modes.
+const LAYOUT_CACHE_KEY = "consensushealth:layout:v1";
+
+function computeLayoutSignature(nodes, labelsMap, w, h, plebsMode, equalAvatarSizeEnabled) {
+  const parts = nodes
+    .map((n) => `${normalizeHandle(n.handle)}:${getNodeStance(n, labelsMap)}:${Math.round(n.side)}`)
+    .sort();
+  const str = parts.join("|");
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) | 0;
+  return `${hash}|${nodes.length}|${Math.round(w)}x${Math.round(h)}|${plebsMode ? 1 : 0}|${equalAvatarSizeEnabled ? 1 : 0}`;
+}
+
+function loadLayoutPositions(signature) {
+  try {
+    const raw = localStorage.getItem(LAYOUT_CACHE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || obj.sig !== signature || !obj.pos) return null;
+    return obj.pos;
+  } catch {
+    return null;
+  }
+}
+
+function saveLayoutPositions(signature, nodes) {
+  try {
+    const pos = {};
+    for (const n of nodes) {
+      const h = normalizeHandle(n.handle);
+      if (h && Number.isFinite(n.x) && Number.isFinite(n.y)) {
+        pos[h] = [Math.round(n.x * 100) / 100, Math.round(n.y * 100) / 100];
+      }
+    }
+    localStorage.setItem(LAYOUT_CACHE_KEY, JSON.stringify({ sig: signature, pos, ts: Date.now() }));
+  } catch {
+    // storage full/unavailable: skip caching, layout still works
+  }
+}
+
+function applyLayoutPositions(nodes, pos) {
+  let applied = 0;
+  for (const n of nodes) {
+    const p = pos[normalizeHandle(n.handle)];
+    if (p && Number.isFinite(p[0]) && Number.isFinite(p[1])) {
+      n.x = p[0];
+      n.y = p[1];
+      n.vx = 0;
+      n.vy = 0;
+      applied += 1;
+    }
+  }
+  return applied;
+}
+
 function drawRoundedRectPath(ctx, x, y, w, h, r) {
   if (typeof ctx.roundRect === "function") {
     ctx.roundRect(x, y, w, h, r);
@@ -1898,30 +1956,54 @@ export default function App() {
       );
 
     simRef.current = sim;
-
-    // Settle the layout WITHOUT blocking the main thread. Previously this ran 180
-    // synchronous ticks in a tight `for` loop, freezing the entire UI for several
-    // seconds on load/resize (so clicks like "Stats" appeared to hang). Now the
-    // ticks are time-sliced across animation frames and drawn progressively: the
-    // graph settles in ~1s while the page stays fully responsive.
-    sim.alpha(1);
-    sim.stop(); // halt d3's internal timer; we advance manually, time-sliced
+    sim.stop(); // we position nodes manually; halt d3's internal timer
 
     sim.on("tick", () => {
       draw();
       if (sim.alpha() < 0.01) sim.stop();
     });
 
+    // Fast path: restore the previously settled positions from cache so the graph
+    // appears in its FINAL layout immediately on reload — no simulation, no fly-in.
+    const layoutSig = computeLayoutSignature(nodes, labelsRef.current, w, h, plebsMode, equalAvatarSizeEnabled);
+    const cachedPos = loadLayoutPositions(layoutSig);
+    const restored = cachedPos ? applyLayoutPositions(nodes, cachedPos) : 0;
+    const cacheHit = nodes.length > 0 && restored >= Math.floor(nodes.length * 0.8);
+
+    if (cacheHit) {
+      draw();
+      return () => {
+        if (layoutRafRef.current) {
+          cancelAnimationFrame(layoutRafRef.current);
+          layoutRafRef.current = 0;
+        }
+        sim.stop();
+      };
+    }
+
+    // Cache miss (first visit / resize / roster or stance change): seed each node
+    // near its stance region so the layout is roughly correct from the first paint
+    // and converges quickly. Then settle time-sliced WITHOUT redrawing every frame
+    // (that per-frame redraw of every avatar is what made the graph "fly" for
+    // seconds). Draw once when settled, and cache the result for next time.
+    for (const n of nodes) {
+      n.x = stanceCenterX(n) + (Math.random() - 0.5) * 60;
+      n.y = h / 2 + (Math.random() - 0.5) * Math.min(h * 0.5, 400);
+      n.vx = 0;
+      n.vy = 0;
+    }
+    sim.alpha(1);
     draw();
 
     runTimeSlicedSettle(sim, 180, layoutRafRef, {
-      onProgress: () => draw(),
+      budgetMs: 10,
       onDone: () => {
         if (!plebsMode) {
           normalizeIslandEdgeGaps(nodes, labelsRef.current, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
         }
         sim.stop();
         draw();
+        saveLayoutPositions(layoutSig, nodes);
       },
     });
 
@@ -1967,11 +2049,12 @@ export default function App() {
         ? (d) => regions.stanceCenterX[getNodeStance(d, labels)] ?? w / 2
         : () => w / 2;
       sim.force("stanceX", forceX(stanceCenterX).strength(0.11));
-      // Reflow after a stance change, time-sliced so the UI never freezes.
+      // Reflow after a stance change, time-sliced so the UI never freezes and
+      // without redrawing every frame (no fly-in); draw once when settled.
       sim.alpha(0.8);
       sim.stop();
       runTimeSlicedSettle(sim, 90, layoutRafRef, {
-        onProgress: () => drawRef.current(),
+        budgetMs: 10,
         onDone: () => {
           normalizeIslandEdgeGaps(nodes, labels, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
           sim.stop();

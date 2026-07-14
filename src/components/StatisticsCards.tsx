@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { fetchStanceHistoryPage } from "../api/stanceHistory";
 import { buildXProfileUrl, formatFollowerLabel, normalizeXHandle } from "../utils/xProfile";
-import { STANCE_COLORS, STANCE_LABELS, finalStanceColor } from "../utils/stanceColors";
+import { STANCE_COLORS, STANCE_LABELS } from "../utils/stanceColors";
 
 type StanceKey = "against" | "neutral" | "approve";
 
@@ -530,7 +530,7 @@ export function StatisticsCards({
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                     <span style={{ width: 10, height: 10, borderRadius: 999, background: fromColor }} />
-                    <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{fromLabel}</span>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: f.from ? "rgba(255,255,255,0.96)" : "rgba(255,255,255,0.45)" }}>{fromLabel}</span>
                     <span style={{ opacity: 0.5 }}>→</span>
                     <span style={{ width: 10, height: 10, borderRadius: 999, background: to.color }} />
                     <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{to.label}</span>
@@ -564,7 +564,7 @@ export function StatisticsCards({
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
                     <span style={{ width: 10, height: 10, borderRadius: 999, background: fromColor }} />
-                    <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{fromLabel}</span>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: f.from ? "rgba(255,255,255,0.96)" : "rgba(255,255,255,0.45)" }}>{fromLabel}</span>
                     <span style={{ opacity: 0.5 }}>→</span>
                     <span style={{ width: 10, height: 10, borderRadius: 999, background: to.color }} />
                     <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{to.label}</span>
@@ -634,9 +634,17 @@ export function StatisticsCards({
                 <StatRow
                   label="Top transition"
                   value={
-                    data.transitionCounts.length
-                      ? `${data.transitionCounts[0].from ? STANCE[data.transitionCounts[0].from].label : "Unset"} -> ${STANCE[data.transitionCounts[0].to].label} (${formatInt(data.transitionCounts[0].count)})`
-                      : "None"
+                    data.transitionCounts.length ? (
+                      <span>
+                        <span style={data.transitionCounts[0].from ? undefined : { color: "rgba(255,255,255,0.45)" }}>
+                          {data.transitionCounts[0].from ? STANCE[data.transitionCounts[0].from].label : "Unset"}
+                        </span>
+                        {" -> "}
+                        {STANCE[data.transitionCounts[0].to].label} ({formatInt(data.transitionCounts[0].count)})
+                      </span>
+                    ) : (
+                      "None"
+                    )
                   }
                 />
               </div>
@@ -856,8 +864,8 @@ function StanceHistoryRecentList({
               <span style={{ color: "rgba(255,255,255,0.78)" }}>{formatFollowerLabel(row.followers_count)}</span>
               <span style={{ color: "rgba(255,255,255,0.55)" }}> · </span>
               <span>
-                {row.from ? STANCE[row.from].label : "Unset"} {"→"}{" "}
-                <span style={{ color: finalStanceColor(row.to) }}>{STANCE[row.to].label}</span>
+                <span style={{ color: "rgba(255,255,255,0.62)" }}>Set stance to </span>
+                <span style={{ color: STANCE[row.to].color, fontWeight: 800 }}>{STANCE[row.to].label}</span>
               </span>
             </div>
             <div
