@@ -608,6 +608,83 @@ async function queryRecentStanceHistoryPage(args: {
   return { items, next_cursor, has_more };
 }
 
+type NewStanceIntroEvent = {
+  eventId: number;
+  xUserId: string;
+  handle: string | null;
+  displayName: string | null;
+  stance: "against" | "neutral" | "approve";
+  createdAt: string;
+  avatarUrl: string | null;
+  hasAvatarBlob: boolean;
+};
+
+/**
+ * Latest/final stance event per user, newest first, for the "New stances" intro
+ * animation. Deduplicated by stable x_user_id (only rn = 1). When afterEventId is
+ * provided, only users whose latest event id is newer are returned, so a user who
+ * changed stance again re-appears (their new row has a higher monotonic id).
+ */
+async function queryNewStanceEventsForIntro(args: {
+  afterEventId?: number | null;
+  limit: number;
+}): Promise<NewStanceIntroEvent[]> {
+  const limit = Math.max(1, Math.min(9, Math.trunc(args.limit) || 9));
+  const params: number[] = [];
+  let afterSql = "";
+  if (args.afterEventId != null && Number.isFinite(args.afterEventId) && args.afterEventId > 0) {
+    params.push(Math.trunc(args.afterEventId));
+    afterSql = `AND l.id > $${params.length}`;
+  }
+  params.push(limit);
+  const { rows } = await pool.query(
+    `
+    WITH latest AS (
+      SELECT
+        sh.id,
+        sh.x_user_id,
+        sh.new_stance,
+        sh.changed_at,
+        ROW_NUMBER() OVER (
+          PARTITION BY sh.x_user_id
+          ORDER BY sh.changed_at DESC, sh.id DESC
+        ) AS rn
+      FROM stance_history sh
+    )
+    SELECT
+      l.id,
+      l.x_user_id,
+      l.new_stance,
+      l.changed_at,
+      cu.handle,
+      cu.name,
+      cu.avatar_url,
+      EXISTS (SELECT 1 FROM avatar_blobs ab WHERE ab.x_user_id = l.x_user_id) AS has_avatar_blob
+    FROM latest l
+    LEFT JOIN community_users cu ON cu.x_user_id = l.x_user_id
+    WHERE l.rn = 1
+      AND l.new_stance IN ('against', 'neutral', 'approve')
+      ${afterSql}
+    ORDER BY l.changed_at DESC, l.id DESC
+    LIMIT $${params.length}
+    `,
+    params
+  );
+  return rows.map((r) => {
+    const id = Number(r.id);
+    return {
+      eventId: Number.isFinite(id) ? Math.trunc(id) : 0,
+      xUserId: String(r.x_user_id ?? ""),
+      handle: r.handle ? normalizeHandle(r.handle) : null,
+      displayName: r.name != null && String(r.name).trim() ? String(r.name) : null,
+      stance: r.new_stance as "against" | "neutral" | "approve",
+      createdAt: new Date(String(r.changed_at)).toISOString(),
+      avatarUrl: r.avatar_url ? String(r.avatar_url) : null,
+      hasAvatarBlob: r.has_avatar_blob === true,
+    };
+  });
+}
+
 async function initDb(): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS community_users (
@@ -1619,6 +1696,29 @@ app.get("/api/stance-history", async (req, res, next) => {
         count: Number(r.count) || 0,
       })),
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Latest/final stance events for the "New stances" arrival animation. Client
+// passes afterEventId (its last-seen marker) to receive only newer events.
+app.get("/api/stances/new", async (req, res, next) => {
+  try {
+    const afterRaw = String(req.query.afterEventId ?? "").trim();
+    const limitRaw = String(req.query.limit ?? "").trim();
+    const afterEventId = afterRaw ? Number(afterRaw) : null;
+    if (afterRaw && (afterEventId == null || !Number.isFinite(afterEventId) || afterEventId < 0)) {
+      res.status(400).json({ error: "invalid_after_event_id" });
+      return;
+    }
+    const limit = limitRaw ? Number(limitRaw) : 9;
+    const events = await queryNewStanceEventsForIntro({
+      afterEventId,
+      limit: Number.isFinite(limit) ? limit : 9,
+    });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ generated_at: new Date().toISOString(), items: events });
   } catch (err) {
     next(err);
   }

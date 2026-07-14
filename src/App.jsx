@@ -3,6 +3,14 @@ import { forceCollide, forceManyBody, forceCenter, forceSimulation, forceX, forc
 import { canonicalAvatarSrc, getAvatar, preloadAvatarUrls } from "./utils/avatarCache";
 import { fetchCommunityUsers } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
+import {
+  computeNewestMarker,
+  filterNewerThanMarker,
+  prefersReducedMotion,
+  readLastSeenMarker,
+  selectIntroEvents,
+  writeLastSeenMarker,
+} from "./utils/newStancesIntro";
 
 // Lazily loaded so the Statistics UI (StatisticsCards, CSV export) and the QR
 // library (qrcode.react) are split into separate chunks fetched only on demand.
@@ -678,9 +686,33 @@ export default function App() {
   const [manualEditError, setManualEditError] = useState("");
   const [labels, setLabels] = useState(() => ({}));
   const [dropdownHoverHandle, setDropdownHoverHandle] = useState(null);
+  const [introActive, setIntroActive] = useState(false);
+  const [introHeadingVisible, setIntroHeadingVisible] = useState(false);
   const adminOptionsRef = useRef(null);
   const stancePlaybackItemsRef = useRef(null);
   const mentionsRequestedRef = useRef(false);
+  // "New stances" arrival animation state (see utils/newStancesIntro.ts).
+  const introRef = useRef({
+    active: false,
+    rafId: 0,
+    phase: "idle",
+    startTime: 0,
+    reducedMotion: false,
+    headingVisible: false,
+    items: [],
+    landed: new Set(),
+    hidden: new Set(),
+    timings: {
+      fadeInMs: 420,
+      hoverMs: 3000,
+      flightMs: 1150,
+      staggerStepMs: 130,
+      headingFadeLeadMs: 120,
+      reducedHoldMs: 1300,
+      reducedFadeMs: 320,
+    },
+  });
+  const introStartedRef = useRef(false);
   const historyPlaybackRef = useRef({
     active: false,
     sequence: [],
@@ -1710,6 +1742,72 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, err, visibleAccounts.length, w, h, plebsMode, equalAvatarSizeEnabled, stanceListsViewEnabled]);
 
+  // "New stances" arrival animation: after the graph layout is ready, fetch the
+  // stance events newer than this browser's last-seen marker and animate them.
+  useEffect(() => {
+    if (introStartedRef.current) return; // Run once (guards React Strict Mode / reruns).
+    if (loading || err) return;
+    if (stanceListsViewEnabled) return;
+    if (!visibleAccounts.length) return;
+    if (!nodesRef.current || nodesRef.current.length === 0) return;
+
+    introStartedRef.current = true;
+    let cancelled = false;
+
+    (async () => {
+      let storage = null;
+      try {
+        storage = typeof window !== "undefined" ? window.localStorage : null;
+      } catch {
+        storage = null;
+      }
+      const marker = readLastSeenMarker(storage);
+      let fetched = [];
+      try {
+        const params = new URLSearchParams({ limit: "9" });
+        if (marker?.eventId) params.set("afterEventId", String(marker.eventId));
+        const res = await fetch(`${API_BASE}/api/stances/new?${params.toString()}`, {
+          credentials: "include",
+        });
+        if (!res.ok) return; // Load failed -> never mark unseen events as viewed.
+        const data = await res.json();
+        fetched = Array.isArray(data?.items) ? data.items : [];
+      } catch {
+        return; // Network failure -> never mark unseen events as viewed.
+      }
+      if (cancelled) return;
+
+      const fresh = filterNewerThanMarker(fetched, marker);
+      const selected = selectIntroEvents(fresh, { max: 9 });
+      const nodeList = nodesRef.current || [];
+      const matched = selected.filter((e) =>
+        nodeList.some((n) => normalizeHandle(n.handle) === normalizeHandle(e.handle))
+      );
+      if (!matched.length) return; // No new stances in the current graph: no intro, keep marker.
+
+      startIntro(matched, prefersReducedMotion());
+
+      // Persist the newest fetched event only after the animation has started.
+      const newMarker = computeNewestMarker(fetched);
+      if (newMarker) writeLastSeenMarker(storage, newMarker);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, err, visibleAccounts.length, stanceListsViewEnabled]);
+
+  // Cancel any in-flight intro animation on unmount.
+  useEffect(() => {
+    const intro = introRef.current; // Stable ref object; safe to use in cleanup.
+    return () => {
+      if (intro.rafId) cancelAnimationFrame(intro.rafId);
+      intro.rafId = 0;
+      intro.active = false;
+    };
+  }, []);
+
   // On resize: recompute stance regions and update forces
   useEffect(() => {
     if (stanceListsViewEnabled) return;
@@ -1925,6 +2023,18 @@ export default function App() {
       return false;
     };
 
+    // Hide a node's real graph position while its avatar is hovering/flying in
+    // the "New stances" intro, so a user is never drawn twice. It reappears the
+    // moment it lands (added to `landed`), and always once the intro ends.
+    const intro = introRef.current;
+    const introActiveNow = Boolean(intro.active);
+    const introShowsWorldNode = (n) => {
+      if (!introActiveNow) return true;
+      const h = normalizeHandle(n.handle);
+      if (!intro.hidden.has(h)) return true;
+      return intro.landed.has(h);
+    };
+
     const maxDrawScale = 2;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const n of nodes) {
@@ -2110,6 +2220,7 @@ export default function App() {
     };
     for (const n of nodes) {
       if (!playbackShowsWorldNode(n)) continue;
+      if (!introShowsWorldNode(n)) continue;
       if (curSelected && n.handle === curSelected) {
         if (isVisible(n, selectedScale)) selected.push(n);
       } else if (curHover && n.handle === curHover.handle) {
@@ -2191,6 +2302,99 @@ export default function App() {
           ctx.rect(drawX, drawY, sidePx, sidePx);
         }
         ctx.stroke();
+      }
+    }
+
+    // "New stances" intro overlay (screen space): avatars hover above their
+    // stance region, then fly to their real graph position. Reuses node final
+    // positions, the shared avatar cache, and the glow sprites.
+    if (intro.active && intro.items.length) {
+      const nowIntro = performance.now();
+      const elapsedIntro = nowIntro - intro.startTime;
+      const ti = intro.timings;
+      const regionScreenX = { against: againstX, neutral: neutralX, approve: approveX };
+      const hoverBaseY = ch * 0.17;
+      const easeInOut = (x) => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+      for (const item of intro.items) {
+        if (intro.landed.has(item.handle)) continue;
+        const node = nodes.find((nn) => normalizeHandle(nn.handle) === item.handle);
+        if (!node || !Number.isFinite(node.x) || !Number.isFinite(node.y)) continue;
+
+        const finalCx = node.x * scale + tx;
+        const finalCy = node.y * scale + ty;
+        const finalSide = node.side * scale;
+        const hoverSide = Math.max(finalSide * 1.5, Math.min(cw, ch) * 0.062);
+        const spacing = hoverSide * 1.35;
+        const offsetIndex = item.stanceIndex - (item.stanceCount - 1) / 2;
+        let hoverCx = (regionScreenX[item.stance] ?? cw / 2) + offsetIndex * spacing;
+        hoverCx = clamp(hoverCx, hoverSide, cw - hoverSide);
+        const hoverCy = hoverBaseY + (item.stanceIndex % 2 === 0 ? -1 : 1) * hoverSide * 0.18;
+
+        const fadeIn = clamp(elapsedIntro / ti.fadeInMs, 0, 1);
+        let cx = hoverCx;
+        let cy = hoverCy;
+        let sidePx = hoverSide;
+        let alpha = fadeIn;
+
+        if (intro.reducedMotion) {
+          const bob = Math.sin(nowIntro * 0.004 + item.bobPhase) * hoverSide * 0.05;
+          cy = hoverCy + bob;
+          const fadeOutStart = ti.fadeInMs + ti.reducedHoldMs;
+          if (elapsedIntro >= fadeOutStart) {
+            alpha = 1 - clamp((elapsedIntro - fadeOutStart) / ti.reducedFadeMs, 0, 1);
+          }
+        } else {
+          const flightStart = ti.fadeInMs + ti.hoverMs + item.staggerMs;
+          if (elapsedIntro < flightStart) {
+            const bob = Math.sin(nowIntro * 0.004 + item.bobPhase) * hoverSide * 0.06;
+            cy = hoverCy + bob;
+          } else {
+            const e = easeInOut(clamp((elapsedIntro - flightStart) / ti.flightMs, 0, 1));
+            cx = hoverCx + (finalCx - hoverCx) * e;
+            cy = hoverCy + (finalCy - hoverCy) * e;
+            sidePx = hoverSide + (finalSide - hoverSide) * e;
+          }
+        }
+
+        const auraOv = stanceColor(item.stance);
+        const drawX = cx - sidePx / 2;
+        const drawY = cy - sidePx / 2;
+        const rOv = Math.min(14, sidePx * 0.22);
+
+        ctx.save();
+        ctx.globalAlpha = clamp(alpha, 0, 1);
+        if (auraOv) {
+          const glow = getGlow(auraOv, sidePx, true);
+          if (glow?.canvas) {
+            ctx.save();
+            ctx.globalCompositeOperation = "lighter";
+            ctx.drawImage(glow.canvas, drawX - glow.pad, drawY - glow.pad);
+            ctx.restore();
+          }
+        }
+        const img = node.avatarUrl ? avatarCache.get(node.avatarUrl) : null;
+        if (img?.complete && img.naturalWidth > 0) {
+          ctx.save();
+          ctx.beginPath();
+          if (typeof ctx.roundRect === "function") ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+          else ctx.rect(drawX, drawY, sidePx, sidePx);
+          ctx.clip();
+          ctx.drawImage(img, drawX, drawY, sidePx, sidePx);
+          ctx.restore();
+        } else {
+          ctx.fillStyle = auraOv ? auraOv.replace(/[\d.]+\)$/, "0.22)") : "rgba(70,75,85,0.35)";
+          ctx.beginPath();
+          if (typeof ctx.roundRect === "function") ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+          else ctx.rect(drawX, drawY, sidePx, sidePx);
+          ctx.fill();
+        }
+        ctx.strokeStyle = auraOv ? auraOv.replace(/[\d.]+\)$/, "0.85)") : "rgba(120,130,150,0.9)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        if (typeof ctx.roundRect === "function") ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+        else ctx.rect(drawX, drawY, sidePx, sidePx);
+        ctx.stroke();
+        ctx.restore();
       }
     }
   }
@@ -2333,6 +2537,84 @@ export default function App() {
       return;
     }
     pb.rafId = requestAnimationFrame(historyPlaybackTick);
+    drawRef.current();
+  }
+
+  function finishIntro() {
+    const intro = introRef.current;
+    if (intro.rafId) cancelAnimationFrame(intro.rafId);
+    intro.rafId = 0;
+    intro.active = false;
+    intro.phase = "done";
+    intro.headingVisible = false;
+    setIntroActive(false);
+    setIntroHeadingVisible(false);
+    drawRef.current();
+  }
+
+  function introTick() {
+    const intro = introRef.current;
+    if (!intro.active) return;
+    const now = performance.now();
+    const elapsed = now - intro.startTime;
+    const t = intro.timings;
+    const nodeList = nodesRef.current || [];
+    let allLanded = true;
+    for (const item of intro.items) {
+      if (intro.landed.has(item.handle)) continue;
+      const node = nodeList.find((nn) => normalizeHandle(nn.handle) === item.handle);
+      if (!node || !Number.isFinite(node.x) || !Number.isFinite(node.y)) {
+        intro.landed.add(item.handle);
+        continue;
+      }
+      const landAt = intro.reducedMotion
+        ? t.fadeInMs + t.reducedHoldMs + t.reducedFadeMs
+        : t.fadeInMs + t.hoverMs + item.staggerMs + t.flightMs;
+      if (elapsed >= landAt) intro.landed.add(item.handle);
+      else allLanded = false;
+    }
+    const headingHideAt = intro.reducedMotion
+      ? t.fadeInMs + t.reducedHoldMs
+      : t.fadeInMs + t.hoverMs - t.headingFadeLeadMs;
+    if (intro.headingVisible && elapsed >= headingHideAt) {
+      intro.headingVisible = false;
+      setIntroHeadingVisible(false);
+    }
+    drawRef.current();
+    if (allLanded) {
+      finishIntro();
+      return;
+    }
+    intro.rafId = requestAnimationFrame(introTick);
+  }
+
+  function startIntro(selected, reducedMotion) {
+    const intro = introRef.current;
+    if (intro.rafId) cancelAnimationFrame(intro.rafId);
+    const counts = { against: 0, neutral: 0, approve: 0 };
+    const items = selected.map((e, order) => {
+      const stance = e.stance;
+      counts[stance] = (counts[stance] || 0) + 1;
+      return { handle: normalizeHandle(e.handle), stance, order, bobPhase: Math.random() * Math.PI * 2 };
+    });
+    const seen = { against: 0, neutral: 0, approve: 0 };
+    for (const it of items) {
+      it.stanceCount = counts[it.stance] || 1;
+      it.stanceIndex = seen[it.stance] || 0;
+      seen[it.stance] = it.stanceIndex + 1;
+      it.staggerMs = it.order * intro.timings.staggerStepMs;
+    }
+    intro.items = items;
+    intro.hidden = new Set(items.map((it) => it.handle));
+    intro.landed = new Set();
+    intro.reducedMotion = Boolean(reducedMotion);
+    intro.headingVisible = true;
+    intro.startTime = performance.now();
+    intro.active = true;
+    intro.phase = "run";
+    setIntroActive(true);
+    setIntroHeadingVisible(true);
+    intro.rafId = requestAnimationFrame(introTick);
     drawRef.current();
   }
 
@@ -2783,6 +3065,36 @@ export default function App() {
                 <div ref={tooltipAgeRef} style={styles.tooltipAge} />
                 <div ref={tooltipBioRef} style={styles.tooltipBio} />
               </div>
+              {introActive ? (
+                <div
+                  aria-hidden="true"
+                  style={{
+                    position: "absolute",
+                    top: "6%",
+                    left: 0,
+                    right: 0,
+                    display: "flex",
+                    justifyContent: "center",
+                    pointerEvents: "none",
+                    opacity: introHeadingVisible ? 1 : 0,
+                    transition: "opacity 400ms ease",
+                    zIndex: 6,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 18,
+                      fontWeight: 700,
+                      letterSpacing: 2,
+                      textTransform: "uppercase",
+                      color: "rgba(255,255,255,0.96)",
+                      textShadow: "0 1px 0 rgba(0,0,0,0.9), 0 0 14px rgba(255,255,255,0.35)",
+                    }}
+                  >
+                    New stances
+                  </div>
+                </div>
+              ) : null}
             </>
           ) : stanceListLayout ? (
             <div
