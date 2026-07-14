@@ -665,6 +665,11 @@ async function initDb(): Promise<void> {
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_stance_history_user_changed_at_id_desc ON stance_history (x_user_id, changed_at DESC, id DESC);`
   );
+  // Supports the correlated EXISTS (per community_users row) in /api/community and the
+  // playback CTE: WHERE sh.x_user_id = $ AND sh.changed_by = 'user'.
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_stance_history_x_user_id_changed_by ON stance_history (x_user_id, changed_by);`
+  );
   // Idempotent backfill: seed one initial history event for rows that already have stance and no history.
   await pool.query(`
     INSERT INTO stance_history (x_user_id, previous_stance, new_stance, changed_at, changed_by)

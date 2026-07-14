@@ -1,11 +1,17 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import Papa from "papaparse";
+import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { forceCollide, forceManyBody, forceCenter, forceSimulation, forceX, forceY } from "d3-force";
 import { canonicalAvatarSrc, getAvatar, preloadAvatarUrls } from "./utils/avatarCache";
 import { fetchCommunityUsers } from "./api/community";
-import { BitcoinQr } from "./components/BitcoinQr";
-import { StatisticsModal } from "./components/StatisticsModal";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
+
+// Lazily loaded so the Statistics UI (StatisticsCards, CSV export) and the QR
+// library (qrcode.react) are split into separate chunks fetched only on demand.
+const StatisticsModal = lazy(() =>
+  import("./components/StatisticsModal").then((m) => ({ default: m.StatisticsModal }))
+);
+const BitcoinQr = lazy(() =>
+  import("./components/BitcoinQr").then((m) => ({ default: m.BitcoinQr }))
+);
 
 function toInt(v) {
   const n = Number(String(v ?? "").replace(/,/g, "").trim());
@@ -660,6 +666,7 @@ export default function App() {
   const [dropdownHoverHandle, setDropdownHoverHandle] = useState(null);
   const adminOptionsRef = useRef(null);
   const stancePlaybackItemsRef = useRef(null);
+  const mentionsRequestedRef = useRef(false);
   const historyPlaybackRef = useRef({
     active: false,
     sequence: [],
@@ -1208,35 +1215,61 @@ export default function App() {
     };
   }, [pulseSelectedEnabled, selectedHandle]);
 
-  // Load canonical accounts and mentions CSV from public/data
+  // Load canonical accounts from public/data at mount (needed to render the graph).
   useEffect(() => {
     let dead = false;
     (async () => {
       try {
         setLoading(true);
         setErr("");
-        const base = getBase();
-        const [cleanedAccounts, mentionsRes] = await Promise.all([
-          loadAccounts(),
-          fetch(`${base}/data/mentions_bip110.csv?v=${DATA_REV}`).then((r) => (r.ok ? r.text() : "")),
-        ]);
+        const cleanedAccounts = await loadAccounts();
         if (dead) return;
-
         const accountsFiltered = cleanedAccounts.filter((r) => (r.handle ?? "").toString().trim().length > 0);
+        setAccounts(accountsFiltered);
+      } catch (e) {
+        if (!dead) setErr(String(e?.message || e));
+      } finally {
+        if (!dead) setLoading(false);
+      }
+    })();
+    return () => {
+      dead = true;
+    };
+  }, []);
 
-        let m = [];
-        if (mentionsRes) {
-          const parsed = await new Promise((resolve, reject) => {
-            Papa.parse(mentionsRes, {
-              header: true,
-              skipEmptyLines: true,
-              complete: (res) => resolve(res.data || []),
-              error: (err) => reject(err),
-            });
-          });
-          m = parsed;
+  // Defer the mentions CSV (462 KB) + PapaParse: it is only needed to show a
+  // selected user's tweets, not for first paint. Dynamically import PapaParse so
+  // it stays out of the initial bundle, and fetch/parse on idle (or immediately
+  // once a handle is selected). Runs at most once.
+  useEffect(() => {
+    if (mentionsRequestedRef.current) return;
+    if (!accounts.length && !selectedHandle) return;
+    let cancelled = false;
+
+    const run = async () => {
+      if (mentionsRequestedRef.current || cancelled) return;
+      mentionsRequestedRef.current = true;
+      try {
+        const base = getBase();
+        const text = await fetch(`${base}/data/mentions_bip110.csv?v=${DATA_REV}`).then((r) =>
+          r.ok ? r.text() : ""
+        );
+        if (cancelled) return;
+        if (!text) {
+          mentionsRequestedRef.current = false;
+          return;
         }
-        const cleanedMentions = m
+        const { default: Papa } = await import("papaparse");
+        const parsed = await new Promise((resolve, reject) => {
+          Papa.parse(text, {
+            header: true,
+            skipEmptyLines: true,
+            complete: (res) => resolve(res.data || []),
+            error: (err) => reject(err),
+          });
+        });
+        if (cancelled) return;
+        const cleanedMentions = parsed
           .map((r) => ({
             handle: (r.handle ?? "").trim().toLowerCase(),
             tweet_id: (r.tweet_id ?? "").trim(),
@@ -1245,19 +1278,30 @@ export default function App() {
             text_snippet: (r.text_snippet ?? "").trim(),
           }))
           .filter((r) => r.handle.length > 0 && (r.tweet_url.length > 0 || r.tweet_id.length > 0));
-
-        setAccounts(accountsFiltered);
         setMentions(cleanedMentions);
-      } catch (e) {
-        setErr(String(e?.message || e));
-      } finally {
-        setLoading(false);
+      } catch {
+        // Allow a later retry (e.g. on selection) if the deferred load failed.
+        mentionsRequestedRef.current = false;
       }
-    })();
-    return () => {
-      dead = true;
     };
-  }, []);
+
+    let idleId = 0;
+    let timeoutId = 0;
+    const hasIdle = typeof window !== "undefined" && "requestIdleCallback" in window;
+    if (selectedHandle) {
+      run();
+    } else if (hasIdle) {
+      idleId = window.requestIdleCallback(run, { timeout: 3000 });
+    } else {
+      timeoutId = window.setTimeout(run, 1200);
+    }
+
+    return () => {
+      cancelled = true;
+      if (idleId && "cancelIdleCallback" in window) window.cancelIdleCallback(idleId);
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [accounts.length, selectedHandle]);
 
   // Index mentions by handle, plus counts
   const mentionsByHandle = useMemo(() => {
@@ -2847,18 +2891,22 @@ export default function App() {
           </button>
         ) : null}
       </div>
-      <StatisticsModal
-        open={showStatsModal}
-        onClose={() => setShowStatsModal(false)}
-        data={statisticsData}
-        loading={statsLoading && !statisticsData}
-        error={statsError}
-        apiBase={API_BASE}
-        onRetryHistory={() => {
-          statsFetchStartedAtRef.current = performance.now();
-          fetchStats({ forceLoading: true });
-        }}
-      />
+      {showStatsModal && (
+        <Suspense fallback={null}>
+          <StatisticsModal
+            open={showStatsModal}
+            onClose={() => setShowStatsModal(false)}
+            data={statisticsData}
+            loading={statsLoading && !statisticsData}
+            error={statsError}
+            apiBase={API_BASE}
+            onRetryHistory={() => {
+              statsFetchStartedAtRef.current = performance.now();
+              fetchStats({ forceLoading: true });
+            }}
+          />
+        </Suspense>
+      )}
       {manualEditMode && isPrivilegedEditor && manualEditTarget && (
         <div style={styles.modalBackdrop} onClick={() => setManualEditTarget(null)}>
           <div style={styles.manualEditCard} onClick={(e) => e.stopPropagation()}>
@@ -2943,7 +2991,9 @@ export default function App() {
             </a>
             {donationAddress ? (
               <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
-                <BitcoinQr value={`bitcoin:${donationAddress}`} size={220} />
+                <Suspense fallback={<div style={{ width: 220, height: 220 }} />}>
+                  <BitcoinQr value={`bitcoin:${donationAddress}`} size={220} />
+                </Suspense>
               </div>
             ) : null}
             <div style={styles.donateAddr}>{donationAddress}</div>
