@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { fetchStanceHistoryPage } from "../api/stanceHistory";
 import { buildXProfileUrl, formatFollowerLabel, normalizeXHandle } from "../utils/xProfile";
+import { STANCE_COLORS, STANCE_LABELS, finalStanceColor } from "../utils/stanceColors";
 
 type StanceKey = "against" | "neutral" | "approve";
 
@@ -78,9 +79,9 @@ function formatDateTime(iso: string) {
 }
 
 const STANCE = {
-  against: { label: "Against", color: "#ef4444" },
-  neutral: { label: "Neutral", color: "#9ca3af" },
-  approve: { label: "Approve", color: "#22c55e" },
+  against: { label: STANCE_LABELS.against, color: STANCE_COLORS.against },
+  neutral: { label: STANCE_LABELS.neutral, color: STANCE_COLORS.neutral },
+  approve: { label: STANCE_LABELS.approve, color: STANCE_COLORS.approve },
 } satisfies Record<StanceKey, { label: string; color: string }>;
 
 function Card({
@@ -855,7 +856,8 @@ function StanceHistoryRecentList({
               <span style={{ color: "rgba(255,255,255,0.78)" }}>{formatFollowerLabel(row.followers_count)}</span>
               <span style={{ color: "rgba(255,255,255,0.55)" }}> · </span>
               <span>
-                {row.from ? STANCE[row.from].label : "Unset"} {"→"} {STANCE[row.to].label}
+                {row.from ? STANCE[row.from].label : "Unset"} {"→"}{" "}
+                <span style={{ color: finalStanceColor(row.to) }}>{STANCE[row.to].label}</span>
               </span>
             </div>
             <div

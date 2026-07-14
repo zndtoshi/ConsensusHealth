@@ -540,24 +540,43 @@ async function queryRecentStanceHistoryPage(args: {
   if (args.cursor) {
     params.push(args.cursor.changed_at);
     params.push(args.cursor.id);
-    cursorSql = `WHERE (sh.changed_at, sh.id) < ($${params.length - 1}::timestamptz, $${params.length}::int)`;
+    cursorSql = `AND (l.changed_at, l.id) < ($${params.length - 1}::timestamptz, $${params.length}::int)`;
   }
   params.push(limit + 1);
+  // Deduplicate by stable internal user id (x_user_id): keep only each user's latest
+  // event (newest changed_at, then highest id as deterministic tie-breaker). Pagination
+  // via cursor is applied AFTER dedup so each page returns unique users. Mirrors the pure
+  // logic in selectLatestStanceEventsPerUser (see stanceHistoryDedup.ts).
   const { rows } = await pool.query(
     `
+    WITH latest AS (
+      SELECT
+        sh.id,
+        sh.x_user_id,
+        sh.previous_stance,
+        sh.new_stance,
+        sh.changed_at,
+        sh.changed_by,
+        ROW_NUMBER() OVER (
+          PARTITION BY sh.x_user_id
+          ORDER BY sh.changed_at DESC, sh.id DESC
+        ) AS rn
+      FROM stance_history sh
+    )
     SELECT
-      sh.id,
+      l.id,
       cu.handle,
       cu.name,
       cu.followers_count,
-      sh.previous_stance,
-      sh.new_stance,
-      sh.changed_at,
-      sh.changed_by
-    FROM stance_history sh
-    LEFT JOIN community_users cu ON cu.x_user_id = sh.x_user_id
+      l.previous_stance,
+      l.new_stance,
+      l.changed_at,
+      l.changed_by
+    FROM latest l
+    LEFT JOIN community_users cu ON cu.x_user_id = l.x_user_id
+    WHERE l.rn = 1
     ${cursorSql}
-    ORDER BY sh.changed_at DESC, sh.id DESC
+    ORDER BY l.changed_at DESC, l.id DESC
     LIMIT $${params.length}
     `,
     params
@@ -641,6 +660,10 @@ async function initDb(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_stance_history_x_user_id_changed_at ON stance_history (x_user_id, changed_at);`);
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_stance_history_changed_at_id_desc ON stance_history (changed_at DESC, id DESC);`
+  );
+  // Supports latest-event-per-user selection (ROW_NUMBER PARTITION BY x_user_id ORDER BY changed_at DESC, id DESC).
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_stance_history_user_changed_at_id_desc ON stance_history (x_user_id, changed_at DESC, id DESC);`
   );
   // Idempotent backfill: seed one initial history event for rows that already have stance and no history.
   await pool.query(`
