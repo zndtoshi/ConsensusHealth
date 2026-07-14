@@ -10,6 +10,8 @@ import { v4 as uuidv4 } from "uuid";
 import { logConfig } from "./config/appUrl.js";
 import { fetchProfileEnrichmentFromTwitterApiIo } from "./profileEnrichment.js";
 import {
+  decodeStanceHistoryCursor,
+  encodeStanceHistoryCursor,
   isPrivilegedManualEditorHandle,
   normalizeStanceValue,
   type ChangedByValue,
@@ -485,6 +487,83 @@ async function loadMergedCommunityUsersWithStance(): Promise<Record<string, unkn
   return mergedRows.filter((r) => hasStanceValue(r.stance));
 }
 
+function mapStanceHistoryPublicRow(r: Record<string, unknown>) {
+  const followersRaw = r.followers_count;
+  let followers_count: number | null = null;
+  if (followersRaw != null && followersRaw !== "") {
+    const n = Number(followersRaw);
+    if (Number.isFinite(n) && n >= 0) followers_count = Math.trunc(n);
+  }
+  const changedAt = new Date(String(r.changed_at)).toISOString();
+  const id = Number(r.id);
+  const previousRaw = r.previous_stance ?? r.from;
+  const newRaw = r.new_stance ?? r.to;
+  const previous_stance =
+    previousRaw == null || previousRaw === "" ? null : String(previousRaw);
+  const new_stance = String(newRaw ?? "");
+  return {
+    id: Number.isFinite(id) ? Math.trunc(id) : 0,
+    handle: r.handle ? normalizeHandle(r.handle) : null,
+    display_name: r.name != null && String(r.name).trim() ? String(r.name) : null,
+    followers_count,
+    previous_stance,
+    new_stance,
+    from: previous_stance,
+    to: new_stance,
+    changed_at: changedAt,
+    changed_by: r.changed_by ? String(r.changed_by) : null,
+  };
+}
+
+async function queryRecentStanceHistoryPage(args: {
+  limit: number;
+  cursor?: { changed_at: string; id: number } | null;
+}): Promise<{
+  items: ReturnType<typeof mapStanceHistoryPublicRow>[];
+  next_cursor: string | null;
+  has_more: boolean;
+}> {
+  const limit = Math.max(1, Math.min(50, Math.trunc(args.limit) || 10));
+  const params: Array<string | number> = [];
+  let cursorSql = "";
+  if (args.cursor) {
+    params.push(args.cursor.changed_at);
+    params.push(args.cursor.id);
+    cursorSql = `WHERE (sh.changed_at, sh.id) < ($${params.length - 1}::timestamptz, $${params.length}::int)`;
+  }
+  params.push(limit + 1);
+  const { rows } = await pool.query(
+    `
+    SELECT
+      sh.id,
+      cu.handle,
+      cu.name,
+      cu.followers_count,
+      sh.previous_stance,
+      sh.new_stance,
+      sh.changed_at,
+      sh.changed_by
+    FROM stance_history sh
+    LEFT JOIN community_users cu ON cu.x_user_id = sh.x_user_id
+    ${cursorSql}
+    ORDER BY sh.changed_at DESC, sh.id DESC
+    LIMIT $${params.length}
+    `,
+    params
+  );
+
+  const has_more = rows.length > limit;
+  const pageRows = has_more ? rows.slice(0, limit) : rows;
+  const items = pageRows.map((r) => mapStanceHistoryPublicRow(r as Record<string, unknown>));
+  const last = items[items.length - 1];
+  const next_cursor =
+    has_more && last
+      ? encodeStanceHistoryCursor({ changed_at: last.changed_at, id: last.id })
+      : null;
+
+  return { items, next_cursor, has_more };
+}
+
 async function initDb(): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS community_users (
@@ -549,6 +628,9 @@ async function initDb(): Promise<void> {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_stance_history_x_user_id ON stance_history (x_user_id);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_stance_history_changed_at ON stance_history (changed_at);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_stance_history_x_user_id_changed_at ON stance_history (x_user_id, changed_at);`);
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_stance_history_changed_at_id_desc ON stance_history (changed_at DESC, id DESC);`
+  );
   // Idempotent backfill: seed one initial history event for rows that already have stance and no history.
   await pool.query(`
     INSERT INTO stance_history (x_user_id, previous_stance, new_stance, changed_at, changed_by)
@@ -1318,6 +1400,39 @@ app.get("/api/stance-playback-sequence", async (req, res, next) => {
 
 app.get("/api/stance-history", async (req, res, next) => {
   try {
+    const limitRaw = String(req.query.limit ?? "").trim();
+    const cursorRaw = String(req.query.cursor ?? "").trim();
+    const wantsPage = Boolean(limitRaw || cursorRaw || String(req.query.page ?? "").trim() === "1");
+
+    if (wantsPage) {
+      const limit = Number(limitRaw || 10);
+      const cursor = decodeStanceHistoryCursor(cursorRaw);
+      if (cursorRaw && !cursor) {
+        res.status(400).json({ error: "invalid_cursor" });
+        return;
+      }
+      const page = await queryRecentStanceHistoryPage({
+        limit: Number.isFinite(limit) ? limit : 10,
+        cursor,
+      });
+      res.json({
+        generated_at: new Date().toISOString(),
+        items: page.items.map((item) => ({
+          id: item.id,
+          handle: item.handle,
+          display_name: item.display_name,
+          followers_count: item.followers_count,
+          previous_stance: item.previous_stance,
+          new_stance: item.new_stance,
+          changed_at: item.changed_at,
+          changed_by: item.changed_by,
+        })),
+        next_cursor: page.next_cursor,
+        has_more: page.has_more,
+      });
+      return;
+    }
+
     const xUserId = String(req.query.x_user_id ?? "").trim();
     const handle = normalizeHandle(req.query.handle);
     const where: string[] = [];
@@ -1335,8 +1450,11 @@ app.get("/api/stance-history", async (req, res, next) => {
     const historyRes = await pool.query(
       `
       SELECT
+        sh.id,
         sh.x_user_id,
         cu.handle,
+        cu.name,
+        cu.followers_count,
         sh.previous_stance,
         sh.new_stance,
         sh.changed_at,
@@ -1382,14 +1500,19 @@ app.get("/api/stance-history", async (req, res, next) => {
 
     res.json({
       generated_at: new Date().toISOString(),
-      history: historyRes.rows.map((r) => ({
-        x_user_id: String(r.x_user_id ?? ""),
-        handle: r.handle ? String(r.handle) : null,
-        previous_stance: r.previous_stance ? String(r.previous_stance) : null,
-        new_stance: String(r.new_stance),
-        changed_at: new Date(r.changed_at).toISOString(),
-        changed_by: r.changed_by ? String(r.changed_by) : null,
-      })),
+      history: historyRes.rows.map((r) => {
+        const mapped = mapStanceHistoryPublicRow(r as Record<string, unknown>);
+        return {
+          id: mapped.id,
+          handle: mapped.handle,
+          display_name: mapped.display_name,
+          followers_count: mapped.followers_count,
+          previous_stance: mapped.previous_stance,
+          new_stance: mapped.new_stance,
+          changed_at: mapped.changed_at,
+          changed_by: mapped.changed_by,
+        };
+      }),
       daily_totals: dailyTotalsRes.rows.map((r) => ({
         day: String(r.day),
         total_changes: Number(r.total_changes) || 0,
@@ -1537,21 +1660,20 @@ app.get("/api/stats", async (_req, res, next) => {
       ORDER BY count DESC, previous_stance NULLS FIRST, new_stance
       `
     );
-    const recentChangesRes = await pool.query(
-      `
-      SELECT
-        sh.x_user_id,
-        cu.handle,
-        sh.previous_stance AS "from",
-        sh.new_stance AS "to",
-        sh.changed_at,
-        sh.changed_by
-      FROM stance_history sh
-      LEFT JOIN community_users cu ON cu.x_user_id = sh.x_user_id
-      ORDER BY sh.changed_at DESC
-      LIMIT 10
-      `
-    );
+    const recentPage = await queryRecentStanceHistoryPage({ limit: 10, cursor: null });
+    const recent_changes = recentPage.items.map((item) => ({
+      id: item.id,
+      handle: item.handle,
+      display_name: item.display_name,
+      followers_count: item.followers_count,
+      from: item.from,
+      to: item.to,
+      previous_stance: item.previous_stance,
+      new_stance: item.new_stance,
+      changed_at: item.changed_at,
+      changed_by: item.changed_by,
+    }));
+
     const flowsRes = await pool.query(`
       WITH norm AS (
         SELECT
@@ -1592,14 +1714,9 @@ app.get("/api/stats", async (_req, res, next) => {
         to: String(r.to),
         count: toNum(r.count),
       })),
-      recent_changes: recentChangesRes.rows.map((r) => ({
-        x_user_id: String(r.x_user_id ?? ""),
-        handle: r.handle ? String(r.handle) : null,
-        from: r.from === null ? null : String(r.from),
-        to: String(r.to),
-        changed_at: new Date(r.changed_at).toISOString(),
-        changed_by: r.changed_by ? String(r.changed_by) : null,
-      })),
+      recent_changes,
+      recent_changes_next_cursor: recentPage.next_cursor,
+      recent_changes_has_more: recentPage.has_more,
       flows_last_7d: flowsRes.rows.map((r) => ({
         from: r.from === null ? null : String(r.from),
         to: String(r.to),

@@ -1,4 +1,6 @@
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
+import { fetchStanceHistoryPage } from "../api/stanceHistory";
+import { buildXProfileUrl, formatFollowerLabel, normalizeXHandle } from "../utils/xProfile";
 
 type StanceKey = "against" | "neutral" | "approve";
 
@@ -14,8 +16,10 @@ export type FlowItem = {
 };
 
 export type HistoryChangeItem = {
-  x_user_id: string;
+  id: number;
   handle: string;
+  display_name: string | null;
+  followers_count: number | null;
   from: StanceKey | null;
   to: StanceKey;
   changed_at: string;
@@ -34,6 +38,8 @@ export type StatisticsData = {
   totalStanceChanges: number;
   transitionCounts: FlowItem[];
   recentChanges: HistoryChangeItem[];
+  recentChangesNextCursor: string | null;
+  recentChangesHasMore: boolean;
   topFlowsLast7Days: FlowItem[];
   generatedAtISO: string;
 };
@@ -253,7 +259,13 @@ function Pill({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function StatisticsCards({ data }: { data: StatisticsData }) {
+export function StatisticsCards({
+  data,
+  apiBase = "",
+}: {
+  data: StatisticsData;
+  apiBase?: string;
+}) {
   const total = data.totalUsersWithStance;
   const stanceSegments = (["against", "neutral", "approve"] as const).map((k) => ({
     value: data.counts[k],
@@ -582,44 +594,217 @@ export function StatisticsCards({ data }: { data: StatisticsData }) {
               }
             />
           </div>
-          <div
-            style={{
-              borderRadius: 14,
-              border: "1px solid rgba(255,255,255,0.08)",
-              background: "rgba(0,0,0,0.40)",
-              padding: 12,
-              display: "grid",
-              gap: 8,
-            }}
-          >
-            <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>Recent 10 changes</div>
-            {data.recentChanges.length === 0 ? (
-              <div style={{ fontSize: 12, color: "rgba(255,255,255,0.85)" }}>No change events yet.</div>
-            ) : (
-              data.recentChanges.map((row, idx) => (
-                <div
-                  key={`${row.x_user_id}-${row.changed_at}-${idx}`}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    gap: 12,
-                    alignItems: "center",
-                    borderBottom: idx === data.recentChanges.length - 1 ? "none" : "1px solid rgba(255,255,255,0.06)",
-                    paddingBottom: 6,
-                  }}
-                >
-                    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.96)", minWidth: 0 }}>
-                      @{row.handle} - {row.from ? STANCE[row.from].label : "Unset"} {"->"} {STANCE[row.to].label}
-                    </div>
-                  <div style={{ fontSize: 11, color: "rgba(255,255,255,0.72)", whiteSpace: "nowrap" }}>
-                    {formatDateTime(row.changed_at)}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+          <StanceHistoryRecentList
+            apiBase={apiBase}
+            initialItems={data.recentChanges}
+            initialCursor={data.recentChangesNextCursor}
+            initialHasMore={data.recentChangesHasMore}
+            resetKey={data.generatedAtISO}
+          />
         </div>
       </Card>
+    </div>
+  );
+}
+
+function StanceHandleLink({ handle }: { handle: string }) {
+  const cleaned = normalizeXHandle(handle) || handle;
+  const href = buildXProfileUrl(cleaned);
+  const label = `@${cleaned}`;
+
+  if (!href) {
+    return <span>{label}</span>;
+  }
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={`Open ${label} on X`}
+      style={{
+        color: "inherit",
+        textDecoration: "none",
+        borderBottom: "1px solid rgba(255,255,255,0.22)",
+        transition: "color 120ms ease, border-color 120ms ease",
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.color = "rgba(255,255,255,1)";
+        e.currentTarget.style.borderBottomColor = "rgba(255,255,255,0.55)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.color = "inherit";
+        e.currentTarget.style.borderBottomColor = "rgba(255,255,255,0.22)";
+      }}
+    >
+      {label}
+    </a>
+  );
+}
+
+function StanceHistoryRecentList({
+  apiBase,
+  initialItems,
+  initialCursor,
+  initialHasMore,
+  resetKey,
+}: {
+  apiBase: string;
+  initialItems: HistoryChangeItem[];
+  initialCursor: string | null;
+  initialHasMore: boolean;
+  resetKey: string;
+}) {
+  const [items, setItems] = useState<HistoryChangeItem[]>(initialItems);
+  const [nextCursor, setNextCursor] = useState<string | null>(initialCursor);
+  const [hasMore, setHasMore] = useState(Boolean(initialHasMore));
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadingRef = useRef(false);
+
+  useEffect(() => {
+    setItems(initialItems);
+    setNextCursor(initialCursor);
+    setHasMore(Boolean(initialHasMore));
+    setLoadError(null);
+    loadingRef.current = false;
+    setLoadingMore(false);
+    // Reset only when the stats snapshot regenerates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetKey]);
+
+  const onLoadMore = async () => {
+    if (loadingRef.current || !hasMore || !nextCursor) return;
+    loadingRef.current = true;
+    setLoadingMore(true);
+    setLoadError(null);
+    try {
+      const page = await fetchStanceHistoryPage({
+        apiBase,
+        limit: 10,
+        cursor: nextCursor,
+      });
+      setItems((prev) => {
+        const seen = new Set(prev.map((row) => row.id));
+        const appended = page.items
+          .filter((row) => row.id && !seen.has(row.id))
+          .map((row) => ({
+            id: row.id,
+            handle: row.handle,
+            display_name: row.display_name,
+            followers_count: row.followers_count,
+            from:
+              row.previous_stance === "against" ||
+              row.previous_stance === "neutral" ||
+              row.previous_stance === "approve"
+                ? row.previous_stance
+                : null,
+            to:
+              row.new_stance === "against" ||
+              row.new_stance === "neutral" ||
+              row.new_stance === "approve"
+                ? row.new_stance
+                : ("neutral" as StanceKey),
+            changed_at: row.changed_at,
+            changed_by: row.changed_by,
+          }))
+          .filter((row) => row.to === "against" || row.to === "neutral" || row.to === "approve");
+        return [...prev, ...appended];
+      });
+      setNextCursor(page.next_cursor);
+      setHasMore(page.has_more && Boolean(page.next_cursor));
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : "Failed to load more history.");
+    } finally {
+      loadingRef.current = false;
+      setLoadingMore(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        borderRadius: 14,
+        border: "1px solid rgba(255,255,255,0.08)",
+        background: "rgba(0,0,0,0.40)",
+        padding: 12,
+        display: "grid",
+        gap: 8,
+      }}
+    >
+      <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>Recent changes</div>
+      {items.length === 0 ? (
+        <div style={{ fontSize: 12, color: "rgba(255,255,255,0.85)" }}>No change events yet.</div>
+      ) : (
+        items.map((row, idx) => (
+          <div
+            key={`${row.id}-${row.changed_at}`}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              gap: 12,
+              alignItems: "flex-start",
+              flexWrap: "wrap",
+              borderBottom: idx === items.length - 1 ? "none" : "1px solid rgba(255,255,255,0.06)",
+              paddingBottom: 6,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 12,
+                color: "rgba(255,255,255,0.96)",
+                minWidth: 0,
+                flex: "1 1 220px",
+                overflowWrap: "anywhere",
+              }}
+            >
+              <StanceHandleLink handle={row.handle} />
+              <span style={{ color: "rgba(255,255,255,0.55)" }}> · </span>
+              <span style={{ color: "rgba(255,255,255,0.78)" }}>{formatFollowerLabel(row.followers_count)}</span>
+              <span style={{ color: "rgba(255,255,255,0.55)" }}> · </span>
+              <span>
+                {row.from ? STANCE[row.from].label : "Unset"} {"→"} {STANCE[row.to].label}
+              </span>
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                color: "rgba(255,255,255,0.72)",
+                whiteSpace: "nowrap",
+                flex: "0 0 auto",
+              }}
+            >
+              {formatDateTime(row.changed_at)}
+            </div>
+          </div>
+        ))
+      )}
+
+      {hasMore ? (
+        <button
+          type="button"
+          onClick={onLoadMore}
+          disabled={loadingMore}
+          aria-label={loadingMore ? "Loading more stance history" : "Load more stance history"}
+          style={{
+            marginTop: 4,
+            borderRadius: 12,
+            padding: "10px 12px",
+            border: "1px solid rgba(255,255,255,0.12)",
+            background: "rgba(0,0,0,0.25)",
+            color: "rgba(255,255,255,0.88)",
+            cursor: loadingMore ? "not-allowed" : "pointer",
+            fontWeight: 800,
+            fontSize: 12,
+            opacity: loadingMore ? 0.7 : 1,
+            width: "100%",
+          }}
+        >
+          {loadingMore ? "Loading..." : "Load more"}
+        </button>
+      ) : null}
+
+      {loadError ? <div style={{ color: "#fda4af", fontSize: 12 }}>{loadError}</div> : null}
     </div>
   );
 }

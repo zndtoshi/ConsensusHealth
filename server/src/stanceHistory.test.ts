@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   createHistoryEvent,
+  decodeStanceHistoryCursor,
+  encodeStanceHistoryCursor,
   normalizeStanceValue,
   shouldBackfillInitialHistory,
   isPrivilegedManualEditorHandle,
@@ -132,4 +134,17 @@ test("admin history event keeps changed_by admin", () => {
     changed_at: "2026-03-03T00:00:00.000Z",
   });
   assert.equal(evt?.changed_by, "admin");
+});
+
+test("stance history cursor round-trips", () => {
+  const encoded = encodeStanceHistoryCursor({
+    changed_at: "2026-07-13T12:00:00.000Z",
+    id: 42,
+  });
+  const decoded = decodeStanceHistoryCursor(encoded);
+  assert.deepEqual(decoded, {
+    changed_at: "2026-07-13T12:00:00.000Z",
+    id: 42,
+  });
+  assert.equal(decodeStanceHistoryCursor("not-valid"), null);
 });

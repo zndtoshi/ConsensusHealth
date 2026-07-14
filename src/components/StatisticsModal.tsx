@@ -8,12 +8,14 @@ export function StatisticsModal({
   data,
   loading,
   error,
+  apiBase = "",
 }: {
   open: boolean;
   onClose: () => void;
   data: StatisticsData | null;
   loading?: boolean;
   error?: string;
+  apiBase?: string;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -92,7 +94,7 @@ export function StatisticsModal({
         ) : error ? (
           <div style={{ color: "#fda4af", fontSize: 13 }}>{error}</div>
         ) : data ? (
-          <StatisticsCards data={data} />
+          <StatisticsCards data={data} apiBase={apiBase} />
         ) : (
           <div style={{ opacity: 0.85, fontSize: 13 }}>No statistics available.</div>
         )}

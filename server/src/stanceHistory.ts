@@ -70,3 +70,31 @@ export function summarizeHistory(rows: HistoryEvent[]): {
 export function isPrivilegedManualEditorHandle(handle: unknown): boolean {
   return String(handle ?? "").trim().toLowerCase().replace(/^@+/, "") === "zndtoshi";
 }
+
+export type StanceHistoryCursor = {
+  changed_at: string;
+  id: number;
+};
+
+export function encodeStanceHistoryCursor(cursor: StanceHistoryCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+export function decodeStanceHistoryCursor(raw: unknown): StanceHistoryCursor | null {
+  try {
+    const text = String(raw ?? "").trim();
+    if (!text) return null;
+    const parsed = JSON.parse(Buffer.from(text, "base64url").toString("utf8")) as {
+      changed_at?: unknown;
+      id?: unknown;
+    };
+    const id = Number(parsed?.id);
+    const changed_at = String(parsed?.changed_at ?? "").trim();
+    if (!Number.isFinite(id) || id <= 0 || !changed_at) return null;
+    const parsedDate = new Date(changed_at);
+    if (Number.isNaN(parsedDate.getTime())) return null;
+    return { changed_at: parsedDate.toISOString(), id: Math.trunc(id) };
+  } catch {
+    return null;
+  }
+}

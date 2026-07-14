@@ -1017,15 +1017,26 @@ export default function App() {
       recentChanges: !plebsMode && Array.isArray(statsData?.recent_changes)
         ? statsData.recent_changes
             .map((r) => ({
-              x_user_id: String(r.x_user_id ?? ""),
-              handle: String(r.handle ?? "").trim() || "(unknown)",
-              from: flowNorm(r.from),
-              to: flowNorm(r.to) || "neutral",
+              id: Number(r.id) || 0,
+              handle: String(r.handle ?? "").trim().replace(/^@+/, "") || "(unknown)",
+              display_name: r.display_name != null && String(r.display_name).trim() ? String(r.display_name) : null,
+              followers_count:
+                r.followers_count == null || r.followers_count === ""
+                  ? null
+                  : Number.isFinite(Number(r.followers_count))
+                    ? Math.trunc(Number(r.followers_count))
+                    : null,
+              from: flowNorm(r.from ?? r.previous_stance),
+              to: flowNorm(r.to ?? r.new_stance) || "neutral",
               changed_at: String(r.changed_at || ""),
               changed_by: String(r.changed_by || "").trim() || null,
             }))
             .filter((r) => r.to === "against" || r.to === "neutral" || r.to === "approve")
         : [],
+      recentChangesNextCursor: !plebsMode && statsData?.recent_changes_next_cursor
+        ? String(statsData.recent_changes_next_cursor)
+        : null,
+      recentChangesHasMore: !plebsMode && Boolean(statsData?.recent_changes_has_more),
       topFlowsLast7Days: !plebsMode && Array.isArray(statsData?.flows_last_7d)
         ? statsData.flows_last_7d
             .map((f) => ({
@@ -2804,6 +2815,7 @@ export default function App() {
         data={statisticsData}
         loading={statsLoading}
         error={statsError}
+        apiBase={API_BASE}
       />
       {manualEditMode && isPrivilegedEditor && manualEditTarget && (
         <div style={styles.modalBackdrop} onClick={() => setManualEditTarget(null)}>
