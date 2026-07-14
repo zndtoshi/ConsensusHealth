@@ -3,6 +3,14 @@ import { forceCollide, forceManyBody, forceCenter, forceSimulation, forceX, forc
 import { canonicalAvatarSrc, getAvatar, preloadAvatarUrls } from "./utils/avatarCache";
 import { fetchCommunityUsers } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
+import {
+  AUTH_CHANNEL_NAME,
+  LOGIN_RETURN_KEY,
+  LOGIN_RETURN_MAX_AGE_MS,
+  buildPopupFeatures,
+  isAuthResultMessage,
+  isAuthSuccessMessage,
+} from "./utils/authPopup";
 
 // Lazily loaded so the Statistics UI (StatisticsCards, CSV export) and the QR
 // library (qrcode.react) are split into separate chunks fetched only on demand.
@@ -344,6 +352,38 @@ function normalizeIslandEdgeGaps(nodes, labelsMap, minGap = 18, blend = 0.45) {
   }
 }
 
+/**
+ * Advance a d3-force simulation by `totalTicks` ticks WITHOUT blocking the main
+ * thread. It runs as many ticks as fit in a small per-frame time budget, then
+ * yields to the browser via requestAnimationFrame before continuing. This keeps
+ * the UI responsive (clicks, the Stats modal, scrolling) while the graph settles,
+ * instead of freezing for several seconds inside one synchronous `for` loop.
+ * The pending frame id is stored on `rafRef.current` so callers can cancel it.
+ */
+function runTimeSlicedSettle(sim, totalTicks, rafRef, { budgetMs = 8, onProgress, onDone } = {}) {
+  if (rafRef.current) {
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
+  }
+  const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+  let done = 0;
+  const step = () => {
+    const start = now();
+    do {
+      sim.tick();
+      done += 1;
+    } while (done < totalTicks && now() - start < budgetMs);
+    if (onProgress) onProgress();
+    if (done < totalTicks) {
+      rafRef.current = requestAnimationFrame(step);
+    } else {
+      rafRef.current = 0;
+      if (onDone) onDone();
+    }
+  };
+  rafRef.current = requestAnimationFrame(step);
+}
+
 function drawRoundedRectPath(ctx, x, y, w, h, r) {
   if (typeof ctx.roundRect === "function") {
     ctx.roundRect(x, y, w, h, r);
@@ -429,6 +469,57 @@ function getBase() {
 function missingAvatarSrcUrl() {
   const baseNoSlash = getBase().replace(/\/$/, "");
   return canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
+}
+
+/**
+ * Read + clear the one-shot login-return snapshot written before a popup-blocked
+ * OAuth redirect. Returns the restored dataset (to skip a graph refetch) or null.
+ */
+function consumeLoginReturnSnapshot() {
+  let raw = null;
+  try {
+    raw = sessionStorage.getItem(LOGIN_RETURN_KEY);
+    if (raw) sessionStorage.removeItem(LOGIN_RETURN_KEY);
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  try {
+    const snap = JSON.parse(raw);
+    if (!snap || typeof snap !== "object") return null;
+    if (!Array.isArray(snap.accounts) || snap.accounts.length === 0) return null;
+    if (typeof snap.ts !== "number" || Date.now() - snap.ts > LOGIN_RETURN_MAX_AGE_MS) return null;
+    return {
+      accounts: snap.accounts.filter((r) => (r?.handle ?? "").toString().trim().length > 0),
+      selectedHandle: snap.selectedHandle ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Merge the current user's persisted stance row into the loaded accounts so their
+ * node updates (or appears, for a first-time stance) without refetching the graph.
+ */
+function upsertSelfAccountLocally(prev, row) {
+  if (!row || typeof row !== "object") return prev;
+  const handleNorm = normalizeHandle(row.handle);
+  const xId = String(row.x_user_id ?? "").trim();
+  if (!handleNorm && !xId) return prev;
+  const stance = normalizedStance(row.stance);
+  let found = false;
+  const next = prev.map((a) => {
+    const ah = normalizeHandle(a?.handle);
+    const ax = String(a?.x_user_id ?? "").trim();
+    if ((handleNorm && ah === handleNorm) || (xId && ax && ax === xId)) {
+      found = true;
+      return { ...a, ...row, handle: ah || handleNorm, stance, position: stance };
+    }
+    return a;
+  });
+  if (found) return next;
+  return [...next, { ...row, handle: handleNorm, x_user_id: xId, stance, position: stance }];
 }
 
 /** Load canonical seeded accounts + community accounts and merge by handle. */
@@ -640,6 +731,12 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [me, setMe] = useState(null);
   const [authBusy, setAuthBusy] = useState(false);
+  // OAuth popup bookkeeping. beginLogin opens a popup and we complete login by
+  // re-reading /api/me (no full-page reload / graph refetch). Refs avoid stale
+  // closures inside the message/poll handlers.
+  const authPopupRef = useRef(null);
+  const authPollRef = useRef(0);
+  const authInFlightRef = useRef(false);
   const [showStatsModal, setShowStatsModal] = useState(false);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState("");
@@ -707,8 +804,85 @@ export default function App() {
     }
   }
 
+  // Persist a lightweight snapshot so the popup-blocked redirect fallback can
+  // restore the graph after the callback WITHOUT refetching the dataset.
+  function saveLoginReturnSnapshot() {
+    try {
+      if (!accounts.length) return;
+      const snap = {
+        ts: Date.now(),
+        accounts,
+        selectedHandle: selectedHandle ?? null,
+      };
+      sessionStorage.setItem(LOGIN_RETURN_KEY, JSON.stringify(snap));
+    } catch {
+      // Quota / serialization / disabled storage: fall back to a normal reload.
+    }
+  }
+
+  function stopAuthPopupWatch() {
+    if (authPollRef.current) {
+      clearInterval(authPollRef.current);
+      authPollRef.current = 0;
+    }
+  }
+
+  // Finish a popup login: refresh ONLY the session/user, never the graph.
+  async function completeLogin() {
+    if (!authInFlightRef.current) return;
+    authInFlightRef.current = false;
+    stopAuthPopupWatch();
+    try {
+      const popup = authPopupRef.current;
+      if (popup && !popup.closed) popup.close();
+    } catch {
+      // ignore cross-origin close errors
+    }
+    authPopupRef.current = null;
+    await loadMe();
+    setAuthBusy(false);
+  }
+
   function beginLogin() {
-    window.location.assign("/auth/x/login");
+    if (authInFlightRef.current) return;
+    let popup = null;
+    try {
+      popup = window.open("/auth/x/login?mode=popup", "consensushealth_oauth", buildPopupFeatures(window));
+    } catch {
+      popup = null;
+    }
+    if (!popup) {
+      // Popup blocked: preserve state and fall back to a normal full-page redirect.
+      saveLoginReturnSnapshot();
+      window.location.assign("/auth/x/login");
+      return;
+    }
+    authInFlightRef.current = true;
+    authPopupRef.current = popup;
+    setAuthBusy(true);
+    // Robust completion signal: the popup self-closes when auth finishes, at which
+    // point we re-read the session. Works even if postMessage is missed.
+    stopAuthPopupWatch();
+    const startedAt = Date.now();
+    authPollRef.current = window.setInterval(() => {
+      let closed = false;
+      try {
+        closed = !authPopupRef.current || authPopupRef.current.closed;
+      } catch {
+        closed = false;
+      }
+      if (closed) {
+        void completeLogin();
+        return;
+      }
+      // Safety valve: stop watching after 5 minutes if nothing happened.
+      if (Date.now() - startedAt > 5 * 60 * 1000) {
+        stopAuthPopupWatch();
+        authInFlightRef.current = false;
+        authPopupRef.current = null;
+        setAuthBusy(false);
+      }
+    }, 500);
   }
 
   async function logout() {
@@ -737,6 +911,8 @@ export default function App() {
       const data = await res.json();
       if (data?.handle && data?.stance) {
         setLabels((prev) => ({ ...prev, [String(data.handle).toLowerCase()]: normalizedStance(data.stance) }));
+        // Update only this user's node locally; never reload or refetch the graph.
+        setAccounts((prev) => upsertSelfAccountLocally(prev, data));
       }
       await loadMe();
     } finally {
@@ -818,6 +994,43 @@ export default function App() {
 
   useEffect(() => {
     loadMe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Fast path for popup login completion: the popup notifies us via postMessage
+  // and BroadcastChannel. Either one triggers a session-only refresh (no reload).
+  useEffect(() => {
+    const onMessage = (event) => {
+      if (event.origin !== window.location.origin) return;
+      if (!isAuthResultMessage(event.data)) return;
+      if (isAuthSuccessMessage(event.data)) void completeLogin();
+      else {
+        // Auth failed in the popup: stop the spinner without touching the graph.
+        stopAuthPopupWatch();
+        authInFlightRef.current = false;
+        authPopupRef.current = null;
+        setAuthBusy(false);
+      }
+    };
+    let channel = null;
+    try {
+      channel = new BroadcastChannel(AUTH_CHANNEL_NAME);
+      channel.onmessage = (event) => {
+        if (isAuthSuccessMessage(event.data)) void completeLogin();
+      };
+    } catch {
+      channel = null;
+    }
+    window.addEventListener("message", onMessage);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      stopAuthPopupWatch();
+      try {
+        if (channel) channel.close();
+      } catch {
+        // ignore
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1223,6 +1436,16 @@ export default function App() {
       try {
         setLoading(true);
         setErr("");
+        // Popup-blocked login fallback: if we just came back from a full-page
+        // OAuth redirect, restore the previously loaded dataset instead of
+        // refetching the whole graph.
+        const restored = consumeLoginReturnSnapshot();
+        if (restored) {
+          if (dead) return;
+          setAccounts(restored.accounts);
+          if (restored.selectedHandle) setSelectedHandle(restored.selectedHandle);
+          return;
+        }
         const cleanedAccounts = await loadAccounts();
         if (dead) return;
         const accountsFiltered = cleanedAccounts.filter((r) => (r.handle ?? "").toString().trim().length > 0);
@@ -1488,6 +1711,7 @@ export default function App() {
   // Build nodes for simulation
   const nodesRef = useRef([]);
   const simRef = useRef(null);
+  const layoutRafRef = useRef(0); // pending time-sliced layout-settle frame
   const transformRef = useRef({ tx: 0, ty: 0, s: 1 });
   const avatarCacheRef = useRef(new Map());
   const glowCacheRef = useRef(new Map());
@@ -1675,13 +1899,13 @@ export default function App() {
 
     simRef.current = sim;
 
-    // Pre-tick offscreen so first paint is settled; then stop (static layout, no ongoing CPU)
-    sim.alpha(1).restart();
-    for (let i = 0; i < 180; i++) sim.tick();
-    if (!plebsMode) {
-      normalizeIslandEdgeGaps(nodes, labelsRef.current, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
-    }
-    sim.stop();
+    // Settle the layout WITHOUT blocking the main thread. Previously this ran 180
+    // synchronous ticks in a tight `for` loop, freezing the entire UI for several
+    // seconds on load/resize (so clicks like "Stats" appeared to hang). Now the
+    // ticks are time-sliced across animation frames and drawn progressively: the
+    // graph settles in ~1s while the page stays fully responsive.
+    sim.alpha(1);
+    sim.stop(); // halt d3's internal timer; we advance manually, time-sliced
 
     sim.on("tick", () => {
       draw();
@@ -1690,7 +1914,22 @@ export default function App() {
 
     draw();
 
+    runTimeSlicedSettle(sim, 180, layoutRafRef, {
+      onProgress: () => draw(),
+      onDone: () => {
+        if (!plebsMode) {
+          normalizeIslandEdgeGaps(nodes, labelsRef.current, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
+        }
+        sim.stop();
+        draw();
+      },
+    });
+
     return () => {
+      if (layoutRafRef.current) {
+        cancelAnimationFrame(layoutRafRef.current);
+        layoutRafRef.current = 0;
+      }
       sim.stop();
     };
 
@@ -1728,10 +1967,17 @@ export default function App() {
         ? (d) => regions.stanceCenterX[getNodeStance(d, labels)] ?? w / 2
         : () => w / 2;
       sim.force("stanceX", forceX(stanceCenterX).strength(0.11));
-      sim.alpha(0.8).restart();
-      for (let i = 0; i < 90; i++) sim.tick();
-      normalizeIslandEdgeGaps(nodes, labels, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
+      // Reflow after a stance change, time-sliced so the UI never freezes.
+      sim.alpha(0.8);
       sim.stop();
+      runTimeSlicedSettle(sim, 90, layoutRafRef, {
+        onProgress: () => drawRef.current(),
+        onDone: () => {
+          normalizeIslandEdgeGaps(nodes, labels, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.5);
+          sim.stop();
+          drawRef.current();
+        },
+      });
     }
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps

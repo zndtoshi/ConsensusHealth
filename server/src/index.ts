@@ -160,7 +160,56 @@ app.use(cookieParser(SESSION_SECRET));
 type PendingAuth = {
   code_verifier: string;
   createdAt: number;
+  mode?: "popup" | "redirect";
 };
+
+// postMessage/BroadcastChannel contract shared with the frontend (src/utils/authPopup.js).
+const OAUTH_MESSAGE_SOURCE = "consensushealth-oauth";
+const OAUTH_CHANNEL_NAME = "consensushealth-oauth";
+
+/**
+ * Minimal self-closing page returned to the OAuth popup. It notifies the opener
+ * (via postMessage + BroadcastChannel) that auth finished, then closes itself.
+ * No sensitive data is passed; the opener re-reads the session from /api/me.
+ */
+function renderAuthPopupPage(status: "success" | "error", frontendOrigin: string): string {
+  const payload = JSON.stringify({ source: OAUTH_MESSAGE_SOURCE, status });
+  const origin = JSON.stringify(frontendOrigin || "*");
+  const channel = JSON.stringify(OAUTH_CHANNEL_NAME);
+  const label = status === "success" ? "Signed in." : "Sign-in failed.";
+  return `<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${label}</title></head>
+<body style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#0b0f1a;color:#e5e7eb;display:grid;place-items:center;height:100vh;margin:0">
+<div>${label} You can close this window.</div>
+<script>
+(function(){
+  var msg = ${payload};
+  try { if (window.opener && !window.opener.closed) window.opener.postMessage(msg, ${origin}); } catch (e) {}
+  try { var bc = new BroadcastChannel(${channel}); bc.postMessage(msg); bc.close(); } catch (e) {}
+  setTimeout(function(){ try { window.close(); } catch (e) {} }, 120);
+})();
+</script>
+</body>
+</html>`;
+}
+
+/**
+ * Terminate the OAuth callback: for popup logins return the self-closing page;
+ * otherwise preserve the original redirect (success) / JSON error behavior.
+ */
+function finishAuthResult(req: Request, res: Response, ok: boolean, isPopup: boolean): void {
+  if (isPopup) {
+    res.setHeader("Cache-Control", "no-store");
+    res.status(200).type("html").send(renderAuthPopupPage(ok ? "success" : "error", computeFrontendBase(req)));
+    return;
+  }
+  if (ok) {
+    res.redirect(frontendRedirect(req, "/"));
+    return;
+  }
+  res.status(500).json({ error: "oauth_failed" });
+}
 
 type SessionUser = {
   x_user_id: string;
@@ -786,8 +835,18 @@ async function startXAuth(req: Request, res: Response): Promise<void> {
   const state = uuidv4();
   const code_verifier = createCodeVerifier();
   const challenge = createCodeChallenge(code_verifier);
-  pendingAuth.set(state, { code_verifier, createdAt: Date.now() });
+  const isPopup = String(req.query.mode || "") === "popup";
+  pendingAuth.set(state, { code_verifier, createdAt: Date.now(), mode: isPopup ? "popup" : "redirect" });
   res.cookie("consensushealth_oauth_state", state, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: cookieSecure(req),
+    path: "/",
+    maxAge: 10 * 60 * 1000,
+  });
+  // Remember popup mode so the callback returns a self-closing page instead of a
+  // full-page redirect (robust even if the in-memory pending record is missing).
+  res.cookie("consensushealth_oauth_mode", isPopup ? "popup" : "redirect", {
     httpOnly: true,
     sameSite: "lax",
     secure: cookieSecure(req),
@@ -873,7 +932,13 @@ app.get("/auth/x/callback", async (req, res, next) => {
   try {
     const code = String(req.query.code || "");
     const state = String(req.query.state || "");
+    const isPopup = String(req.cookies?.consensushealth_oauth_mode || "") === "popup";
+    res.clearCookie("consensushealth_oauth_mode", { path: "/" });
     if (!code || !state) {
+      if (isPopup) {
+        finishAuthResult(req, res, false, true);
+        return;
+      }
       res.status(400).send("Missing OAuth code/state");
       return;
     }
@@ -883,7 +948,7 @@ app.get("/auth/x/callback", async (req, res, next) => {
     res.clearCookie("consensushealth_oauth_state", { path: "/" });
     if (!pending || stateCookie !== state || Date.now() - pending.createdAt > 10 * 60 * 1000) {
       console.error("[OAuth] Invalid/expired state", { hasPending: Boolean(pending), stateCookiePresent: Boolean(stateCookie) });
-      res.status(500).json({ error: "oauth_failed" });
+      finishAuthResult(req, res, false, isPopup);
       return;
     }
 
@@ -907,14 +972,14 @@ app.get("/auth/x/callback", async (req, res, next) => {
     if (!tokenRes.ok) {
       const txt = await tokenRes.text();
       console.error("[OAuth] Token exchange failed:", tokenRes.status, txt);
-      res.status(500).json({ error: "oauth_failed" });
+      finishAuthResult(req, res, false, isPopup);
       return;
     }
     const tokenJson = (await tokenRes.json()) as { access_token?: string };
     const accessToken = tokenJson.access_token;
     if (!accessToken) {
       console.error("[OAuth] Token response missing access_token");
-      res.status(500).json({ error: "oauth_failed" });
+      finishAuthResult(req, res, false, isPopup);
       return;
     }
 
@@ -927,7 +992,7 @@ app.get("/auth/x/callback", async (req, res, next) => {
     if (!meRes.ok) {
       const txt = await meRes.text();
       console.error("[OAuth] /users/me failed:", meRes.status, txt);
-      res.status(500).json({ error: "oauth_failed" });
+      finishAuthResult(req, res, false, isPopup);
       return;
     }
     const meJson = (await meRes.json()) as {
@@ -944,7 +1009,7 @@ app.get("/auth/x/callback", async (req, res, next) => {
     const data = meJson.data;
     if (!data?.id || !data?.username) {
       console.error("[OAuth] /users/me missing required fields");
-      res.status(500).json({ error: "oauth_failed" });
+      finishAuthResult(req, res, false, isPopup);
       return;
     }
 
@@ -1126,7 +1191,7 @@ app.get("/auth/x/callback", async (req, res, next) => {
       maxAge: SESSION_TTL_DAYS * 24 * 60 * 60 * 1000,
       signed: true,
     });
-    res.redirect(frontendRedirect(req, "/"));
+    finishAuthResult(req, res, true, isPopup);
   } catch (err) {
     console.error("[OAuth] callback exception:", err);
     next(err);
