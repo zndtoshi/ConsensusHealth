@@ -377,7 +377,7 @@ export const INTRO_TIMING = {
   headingFadeOutStartMs: 3000,
   /** Glass panel fades out quickly once flight begins. */
   panelFlightFadeMs: 220,
-  flightMs: 1100,
+  flightMs: 2200,
   flightStaggerMs: 70,
   reducedCrossfadeMs: 400,
 };
