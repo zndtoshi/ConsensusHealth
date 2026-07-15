@@ -18,6 +18,9 @@ import {
   stagingPanelOpacityForPhase,
   INTRO_MAX_USERS,
   INTRO_TIMING,
+  INTRO_HEADING_GAP_PX,
+  INTRO_HEADING_HEIGHT_PX,
+  INTRO_HEADING_TOP_PX,
   isIntroNodeHidden,
   markerEventsFromIntroItems,
   matchEventsToIntroItems,
@@ -316,7 +319,8 @@ test("staging layouts use a tight centered row under the heading", () => {
   assert.equal(b.stagingSidePx, c.stagingSidePx);
   assert.ok(b.sx - a.sx < 70);
   assert.ok(Math.abs((a.sx + c.sx) / 2 - view.cw / 2) < 2);
-  assert.ok(a.sy < 70);
+  const avatarTopY = a.sy - a.stagingSidePx / 2;
+  assert.ok(avatarTopY >= INTRO_HEADING_TOP_PX + INTRO_HEADING_HEIGHT_PX + INTRO_HEADING_GAP_PX - 0.5);
 });
 
 test("staging panel stays visible through full 3s hold then fades on flight", () => {

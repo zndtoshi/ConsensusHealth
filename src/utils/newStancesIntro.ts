@@ -252,9 +252,12 @@ export type StagingLayout = {
   stagingSidePx: number;
 };
 
-export const INTRO_HEADING_TOP_PX = 4;
-export const INTRO_HEADING_HEIGHT_PX = 18;
-export const INTRO_HEADING_GAP_PX = 9;
+/** Matches `.newStancesHeading { top: 14px }` in index.css. */
+export const INTRO_HEADING_TOP_PX = 14;
+/** Single-line heading (~14px font). */
+export const INTRO_HEADING_HEIGHT_PX = 20;
+/** Space between heading baseline block and avatar row tops. */
+export const INTRO_HEADING_GAP_PX = 18;
 /** Panel padding and shape (glass card). */
 export const INTRO_PANEL_PAD_X = 16;
 export const INTRO_PANEL_PAD_TOP = 10;
