@@ -352,7 +352,7 @@ html[data-browser="firefox"] .stanceGlow {
   position: absolute;
   left: 0;
   top: 0;
-  z-index: 11;
+  z-index: 10;
   pointer-events: none;
   display: none;
   background: rgba(10, 18, 36, 0.58);
@@ -376,7 +376,7 @@ html[data-browser="firefox"] .stanceGlow {
   left: 50%;
   top: 14px;
   transform: translateX(-50%);
-  z-index: 12;
+  z-index: 13;
   pointer-events: none;
   font-size: 14px;
   font-weight: 600;

@@ -4366,7 +4366,14 @@ const styles = {
     background: "transparent",
     overflow: "hidden",
   },
-  canvas: { width: "100%", height: "100%", display: "block", cursor: "pointer" },
+  canvas: {
+    width: "100%",
+    height: "100%",
+    display: "block",
+    cursor: "pointer",
+    position: "relative",
+    zIndex: 11,
+  },
   stanceListsRoot: {
     position: "absolute",
     inset: 0,
