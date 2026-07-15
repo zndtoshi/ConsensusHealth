@@ -277,11 +277,42 @@ export function computeStagingLayouts(
   return out;
 }
 
+export type StagingPanelBounds = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  r: number;
+};
+
+/** Background tile behind the heading + staged avatars + labels. */
+export function computeStagingPanelBounds(
+  count: number,
+  stagingSidePx: number,
+  view: StagingView
+): StagingPanelBounds {
+  const gap = STAGING_AVATAR_GAP_PX;
+  const totalW = count * stagingSidePx + Math.max(0, count - 1) * gap;
+  const rowStartX = (view.cw - totalW) / 2;
+  const avatarTopY = INTRO_HEADING_TOP_PX + INTRO_HEADING_HEIGHT_PX + INTRO_HEADING_GAP_PX;
+  const labelH = 15;
+  const padX = 24;
+  const padTop = 8;
+  const padBottom = 18;
+  const x = Math.max(8, rowStartX - padX);
+  const y = INTRO_HEADING_TOP_PX - padTop;
+  const w = Math.min(view.cw - 16, totalW + padX * 2);
+  const h = avatarTopY - y + stagingSidePx + INTRO_LABEL_GAP_PX + labelH + padBottom;
+  return { x, y, w, h, r: 16 };
+}
+
 export const INTRO_TIMING = {
   fadeInMs: 400,
+  /** Full staging hold before any avatar flies (must stay 6s). */
   holdMs: 6000,
-  headingFadeOutMs: 400,
-  headingFadeOutStartMs: 5600,
+  headingFadeOutMs: 500,
+  /** Heading fades only once flight begins, not before the 6s hold ends. */
+  headingFadeOutStartMs: 6000,
   flightMs: 1100,
   flightStaggerMs: 70,
   reducedHoldMs: 1200,
@@ -316,20 +347,43 @@ export function getIntroPhase(elapsedMs: number, reducedMotion: boolean): IntroP
   return "done";
 }
 
-export function headingOpacityForPhase(phase: IntroPhase, elapsedMs: number, reducedMotion: boolean): number {
+export function headingOpacityForPhase(
+  phase: IntroPhase,
+  elapsedMs: number,
+  reducedMotion: boolean,
+  itemCount = INTRO_MAX_USERS
+): number {
   if (phase === "idle" || phase === "done") return 0;
   if (phase === "fade-in") return easeInOutCubic(elapsedMs / INTRO_TIMING.fadeInMs);
-  if (reducedMotion) {
-    if (phase === "hold") return 1;
-    if (phase === "flying") return 1 - easeInOutCubic(elapsedMs / INTRO_TIMING.reducedCrossfadeMs);
-    return 0;
+  if (phase === "hold") return 1;
+  if (phase === "flying") {
+    const panel = stagingPanelOpacityForPhase(phase, elapsedMs, itemCount, reducedMotion);
+    return panel > 0 ? panel / 0.94 : 0;
   }
-  if (phase === "hold") {
-    if (elapsedMs >= INTRO_TIMING.headingFadeOutStartMs) {
-      const t = (elapsedMs - INTRO_TIMING.headingFadeOutStartMs) / INTRO_TIMING.headingFadeOutMs;
-      return 1 - easeInOutCubic(t);
-    }
-    return 1;
+  return 0;
+}
+
+/** Panel stays solid through the 6s hold, then fades out as avatars fly away. */
+export function stagingPanelOpacityForPhase(
+  phase: IntroPhase,
+  elapsedMs: number,
+  itemCount: number,
+  reducedMotion: boolean
+): number {
+  const maxAlpha = 0.94;
+  if (phase === "idle" || phase === "done") return 0;
+  if (phase === "fade-in") return easeInOutCubic(elapsedMs / INTRO_TIMING.fadeInMs) * maxAlpha;
+  if (phase === "hold") return maxAlpha;
+  if (phase === "flying") {
+    const holdEnd = reducedMotion
+      ? INTRO_TIMING.fadeInMs + INTRO_TIMING.reducedHoldMs
+      : INTRO_TIMING.holdMs;
+    const flightElapsed = Math.max(0, elapsedMs - holdEnd);
+    const flightSpan = reducedMotion
+      ? INTRO_TIMING.reducedCrossfadeMs
+      : INTRO_TIMING.flightMs + INTRO_TIMING.flightStaggerMs * Math.max(0, itemCount - 1);
+    const t = Math.min(1, flightElapsed / Math.max(1, flightSpan));
+    return maxAlpha * (1 - easeInOutCubic(t));
   }
   return 0;
 }

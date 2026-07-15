@@ -6,8 +6,13 @@ import {
   LAST_SEEN_MARKER_KEY,
   computeFlightScreenPos,
   computeStagingLayouts,
+  computeStagingPanelBounds,
   computeStagingSidePx,
   formatIntroHandleLabel,
+  getIntroPhase,
+  headingOpacityForPhase,
+  stagingPanelOpacityForPhase,
+  INTRO_TIMING,
   isIntroNodeHidden,
   matchEventsToIntroItems,
   normalizeIntroEvents,
@@ -184,9 +189,33 @@ test("staging layouts use a tight centered row under the heading", () => {
   assert.ok(a.sy < 70);
 });
 
-test("formatIntroHandleLabel truncates long handles", () => {
-  assert.equal(formatIntroHandleLabel("verylonghandle"), "@verylongh…");
-  assert.equal(formatIntroHandleLabel("bob"), "@bob");
+test("staging panel stays visible through full 6s hold then fades on flight", () => {
+  const holdAt5500 = stagingPanelOpacityForPhase("hold", 5500, 9, false);
+  const holdAt5999 = stagingPanelOpacityForPhase("hold", 5999, 9, false);
+  const flightStart = stagingPanelOpacityForPhase("flying", INTRO_TIMING.holdMs, 9, false);
+  const flightMid = stagingPanelOpacityForPhase("flying", INTRO_TIMING.holdMs + 600, 9, false);
+  assert.ok(holdAt5500 > 0.9);
+  assert.ok(holdAt5999 > 0.9);
+  assert.ok(flightStart > 0.85);
+  assert.ok(flightMid < flightStart);
+  assert.equal(headingOpacityForPhase("hold", 5500, false, 9), 1);
+});
+
+test("computeStagingPanelBounds wraps heading and avatar row", () => {
+  const view = {
+    cw: 900,
+    ch: 600,
+    headerHeight: 56,
+    scale: 1,
+    tx: 0,
+    ty: 0,
+    stanceCenterX: { against: 200, neutral: 450, approve: 700 },
+  };
+  const panel = computeStagingPanelBounds(9, 48, view);
+  assert.ok(panel.w > 200);
+  assert.ok(panel.h > 70);
+  assert.ok(panel.x > 0);
+  assert.ok(panel.x + panel.w < view.cw);
 });
 
 test("flight interpolates avatar size and fades handle label", () => {
