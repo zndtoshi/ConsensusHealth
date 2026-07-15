@@ -231,8 +231,8 @@ export const INTRO_LABEL_GAP_PX = 8;
 export function computeStagingSidePx(count: number, view: StagingView, maxLabelLen = 10): number {
   if (count <= 0) return 64;
   const padX = 24;
-  const minSlotGap = 18;
-  const labelCharPx = 6.5;
+  const minSlotGap = 22;
+  const labelCharPx = 7.2;
   const availW = Math.max(100, view.cw - padX * 2);
   const slotW = Math.max(64, maxLabelLen * labelCharPx + 12);
   const totalW = count * slotW + Math.max(0, count - 1) * minSlotGap;
@@ -250,8 +250,8 @@ export function computeStagingSlotWidth(
   stagingSidePx: number
 ): { slotW: number; gap: number } {
   const padX = 24;
-  const minSlotGap = 18;
-  const labelCharPx = 6.5;
+  const minSlotGap = 22;
+  const labelCharPx = 7.2;
   const availW = Math.max(100, view.cw - padX * 2);
   let slotW = Math.max(stagingSidePx + 16, maxLabelLen * labelCharPx + 12);
   let gap = minSlotGap;
@@ -295,9 +295,9 @@ export function computeStagingLayouts(
 
 export const INTRO_TIMING = {
   fadeInMs: 400,
-  holdMs: 5000,
+  holdMs: 6000,
   headingFadeOutMs: 400,
-  headingFadeOutStartMs: 4600,
+  headingFadeOutStartMs: 5600,
   flightMs: 1100,
   flightStaggerMs: 70,
   reducedHoldMs: 1200,

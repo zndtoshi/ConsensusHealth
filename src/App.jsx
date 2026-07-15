@@ -2598,6 +2598,19 @@ export default function App() {
     });
     if (!items.length) return;
 
+    const cache = avatarCacheRef.current;
+    const hooked = avatarHookedRef.current;
+    for (const it of items) {
+      const url = it.avatarUrl;
+      if (!url) continue;
+      const img = getAvatar(url);
+      cache.set(url, img);
+      if (!hooked.has(img)) {
+        hooked.add(img);
+        img.addEventListener("load", () => scheduleDraw());
+        img.addEventListener("error", () => scheduleDraw());
+      }
+    }
     preloadAvatarUrls(
       items.map((it) => it.avatarUrl),
       { eager: true }
@@ -3013,7 +3026,7 @@ export default function App() {
           ctx.rect(drawX, drawY, sidePx, sidePx);
         }
         ctx.fill();
-        const img = item.avatarUrl ? avatarCache.get(item.avatarUrl) : null;
+        const img = item.avatarUrl ? getAvatar(item.avatarUrl) : null;
         if (img?.complete && img.naturalWidth > 0) {
           ctx.save();
           ctx.beginPath();
