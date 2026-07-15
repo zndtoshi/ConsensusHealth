@@ -17,11 +17,27 @@ import {
 import { fetchNewStanceEvents } from "./api/newStances";
 import { NEW_STANCES_HEADING, NEW_STANCES_PUBLIC_ENABLED } from "./config/newStances";
 import { ENABLE_CLUSTER_HALO } from "./config/clusterHalo";
+import { ENABLE_INFLUENCE_LAYOUT_FOR_ALL } from "./config/influenceLayout";
 import {
   drawClusterHalos,
   shouldShowClusterHalo,
   snapClusterHaloState,
 } from "./utils/clusterHalo";
+import {
+  INFLUENCE_LAYOUT_STANCE_ANCHOR_MUL,
+  appendInfluenceLayoutSignatureSuffix,
+  breathingHaloAlpha,
+  breathingHaloPhaseOffsetMs,
+  collisionRadiusMultiplier,
+  computeFollowerInfluenceBounds,
+  createForceInfluenceCenterBias,
+  followerInfluence,
+  parseDebugInfluenceLayoutParams,
+  resolveUseBreathingHalo,
+  resolveUseInfluenceLayout,
+  seedInfluenceLayoutPosition,
+  selectTopBreathingHaloHandles,
+} from "./utils/influenceLayout";
 import {
   introAvatarAriaLabel,
   introAvatarEntrance,
@@ -414,14 +430,14 @@ function normalizeIslandEdgeGaps(nodes, labelsMap, minGap = 18, blend = 0.45) {
 // size, the viewport, and the layout-affecting modes.
 const LAYOUT_CACHE_KEY = "consensushealth:layout:v2";
 
-function computeLayoutSignature(nodes, labelsMap, w, h, plebsMode, equalAvatarSizeEnabled) {
+function computeLayoutSignature(nodes, labelsMap, w, h, plebsMode, equalAvatarSizeEnabled, useInfluenceLayout) {
   const parts = nodes
     .map((n) => `${normalizeHandle(n.handle)}:${getNodeStance(n, labelsMap)}:${Math.round(n.side)}`)
     .sort();
   const str = parts.join("|");
   let hash = 0;
   for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) | 0;
-  return `${hash}|${nodes.length}|${Math.round(w)}x${Math.round(h)}|${plebsMode ? 1 : 0}|${equalAvatarSizeEnabled ? 1 : 0}`;
+  return `${hash}|${nodes.length}|${Math.round(w)}x${Math.round(h)}|${plebsMode ? 1 : 0}|${equalAvatarSizeEnabled ? 1 : 0}${appendInfluenceLayoutSignatureSuffix(useInfluenceLayout)}`;
 }
 
 function loadLayoutPositions(signature) {
@@ -846,6 +862,32 @@ export default function App() {
         authenticatedHandle: me?.authenticated ? me?.handle : null,
       }),
     [me?.authenticated, me?.handle]
+  );
+  const influenceLayoutDebug = useMemo(() => {
+    const search =
+      typeof window !== "undefined" && window.location ? window.location.search : "";
+    return parseDebugInfluenceLayoutParams(
+      search,
+      me?.authenticated ? me?.handle : null
+    );
+  }, [me?.authenticated, me?.handle]);
+  const useInfluenceLayout = useMemo(
+    () =>
+      resolveUseInfluenceLayout({
+        enabledForAll: ENABLE_INFLUENCE_LAYOUT_FOR_ALL,
+        authenticatedUser: me?.authenticated ? me : null,
+        layoutOverride: influenceLayoutDebug.layoutOverride,
+      }),
+    [me, influenceLayoutDebug.layoutOverride]
+  );
+  const useBreathingHalo = useMemo(
+    () =>
+      resolveUseBreathingHalo({
+        useInfluenceLayout,
+        haloOverride: influenceLayoutDebug.haloOverride,
+        prefersReducedMotion: readReducedMotionPreference(),
+      }),
+    [useInfluenceLayout, influenceLayoutDebug.haloOverride]
   );
   const [authBusy, setAuthBusy] = useState(false);
   // OAuth popup bookkeeping. beginLogin opens a popup and we complete login by
@@ -1670,6 +1712,22 @@ export default function App() {
     };
   }, [showClusterHalo, stanceListsViewEnabled]);
 
+  // Top-account breathing halo repaint — admin influence preview only.
+  useEffect(() => {
+    if (!useBreathingHalo || stanceListsViewEnabled || readReducedMotionPreference()) return;
+    let raf = 0;
+    const tick = () => {
+      if (!newStancesIntroRef.current.graphFrozen) {
+        drawRef.current();
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [useBreathingHalo, stanceListsViewEnabled]);
+
   // Load canonical accounts from public/data at mount (needed to render the graph).
   useEffect(() => {
     let dead = false;
@@ -1994,6 +2052,7 @@ export default function App() {
   const clusterHaloSmoothRef = useRef({});
   const clusterHaloBreathEpochRef = useRef(null);
   const clusterHaloResumeSnapRef = useRef(false);
+  const breathingHaloHandlesRef = useRef(new Set());
   const introBandLiftReleasePendingRef = useRef(false);
   labelsRef.current = labels;
   selectedHandleRef.current = selectedHandle;
@@ -2064,8 +2123,27 @@ export default function App() {
         };
       });
 
+    if (useInfluenceLayout && !equalAvatarSizeEnabled) {
+      const regionsPreview = computeStanceRegions(nodes, labelsRef.current, w);
+      const previewCenterX = regionsPreview
+        ? (d) => regionsPreview.stanceCenterX[getNodeStance(d, labelsRef.current)] ?? w / 2
+        : () => w / 2;
+      for (const n of nodes) {
+        seedInfluenceLayoutPosition(n, previewCenterX(n), h);
+      }
+    }
+
     nodesRef.current = nodes;
     hoverDrawHandleRef.current = null;
+
+    if (useInfluenceLayout && !equalAvatarSizeEnabled) {
+      breathingHaloHandlesRef.current = selectTopBreathingHaloHandles(
+        nodes,
+        (n) => getNodeStance(n, labelsRef.current)
+      );
+    } else {
+      breathingHaloHandlesRef.current = new Set();
+    }
 
     // Preload avatar images for visible nodes
     const cache = avatarCacheRef.current;
@@ -2154,6 +2232,20 @@ export default function App() {
       ? (d) => regions.stanceCenterX[getNodeStance(d, labelsRef.current)] ?? w / 2
       : () => w / 2;
 
+    const influenceBounds = useInfluenceLayout
+      ? computeFollowerInfluenceBounds(nodes)
+      : null;
+    const getNodeInfluence = (d) =>
+      influenceBounds
+        ? followerInfluence(d.followers ?? 0, influenceBounds.minLog, influenceBounds.maxLog)
+        : 0;
+    const baseAnchorStrength = plebsMode
+      ? (isFirefoxBrowser ? 0.01 : 0.013)
+      : (isFirefoxBrowser ? 0.012 : 0.016);
+    const anchorStrength = useInfluenceLayout
+      ? baseAnchorStrength * INFLUENCE_LAYOUT_STANCE_ANCHOR_MUL
+      : baseAnchorStrength;
+
     const sim = forceSimulation(nodes)
       .alpha(1)
       .alphaDecay(0.08)
@@ -2161,14 +2253,34 @@ export default function App() {
       .force("center", forceCenter(w / 2, h / 2))
       // Plebs mode uses denser per-stance blobs by relaxing hard X bounds and using slightly stronger packing.
       .force("stanceX", forceX(stanceCenterX).strength(plebsMode ? 0.075 : 0.11))
-      .force("stanceAnchor", forceStanceAnchor(regionRef, labelsRef, plebsMode ? (isFirefoxBrowser ? 0.01 : 0.013) : (isFirefoxBrowser ? 0.012 : 0.016)))
+      .force("stanceAnchor", forceStanceAnchor(regionRef, labelsRef, anchorStrength))
       .force("stanceBounds", plebsMode ? null : forceStanceBounds(regionRef, labelsRef, 0.07))
       .force("pullY", forceY(h / 2).strength(plebsMode ? 0.06 : 0.03))
       .force("charge", forceManyBody().strength(plebsMode ? -6 : -4))
       .force(
         "collide",
-        forceCollide((d) => Math.sqrt(2) * d.half + 0.6).iterations(plebsMode ? 3 : 2)
+        forceCollide((d) => {
+          const base = Math.sqrt(2) * d.half + 0.6;
+          if (!useInfluenceLayout || !influenceBounds) return base;
+          const inf = getNodeInfluence(d);
+          return base * collisionRadiusMultiplier(inf);
+        }).iterations(plebsMode ? 3 : 2)
       );
+
+    if (useInfluenceLayout) {
+      sim.force(
+        "influenceCenter",
+        createForceInfluenceCenterBias(
+          () => regionRef.current,
+          () => labelsRef.current,
+          (node, labelsMap) => getNodeStance(node, labelsMap),
+          getNodeInfluence,
+          h
+        )
+      );
+    } else {
+      sim.force("influenceCenter", null);
+    }
 
     simRef.current = sim;
     sim.stop(); // static layout: we compute final positions once, then never move
@@ -2186,7 +2298,8 @@ export default function App() {
       w,
       h,
       plebsMode,
-      equalAvatarSizeEnabled
+      equalAvatarSizeEnabled,
+      useInfluenceLayout
     );
     const cachedPos = loadLayoutPositions(layoutSig);
     const restored = cachedPos ? applyLayoutPositions(nodes, cachedPos) : 0;
@@ -2217,10 +2330,14 @@ export default function App() {
     // fly-in). Because the work is time-sliced, the main thread stays responsive
     // and UI like the Stats button opens instantly instead of freezing.
     for (const n of nodes) {
-      n.x = stanceCenterX(n) + (Math.random() - 0.5) * 60;
-      n.y = h / 2 + (Math.random() - 0.5) * Math.min(h * 0.5, 400);
-      n.vx = 0;
-      n.vy = 0;
+      if (useInfluenceLayout) {
+        seedInfluenceLayoutPosition(n, stanceCenterX(n), h);
+      } else {
+        n.x = stanceCenterX(n) + (Math.random() - 0.5) * 60;
+        n.y = h / 2 + (Math.random() - 0.5) * Math.min(h * 0.5, 400);
+        n.vx = 0;
+        n.vy = 0;
+      }
     }
     sim.alpha(1);
     layoutSettlingRef.current = true;
@@ -2259,7 +2376,7 @@ export default function App() {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, err, visibleAccounts.length, w, h, plebsMode, equalAvatarSizeEnabled, stanceListsViewEnabled]);
+  }, [loading, err, visibleAccounts.length, w, h, plebsMode, equalAvatarSizeEnabled, stanceListsViewEnabled, useInfluenceLayout]);
 
   // On resize: recompute stance regions and update forces
   useEffect(() => {
@@ -3390,19 +3507,24 @@ export default function App() {
         ? aura.replace(/[\d.]+\)$/, `${0.72 * alpha})`)
         : "rgba(120,130,150," + alpha + ")";
       if (aura) {
-        const glow = getGlow(aura, drawSide, emphasize);
-        if (glow && glow.canvas) {
-          ctx.save();
-          ctx.globalCompositeOperation = "lighter";
-          ctx.globalAlpha = emphasize ? 1 : 1;
-          ctx.drawImage(glow.canvas, drawX - glow.pad, drawY - glow.pad);
-          if (!emphasize) {
-            // Multi-pass only on non-Firefox profile.
-            for (let p = 1; p < nonEmphasizedGlowPasses; p++) {
-              ctx.drawImage(glow.canvas, drawX - glow.pad, drawY - glow.pad);
+        const hasBreathingHalo =
+          useBreathingHalo &&
+          breathingHaloHandlesRef.current.has(normalizeHandle(n.handle));
+        if (!hasBreathingHalo) {
+          const glow = getGlow(aura, drawSide, emphasize);
+          if (glow && glow.canvas) {
+            ctx.save();
+            ctx.globalCompositeOperation = "lighter";
+            ctx.globalAlpha = emphasize ? 1 : 1;
+            ctx.drawImage(glow.canvas, drawX - glow.pad, drawY - glow.pad);
+            if (!emphasize) {
+              // Multi-pass only on non-Firefox profile.
+              for (let p = 1; p < nonEmphasizedGlowPasses; p++) {
+                ctx.drawImage(glow.canvas, drawX - glow.pad, drawY - glow.pad);
+              }
             }
+            ctx.restore();
           }
-          ctx.restore();
         }
       }
 
@@ -3442,6 +3564,39 @@ export default function App() {
 
     const curHover = hoverRef.current;
     const curSelected = selectedHandleRef.current;
+
+    if (useBreathingHalo && breathingHaloHandlesRef.current.size > 0) {
+      const breathingReducedMotion = readReducedMotionPreference();
+      const breathNowMs = performance.now();
+      for (const n of nodes) {
+        const handleKey = normalizeHandle(n.handle);
+        if (!breathingHaloHandlesRef.current.has(handleKey)) continue;
+        if (!playbackShowsWorldNode(n)) continue;
+        if (!introShowsWorldNode(n)) continue;
+        const stance = getNodeStance(n, labels);
+        const aura = stanceColor(stance);
+        if (!aura) continue;
+        const glow = getGlow(aura, n.side, false);
+        if (!glow?.canvas) continue;
+        const breathAlpha = breathingHaloAlpha(
+          breathNowMs,
+          breathingHaloPhaseOffsetMs(n.handle),
+          breathingReducedMotion
+        );
+        const drawHalf = n.side / 2;
+        ctx.save();
+        ctx.globalCompositeOperation = "lighter";
+        ctx.globalAlpha = breathAlpha;
+        ctx.drawImage(glow.canvas, n.x - drawHalf - glow.pad, n.y - drawHalf - glow.pad);
+        for (let p = 1; p < nonEmphasizedGlowPasses; p++) {
+          ctx.drawImage(glow.canvas, n.x - drawHalf - glow.pad, n.y - drawHalf - glow.pad);
+        }
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = "source-over";
+        ctx.restore();
+      }
+    }
+
     const base = [], hovered = [], selected = [];
     const hoverScale = 1.14;
     const selectedScaleBase = isFirefoxBrowser ? 1.72 : 2;
