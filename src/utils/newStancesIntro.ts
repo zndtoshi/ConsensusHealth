@@ -48,7 +48,6 @@ export type DebugNewStancesParams = {
 
 export type ShowIntroDecision = {
   show: boolean;
-  adminPreview: boolean;
   publicEnabled: boolean;
   debug: DebugNewStancesParams;
 };
@@ -79,15 +78,13 @@ export function parseDebugNewStancesParams(search: string): DebugNewStancesParam
 }
 
 export function resolveShowIntroDecision(opts: {
-  adminPreviewFromServer: boolean;
   publicEnabled?: boolean;
   debug?: DebugNewStancesParams;
 }): ShowIntroDecision {
   const publicEnabled = opts.publicEnabled ?? NEW_STANCES_PUBLIC_ENABLED;
   const debug = opts.debug ?? { enabled: false, limit: INTRO_MAX_USERS };
-  const adminPreview = Boolean(opts.adminPreviewFromServer);
-  const show = adminPreview || publicEnabled || debug.enabled;
-  return { show, adminPreview, publicEnabled, debug };
+  const show = publicEnabled || debug.enabled;
+  return { show, publicEnabled, debug };
 }
 
 export function readLastSeenMarker(storage: Pick<Storage, "getItem">): LastSeenMarker | null {
@@ -148,7 +145,13 @@ export function clearPlayingSession(storage: Pick<Storage, "removeItem">): void 
   }
 }
 
-/** Client-side guard: dedupe by xUserId, cap limit, sort newest first. */
+/**
+ * Latest-per-user stance events for the public intro.
+ *
+ * Returning visitors: when more than 9 unseen events exist, only the newest 9 are
+ * shown. The saved marker advances to the newest displayed event, so older unseen
+ * events skipped by the cap are not replayed on the next visit.
+ */
 export function normalizeIntroEvents(events: NewStanceEvent[], limit = INTRO_MAX_USERS): NewStanceEvent[] {
   const latestByUser = new Map<string, NewStanceEvent>();
   for (const e of events) {
@@ -169,23 +172,49 @@ export function pickNewestMarker(events: NewStanceEvent[]): LastSeenMarker | nul
 }
 
 export function resolveFetchAfterEventId(opts: {
-  adminPreview: boolean;
   publicEnabled: boolean;
   debug: DebugNewStancesParams;
   marker: LastSeenMarker | null;
 }): number | null {
-  if (opts.adminPreview || opts.debug.enabled) return null;
+  if (opts.debug.enabled) return null;
   if (!opts.publicEnabled) return null;
   return opts.marker?.eventId ?? null;
 }
 
 export function shouldPersistMarker(opts: {
-  adminPreview: boolean;
   publicEnabled: boolean;
   debug: DebugNewStancesParams;
 }): boolean {
-  if (opts.adminPreview || opts.debug.enabled) return false;
+  if (opts.debug.enabled) return false;
   return opts.publicEnabled;
+}
+
+/**
+ * Refresh mid-animation: while sessionStorage has a fresh playing session (<60s),
+ * defer starting another intro so localStorage is not advanced prematurely.
+ * If the tab closes mid-animation, the marker stays unchanged until the intro
+ * completes successfully or the playing session goes stale (>60s), after which
+ * the same unseen batch may replay once.
+ */
+export function shouldDeferIntroForPlayingSession(
+  playing: PlayingSession | null,
+  opts: { publicEnabled: boolean; debug: DebugNewStancesParams }
+): boolean {
+  return Boolean(playing && opts.publicEnabled && !opts.debug.enabled);
+}
+
+/** Marker advances only to events that were actually displayed in the intro. */
+export function markerEventsFromIntroItems(items: Array<Pick<IntroItem, "eventId" | "createdAt">>): NewStanceEvent[] {
+  return items.map((it) => ({
+    eventId: it.eventId,
+    xUserId: "",
+    handle: "",
+    displayName: null,
+    stance: "neutral" as const,
+    createdAt: it.createdAt,
+    avatarPath: null,
+    hasAvatarBlob: false,
+  }));
 }
 
 export function easeInOutCubic(t: number): number {

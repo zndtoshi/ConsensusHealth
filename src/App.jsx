@@ -37,7 +37,9 @@ import {
   resolveFetchAfterEventId,
   resolveShowIntroDecision,
   scheduleFlightTimes,
+  shouldDeferIntroForPlayingSession,
   shouldPersistMarker,
+  markerEventsFromIntroItems,
   writeLastSeenMarker,
   writePlayingSession,
   INTRO_TIMING,
@@ -2523,7 +2525,6 @@ export default function App() {
 
     const debug = parseDebugNewStancesParams(typeof window !== "undefined" ? window.location.search : "");
     const decision = resolveShowIntroDecision({
-      adminPreviewFromServer: Boolean(meRef.current?.new_stances_preview),
       publicEnabled: NEW_STANCES_PUBLIC_ENABLED,
       debug,
     });
@@ -2578,24 +2579,20 @@ export default function App() {
 
     const debug = parseDebugNewStancesParams(typeof window !== "undefined" ? window.location.search : "");
     const decision = resolveShowIntroDecision({
-      adminPreviewFromServer: Boolean(meRef.current?.new_stances_preview),
       publicEnabled: NEW_STANCES_PUBLIC_ENABLED,
       debug,
     });
     if (!decision.show) return;
 
     const playing = readPlayingSession(sessionStorage);
-    if (playing && decision.publicEnabled && !decision.adminPreview && !decision.debug.enabled) {
+    if (shouldDeferIntroForPlayingSession(playing, decision)) {
       return;
     }
     if (!lockIntroSession()) return;
 
     const marker =
-      decision.publicEnabled && !decision.adminPreview && !decision.debug.enabled
-        ? readLastSeenMarker(localStorage)
-        : null;
+      decision.publicEnabled && !decision.debug.enabled ? readLastSeenMarker(localStorage) : null;
     const afterEventId = resolveFetchAfterEventId({
-      adminPreview: decision.adminPreview,
       publicEnabled: decision.publicEnabled,
       debug: decision.debug,
       marker,
@@ -2668,13 +2665,13 @@ export default function App() {
     intro.landedIds = new Set();
     intro.reducedMotion = reducedMotion;
     intro.batchId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
-    intro.markerEvents = events;
+    intro.markerEvents = markerEventsFromIntroItems(scheduled);
     intro.phase = "fade-in";
 
-    if (decision.publicEnabled && !decision.adminPreview && !decision.debug.enabled) {
+    if (decision.publicEnabled && !decision.debug.enabled) {
       writePlayingSession(sessionStorage, {
         batchId: intro.batchId,
-        eventIds: events.map((e) => e.eventId),
+        eventIds: scheduled.map((it) => it.eventId),
         startedAt: new Date().toISOString(),
       });
     }

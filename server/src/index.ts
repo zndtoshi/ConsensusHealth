@@ -1325,10 +1325,7 @@ app.get("/api/me", async (req, res, next) => {
       res.json(null);
       return;
     }
-    res.json({
-      ...row,
-      new_stances_preview: isPrivilegedManualEditorHandle(row.handle),
-    });
+    res.json(row);
   } catch (err) {
     next(err);
   }

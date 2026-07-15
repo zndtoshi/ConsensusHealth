@@ -4,26 +4,31 @@ import type { NewStanceEvent } from "../api/newStances.js";
 import { NEW_STANCES_PUBLIC_ENABLED } from "../config/newStances.js";
 import {
   LAST_SEEN_MARKER_KEY,
+  PLAYING_SESSION_KEY,
   computeFlightScreenPos,
   computeIntroBandLiftPx,
   computeStagingLayouts,
   computeStagingPanelBounds,
-  computeStagingSidePx,
   formatIntroHandleLabel,
   getIntroPhase,
   headingOpacityForPhase,
   stagingPanelOpacityForPhase,
+  INTRO_MAX_USERS,
   INTRO_TIMING,
   isIntroNodeHidden,
+  markerEventsFromIntroItems,
   matchEventsToIntroItems,
   normalizeIntroEvents,
   parseDebugNewStancesParams,
   pickNewestMarker,
   readLastSeenMarker,
+  readPlayingSession,
   resolveFetchAfterEventId,
   resolveShowIntroDecision,
+  shouldDeferIntroForPlayingSession,
   shouldPersistMarker,
   writeLastSeenMarker,
+  writePlayingSession,
 } from "./newStancesIntro.js";
 
 const memStorage = () => {
@@ -52,65 +57,63 @@ function sampleEvent(id: number, xUserId: string, stance: "against" | "neutral" 
   };
 }
 
-test("public flag false blocks non-admin preview", () => {
-  const d = resolveShowIntroDecision({ adminPreviewFromServer: false, publicEnabled: false });
+test("feature flag true enables intro for all visitors", () => {
+  assert.equal(NEW_STANCES_PUBLIC_ENABLED, true);
+  const d = resolveShowIntroDecision({ publicEnabled: true });
+  assert.equal(d.show, true);
+  assert.equal(d.publicEnabled, true);
+});
+
+test("feature flag false disables intro for everyone", () => {
+  const d = resolveShowIntroDecision({ publicEnabled: false });
   assert.equal(d.show, false);
-  assert.equal(NEW_STANCES_PUBLIC_ENABLED, false);
 });
 
-test("admin preview from server enables intro", () => {
-  const d = resolveShowIntroDecision({ adminPreviewFromServer: true });
+test("no admin-only restriction remains in show decision", () => {
+  const d = resolveShowIntroDecision({ publicEnabled: true });
+  assert.equal("adminPreview" in d, false);
   assert.equal(d.show, true);
-  assert.equal(d.adminPreview, true);
 });
 
-test("debug query enables intro without public flag", () => {
-  const debug = parseDebugNewStancesParams("?debugNewStances=1&debugNewStancesCount=3");
-  const d = resolveShowIntroDecision({ adminPreviewFromServer: false, debug });
-  assert.equal(d.show, true);
-  assert.equal(debug.limit, 3);
-});
-
-test("first visit marker null fetches without afterEventId when public", () => {
-  const after = resolveFetchAfterEventId({
-    adminPreview: false,
+test("anonymous and logged-in visitors share the same fetch rules", () => {
+  const marker = { eventId: 50, createdAt: "2026-07-15T00:00:00.000Z" };
+  const firstVisit = resolveFetchAfterEventId({
     publicEnabled: true,
     debug: { enabled: false, limit: 9 },
     marker: null,
   });
-  assert.equal(after, null);
-});
-
-test("repeat visit uses marker when public", () => {
-  const after = resolveFetchAfterEventId({
-    adminPreview: false,
+  const returning = resolveFetchAfterEventId({
     publicEnabled: true,
     debug: { enabled: false, limit: 9 },
-    marker: { eventId: 100, createdAt: "2026-07-15T00:00:00.000Z" },
+    marker,
   });
-  assert.equal(after, 100);
+  assert.equal(firstVisit, null);
+  assert.equal(returning, 50);
 });
 
-test("admin preview ignores marker fetch filter", () => {
+test("debug query enables intro without public flag", () => {
+  const debug = parseDebugNewStancesParams("?debugNewStances=1&debugNewStancesCount=3");
+  const d = resolveShowIntroDecision({ publicEnabled: false, debug });
+  assert.equal(d.show, true);
+  assert.equal(debug.limit, 3);
+});
+
+test("debug mode ignores marker and does not update it", () => {
   const after = resolveFetchAfterEventId({
-    adminPreview: true,
-    publicEnabled: false,
-    debug: { enabled: false, limit: 9 },
+    publicEnabled: true,
+    debug: { enabled: true, limit: 9 },
     marker: { eventId: 100, createdAt: "2026-07-15T00:00:00.000Z" },
   });
   assert.equal(after, null);
-});
-
-test("zndtoshi preview does not persist marker", () => {
   assert.equal(
-    shouldPersistMarker({ adminPreview: true, publicEnabled: false, debug: { enabled: false, limit: 9 } }),
+    shouldPersistMarker({ publicEnabled: true, debug: { enabled: true, limit: 9 } }),
     false
   );
 });
 
-test("public mode persists marker when not debug/admin", () => {
+test("public mode persists marker when not in debug", () => {
   assert.equal(
-    shouldPersistMarker({ adminPreview: false, publicEnabled: true, debug: { enabled: false, limit: 9 } }),
+    shouldPersistMarker({ publicEnabled: true, debug: { enabled: false, limit: 9 } }),
     true
   );
 });
@@ -132,6 +135,105 @@ test("normalizeIntroEvents dedupes to latest per user and caps at 9", () => {
   assert.equal(out.find((e) => e.xUserId === "a")?.eventId, 5);
 });
 
+test("maximum 9 enforced client-side", () => {
+  const events = Array.from({ length: 12 }, (_, i) =>
+    sampleEvent(i + 1, `u${i}`, "neutral")
+  );
+  const out = normalizeIntroEvents(events, 9);
+  assert.equal(out.length, 9);
+  assert.equal(out[0]!.eventId, 12);
+  assert.equal(out[8]!.eventId, 4);
+});
+
+test("marker advances to newest displayed event only", () => {
+  const displayed = markerEventsFromIntroItems([
+    { eventId: 3, createdAt: sampleEvent(3, "a", "against").createdAt },
+    { eventId: 9, createdAt: sampleEvent(9, "b", "approve").createdAt },
+  ]);
+  const marker = pickNewestMarker(displayed);
+  assert.deepEqual(marker, { eventId: 9, createdAt: sampleEvent(9, "b", "approve").createdAt });
+});
+
+test("skipped unseen events beyond the 9-cap are not in the marker batch", () => {
+  const fetched = Array.from({ length: 12 }, (_, i) =>
+    sampleEvent(i + 1, `u${i}`, "neutral")
+  );
+  const displayed = normalizeIntroEvents(fetched, 9);
+  const marker = pickNewestMarker(displayed);
+  assert.equal(marker?.eventId, 12);
+  assert.equal(displayed.length, 9);
+  assert.equal(displayed.some((e) => e.eventId === 1), false);
+});
+
+test("localStorage marker roundtrip", () => {
+  const s = memStorage();
+  writeLastSeenMarker(s, { eventId: 77, createdAt: "2026-07-15T12:00:00.000Z" });
+  assert.deepEqual(readLastSeenMarker(s), { eventId: 77, createdAt: "2026-07-15T12:00:00.000Z" });
+  const raw = s.getItem(LAST_SEEN_MARKER_KEY);
+  assert.ok(raw);
+  assert.deepEqual(JSON.parse(raw!), { eventId: 77, createdAt: "2026-07-15T12:00:00.000Z" });
+});
+
+test("refresh mid-animation defers replay while session is fresh", () => {
+  const session = memStorage();
+  writePlayingSession(session, {
+    batchId: "batch-1",
+    eventIds: [10, 11],
+    startedAt: new Date().toISOString(),
+  });
+  const playing = readPlayingSession(session);
+  assert.ok(playing);
+  assert.equal(
+    shouldDeferIntroForPlayingSession(playing, {
+      publicEnabled: true,
+      debug: { enabled: false, limit: 9 },
+    }),
+    true
+  );
+});
+
+test("stale in-progress session does not block a new intro", () => {
+  const session = memStorage();
+  writePlayingSession(session, {
+    batchId: "batch-1",
+    eventIds: [10],
+    startedAt: new Date(Date.now() - 120_000).toISOString(),
+  });
+  assert.equal(readPlayingSession(session), null);
+  assert.equal(
+    shouldDeferIntroForPlayingSession(null, {
+      publicEnabled: true,
+      debug: { enabled: false, limit: 9 },
+    }),
+    false
+  );
+});
+
+test("debug mode does not defer for in-progress session", () => {
+  const playing = {
+    batchId: "batch-1",
+    eventIds: [10],
+    startedAt: new Date().toISOString(),
+  };
+  assert.equal(
+    shouldDeferIntroForPlayingSession(playing, {
+      publicEnabled: true,
+      debug: { enabled: true, limit: 9 },
+    }),
+    false
+  );
+});
+
+test("no-new-events means intro should not start", () => {
+  assert.equal(normalizeIntroEvents([], 9).length, 0);
+});
+
+test("reduced motion uses the same staging hold before flight", () => {
+  assert.equal(getIntroPhase(1500, true), "hold");
+  assert.equal(getIntroPhase(INTRO_TIMING.holdMs - 1, true), "hold");
+  assert.equal(getIntroPhase(INTRO_TIMING.holdMs, true), "flying");
+});
+
 test("matchEventsToIntroItems reserves final graph coordinates", () => {
   const events = [sampleEvent(10, "u1", "against")];
   const nodes = [
@@ -149,17 +251,6 @@ test("intro nodes hidden until landed", () => {
   assert.equal(isIntroNodeHidden("u1", hidden, landed), true);
   landed.add("u1");
   assert.equal(isIntroNodeHidden("u1", hidden, landed), false);
-});
-
-test("pickNewestMarker chooses highest event id", () => {
-  const marker = pickNewestMarker([sampleEvent(3, "a", "against"), sampleEvent(9, "b", "approve")]);
-  assert.deepEqual(marker, { eventId: 9, createdAt: sampleEvent(9, "b", "approve").createdAt });
-});
-
-test("write and read marker roundtrip", () => {
-  const s = memStorage();
-  writeLastSeenMarker(s, { eventId: 77, createdAt: "2026-07-15T12:00:00.000Z" });
-  assert.deepEqual(readLastSeenMarker(s), { eventId: 77, createdAt: "2026-07-15T12:00:00.000Z" });
 });
 
 test("intro band lift reaches the header vertical midpoint", () => {
@@ -205,12 +296,6 @@ test("staging panel stays visible through full 3s hold then fades on flight", ()
   assert.ok(flightStart > 0.85);
   assert.ok(flightMid < flightStart);
   assert.equal(headingOpacityForPhase("hold", 2500, false, 9), 1);
-});
-
-test("reduced motion uses the same staging hold before flight", () => {
-  assert.equal(getIntroPhase(1500, true), "hold");
-  assert.equal(getIntroPhase(INTRO_TIMING.holdMs - 1, true), "hold");
-  assert.equal(getIntroPhase(INTRO_TIMING.holdMs, true), "flying");
 });
 
 test("computeStagingPanelBounds wraps heading and avatar row", () => {
@@ -267,4 +352,10 @@ test("flight interpolates avatar size and fades handle label", () => {
   const done = computeFlightScreenPos(item, 2500, view, false);
   assert.equal(done.sidePx, 20);
   assert.equal(done.labelOpacity, 0);
+});
+
+test("storage keys are versioned v2", () => {
+  assert.equal(LAST_SEEN_MARKER_KEY, "consensus_health_last_seen_stance_event_v2");
+  assert.equal(PLAYING_SESSION_KEY, "consensus_health_new_stances_playing_v2");
+  assert.equal(INTRO_MAX_USERS, 9);
 });
