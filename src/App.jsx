@@ -48,6 +48,7 @@ import {
   easeInOutCubic,
   getIntroPhase,
   headingOpacityForPhase,
+  panelFlightExitDurationMs,
   stagingPanelOpacityForPhase,
   isIntroNodeHidden,
   matchEventsToIntroItems,
@@ -944,6 +945,7 @@ export default function App() {
     motionProfiler: null,
     waapiHandles: [],
     headingOpacityCached: -1,
+    panelExiting: false,
   });
   const meRef = useRef(null);
   const [newStancesUi, setNewStancesUi] = useState({
@@ -2833,6 +2835,15 @@ export default function App() {
     if (intro.rafId) cancelAnimationFrame(intro.rafId);
     intro.rafId = 0;
     intro.active = false;
+    // Panel exit fade has completed with the final landing; clear it so the
+    // element is reset for the next intro (opacity already ~0, so no visible jump).
+    intro.panelExiting = false;
+    const panelEl = introPanelRef.current;
+    if (panelEl) {
+      panelEl.style.transition = "none";
+      panelEl.style.opacity = "0";
+      panelEl.style.display = "none";
+    }
     const markerEvents = intro.markerEvents;
     intro.items = [];
     intro.hiddenIds = new Set();
@@ -2877,7 +2888,9 @@ export default function App() {
       intro.lastPhase = phase;
       if (phase === "flying" && !intro.flightDomActive) {
         intro.captureSnapshotPending = true;
-        syncIntroOverlayDom({ x: 0, y: 0, w: 0, h: 0 }, 0, intro, elapsed, phase);
+        // Keep the glass panel visible and start its GPU-composited exit fade so
+        // it only fully disappears once the last avatar has landed (title first).
+        startPanelFlightExit(intro);
         syncHeadingOpacity(headingOpacityForPhase(phase, elapsed, intro.reducedMotion, intro.items.length));
         scheduleDraw();
       }
@@ -3023,6 +3036,15 @@ export default function App() {
     intro.motionProfiler = motionDebug.enabled ? new IntroFlightMotionProfiler(intro.startedAt) : null;
     intro.waapiHandles = [];
     intro.headingOpacityCached = -1;
+    intro.panelExiting = false;
+    // Reset the panel element so per-frame fade-in works crisply and the CSS
+    // entrance animation re-triggers on this fresh appearance.
+    const panelElReset = introPanelRef.current;
+    if (panelElReset) {
+      panelElReset.style.transition = "none";
+      panelElReset.style.opacity = "0";
+      panelElReset.style.display = "none";
+    }
     const flightBase = intro.startedAt + INTRO_TIMING.holdMs;
     const scheduled = scheduleFlightTimes(items, flightBase, reducedMotion);
 
@@ -3160,11 +3182,23 @@ export default function App() {
     }
   }
 
+  // One-time: begin the panel's flight-exit fade. A single CSS opacity
+  // transition (duration = full flight span) owns the disappearance from here,
+  // so there are no extra per-frame renders while avatars fly.
+  function startPanelFlightExit(intro) {
+    const panelEl = introPanelRef.current;
+    if (!panelEl) return;
+    intro.panelExiting = true;
+    const durMs = panelFlightExitDurationMs(intro.items.length, intro.reducedMotion);
+    panelEl.style.transition = `opacity ${durMs}ms cubic-bezier(0.55, 0, 1, 0.45)`;
+    panelEl.style.opacity = "0";
+  }
+
   function syncIntroOverlayDom(panelBounds, panelAlpha, intro, elapsedIntro, phase) {
     const panelEl = introPanelRef.current;
     const countdownEl = introCountdownRef.current;
     const panelOpacity = Math.min(1, panelAlpha / 0.94);
-    if (panelEl) {
+    if (panelEl && !intro.panelExiting) {
       if (panelAlpha > 0.01) {
         panelEl.style.display = "block";
         panelEl.style.left = `${panelBounds.x}px`;

@@ -11,6 +11,7 @@ import {
   computeStagingPanelBounds,
   getIntroPhase,
   headingOpacityForPhase,
+  panelFlightExitDurationMs,
   introAvatarAriaLabel,
   introAvatarEntrance,
   introCountdownDotOpacity,
@@ -295,14 +296,34 @@ test("countdown dots appear only near end of hold", () => {
   assert.equal(introCountdownDotOpacity(0, "flying", 3100, false), 0);
 });
 
-test("panel fades quickly when flight begins", () => {
-  const atFlight = stagingPanelOpacityForPhase(
+test("title fades out first, before the panel exit completes", () => {
+  // Heading is gone shortly into the flight...
+  const headingAtFadeEnd = headingOpacityForPhase(
     "flying",
-    INTRO_TIMING.holdMs + INTRO_TIMING.panelFlightFadeMs,
-    9,
-    false
+    INTRO_TIMING.holdMs + INTRO_TIMING.headingFadeOutMs,
+    false,
+    9
   );
-  assert.ok(atFlight < 0.2);
+  assert.ok(headingAtFadeEnd < 0.02);
+  // ...while the panel exit is scheduled to last far longer (until last landing).
+  assert.ok(
+    panelFlightExitDurationMs(9, false) > INTRO_TIMING.headingFadeOutMs * 2
+  );
+});
+
+test("panel exit lasts until the final avatar has landed", () => {
+  // Exit duration matches last flightEnd relative to flight start:
+  // (n-1)*stagger + flightMs.
+  assert.equal(
+    panelFlightExitDurationMs(9, false),
+    8 * INTRO_FLIGHT_STAGGER_MS + INTRO_FLIGHT_DURATION_MS
+  );
+  assert.equal(panelFlightExitDurationMs(1, false), INTRO_FLIGHT_DURATION_MS);
+  // Reduced motion collapses to the short crossfade.
+  assert.equal(
+    panelFlightExitDurationMs(9, true),
+    INTRO_TIMING.reducedCrossfadeMs
+  );
 });
 
 test("intro band lift reaches the header vertical midpoint", () => {
@@ -339,15 +360,15 @@ test("staging layouts use a tight centered row under the heading", () => {
   assert.ok(avatarTopY >= INTRO_HEADING_TOP_PX + INTRO_HEADING_HEIGHT_PX + INTRO_HEADING_GAP_PX - 0.5);
 });
 
-test("staging panel stays visible through full 3s hold then fades on flight", () => {
+test("staging panel stays solid through the full 3s hold", () => {
   const holdAt2500 = stagingPanelOpacityForPhase("hold", 2500, 9, false);
   const holdAt2999 = stagingPanelOpacityForPhase("hold", 2999, 9, false);
+  // Panel remains fully present through the hold and into flight start; the
+  // disappearance is then driven by a CSS transition, not this value.
   const flightStart = stagingPanelOpacityForPhase("flying", INTRO_TIMING.holdMs, 9, false);
-  const flightMid = stagingPanelOpacityForPhase("flying", INTRO_TIMING.holdMs + 600, 9, false);
   assert.ok(holdAt2500 > 0.9);
   assert.ok(holdAt2999 > 0.9);
-  assert.ok(flightStart > 0.85);
-  assert.ok(flightMid < flightStart);
+  assert.ok(flightStart > 0.9);
   assert.equal(headingOpacityForPhase("hold", 2500, false, 9), 1);
 });
 
