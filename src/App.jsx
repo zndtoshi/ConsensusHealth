@@ -20,6 +20,7 @@ import { ENABLE_CLUSTER_HALO } from "./config/clusterHalo";
 import {
   drawClusterHalos,
   shouldShowClusterHalo,
+  snapClusterHaloState,
 } from "./utils/clusterHalo";
 import {
   introAvatarAriaLabel,
@@ -1653,12 +1654,14 @@ export default function App() {
     };
   }, [pulseSelectedEnabled, selectedHandle]);
 
-  // Gentle cluster-halo breathing repaint (admin preview only).
+  // Gentle cluster-halo breathing repaint — skip while intro graph is frozen.
   useEffect(() => {
     if (!showClusterHalo || stanceListsViewEnabled) return;
     let raf = 0;
     const tick = () => {
-      drawRef.current();
+      if (!newStancesIntroRef.current.graphFrozen) {
+        drawRef.current();
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -1989,6 +1992,9 @@ export default function App() {
   const stanceZoneCacheRef = useRef(new Map());
   const clusterHaloCacheRef = useRef(new Map());
   const clusterHaloSmoothRef = useRef({});
+  const clusterHaloBreathEpochRef = useRef(null);
+  const clusterHaloResumeSnapRef = useRef(false);
+  const introBandLiftReleasePendingRef = useRef(false);
   labelsRef.current = labels;
   selectedHandleRef.current = selectedHandle;
 
@@ -2576,9 +2582,11 @@ export default function App() {
     snap.active = false;
     const intro = newStancesIntroRef.current;
     intro.graphFrozen = false;
+    clusterHaloResumeSnapRef.current = true;
   }
 
   function captureGraphSnapshot(cw, ch, dpr) {
+    clusterHaloBreathEpochRef.current = performance.now();
     const canvas = canvasRef.current;
     if (!canvas) return;
     const snap = introGraphSnapshotRef.current;
@@ -2751,7 +2759,14 @@ export default function App() {
       const marker = pickNewestMarker(markerEvents);
       if (marker) writeLastSeenMarker(localStorage, marker);
     }
-    setNewStancesUi({ headingOpacity: 0, debug: false, debugMotion: false, bandActive: false, ariaLabels: [] });
+    setNewStancesUi((prev) => ({
+      headingOpacity: 0,
+      debug: false,
+      debugMotion: false,
+      bandActive: prev.bandActive,
+      ariaLabels: [],
+    }));
+    introBandLiftReleasePendingRef.current = true;
     syncHeadingOpacity(0);
     scheduleDraw();
   }
@@ -3096,7 +3111,6 @@ export default function App() {
     const { scale, tx, ty } = view;
     const labels = labelsRef.current;
     const radius = (side) => Math.min(14, side * 0.22);
-    const glowQuality = glowProfile.quality;
 
     ctx.save();
     ctx.translate(tx, ty);
@@ -3119,25 +3133,6 @@ export default function App() {
             ? "rgba(40,45,55,0.16)"
             : "rgba(70,75,85,0.16)";
       const baseStroke = aura ? aura.replace(/[\d.]+\)$/, "0.72)") : "rgba(120,130,150,0.72)";
-      if (aura) {
-        const bucketSide = Math.max(6, Math.round(drawSide));
-        const cacheKey = `${GLOW_CACHE_VERSION}|${aura}|${bucketSide}|0|${glowProfile.id}`;
-        const cache = glowCacheRef.current;
-        let glow = cache.get(cacheKey);
-        if (!glow) {
-          glow = createGlowSprite(aura, bucketSide, false, glowQuality, {
-            blurMultiplier: glowProfile.blurMultiplier,
-            opacityMultiplier: glowProfile.opacityMultiplier,
-          });
-          cache.set(cacheKey, glow);
-        }
-        if (glow?.canvas) {
-          ctx.save();
-          ctx.globalCompositeOperation = "lighter";
-          ctx.drawImage(glow.canvas, drawX - glow.pad, drawY - glow.pad);
-          ctx.restore();
-        }
-      }
       const img = getGraphAvatar(resolveDrawAvatarUrl(n));
       if (img?.complete && img.naturalWidth > 0) {
         ctx.save();
@@ -3286,13 +3281,21 @@ export default function App() {
     ctx.translate(tx, ty);
     ctx.scale(scale, scale);
 
-    // Ambient cluster halos (admin preview) — world-space pass before avatars.
+    // Ambient cluster halos — world-space pass before avatars.
     if (showClusterHalo) {
+      const resolveClusterStance = (n) => getNodeStance(n, labels);
+      if (clusterHaloResumeSnapRef.current) {
+        clusterHaloSmoothRef.current = snapClusterHaloState(nodes, resolveClusterStance);
+        clusterHaloResumeSnapRef.current = false;
+      }
+      const breathEpoch = clusterHaloBreathEpochRef.current;
+      const haloNowMs = breathEpoch != null ? breathEpoch : performance.now();
+      if (breathEpoch != null) clusterHaloBreathEpochRef.current = null;
       clusterHaloSmoothRef.current = drawClusterHalos(
         ctx,
         nodes,
-        (n) => getNodeStance(n, labels),
-        performance.now(),
+        resolveClusterStance,
+        haloNowMs,
         clusterHaloCacheRef.current,
         clusterHaloSmoothRef.current
       );
@@ -3552,6 +3555,13 @@ export default function App() {
       captureGraphSnapshot(cw, ch, dpr);
       intro.captureSnapshotPending = false;
       beginFlightDomAnimations(getNewStancesStagingView());
+    }
+
+    if (introBandLiftReleasePendingRef.current) {
+      introBandLiftReleasePendingRef.current = false;
+      requestAnimationFrame(() => {
+        setNewStancesUi((prev) => (prev.bandActive ? { ...prev, bandActive: false } : prev));
+      });
     }
   }
 

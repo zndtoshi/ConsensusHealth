@@ -153,6 +153,24 @@ export function smoothClusterHaloState(
   };
 }
 
+/** Snaps halo centers to current cluster bounds (used after intro graph unfreeze). */
+export function snapClusterHaloState(
+  nodes: ReadonlyArray<{ x: number; y: number; side: number }>,
+  resolveStance: (node: { x: number; y: number; side: number }) => string
+): ClusterHaloSmoothState {
+  const next: ClusterHaloSmoothState = {};
+  for (const stance of CLUSTER_HALO_STANCES) {
+    const bounds = computeClusterBounds(nodes, stance, resolveStance);
+    if (!bounds) continue;
+    next[stance] = {
+      cx: bounds.cx,
+      cy: bounds.cy,
+      radius: computeClusterHaloRadius(bounds),
+    };
+  }
+  return next;
+}
+
 /**
  * Draw ambient cluster halos in world space (call inside translate/scale).
  * One cached radial sprite per stance; only globalAlpha changes per frame.

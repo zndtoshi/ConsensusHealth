@@ -6,6 +6,7 @@ import {
   computeClusterHaloRadius,
   clusterHaloBreathAlpha,
   shouldShowClusterHalo,
+  snapClusterHaloState,
 } from "./clusterHalo.js";
 
 test("shouldShowClusterHalo is false for public when flag is off", () => {
@@ -47,6 +48,19 @@ test("computeClusterBounds returns cluster center and span", () => {
 test("computeClusterHaloRadius scales with cluster span", () => {
   const r = computeClusterHaloRadius({ cx: 0, cy: 0, width: 100, height: 80 });
   assert.ok(r > 50 && r < 70);
+});
+
+test("snapClusterHaloState aligns halo centers to cluster bounds", () => {
+  const nodes = [
+    { x: 10, y: 20, side: 20 },
+    { x: 30, y: 40, side: 20 },
+    { x: 200, y: 200, side: 20 },
+  ];
+  const snapped = snapClusterHaloState(nodes, (n) => (n.x < 100 ? "against" : "approve"));
+  assert.equal(snapped.against?.cx, 20);
+  assert.equal(snapped.against?.cy, 30);
+  assert.ok(snapped.against!.radius > 0);
+  assert.equal(snapped.approve?.cx, 200);
 });
 
 test("clusterHaloBreathAlpha oscillates between 0.92 and 1", () => {
