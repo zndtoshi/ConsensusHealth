@@ -53,6 +53,15 @@ import {
   writePlayingSession,
   INTRO_TIMING,
 } from "./utils/newStancesIntro";
+import {
+  IntroFlightMotionProfiler,
+  INTRO_FLIGHT_PERF_SAMPLE_MS,
+  cancelWaapiFlight,
+  flightDurationMs,
+  parseDebugNewStancesMotionParams,
+  readReducedMotionPreference,
+  startWaapiFlightAnimation,
+} from "./utils/newStancesFlight";
 
 // Lazily loaded so the Statistics UI (StatisticsCards, CSV export) and the QR
 // library (qrcode.react) are split into separate chunks fetched only on demand.
@@ -883,6 +892,16 @@ function useContainerSize(containerRef) {
 export default function App() {
   const canvasRef = useRef(null);
   const introCanvasRef = useRef(null);
+  const introFlightLayerRef = useRef(null);
+  const introHeadingRef = useRef(null);
+  const introMotionDebugRef = useRef(null);
+  const introGraphSnapshotRef = useRef({
+    canvas: null,
+    cw: 0,
+    ch: 0,
+    dpr: 0,
+    active: false,
+  });
   const containerRef = useRef(null);
   const { w, h } = useContainerSize(containerRef);
   const isFirefoxBrowser = useMemo(() => isFirefox(), []);
@@ -980,11 +999,21 @@ export default function App() {
     batchId: "",
     markerEvents: [],
     phase: "idle",
+    lastPhase: "idle",
+    flightDomActive: false,
+    graphFrozen: false,
+    captureSnapshotPending: false,
+    simplifiedEffects: false,
+    motionDebug: false,
+    motionProfiler: null,
+    waapiHandles: [],
+    headingOpacityCached: -1,
   });
   const meRef = useRef(null);
   const [newStancesUi, setNewStancesUi] = useState({
     headingOpacity: 0,
     debug: false,
+    debugMotion: false,
     bandActive: false,
     ariaLabels: [],
   });
@@ -2610,8 +2639,152 @@ export default function App() {
     });
   }
 
+  function syncHeadingOpacity(opacity) {
+    const intro = newStancesIntroRef.current;
+    const clamped = Math.max(0, Math.min(1, opacity));
+    if (intro.headingOpacityCached === clamped) return;
+    intro.headingOpacityCached = clamped;
+    const el = introHeadingRef.current;
+    if (el) el.style.opacity = String(clamped);
+  }
+
+  function releaseGraphSnapshot() {
+    const snap = introGraphSnapshotRef.current;
+    snap.active = false;
+    const intro = newStancesIntroRef.current;
+    intro.graphFrozen = false;
+  }
+
+  function captureGraphSnapshot(cw, ch, dpr) {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const snap = introGraphSnapshotRef.current;
+    if (!snap.canvas) snap.canvas = document.createElement("canvas");
+    const sw = Math.floor(cw * dpr);
+    const sh = Math.floor(ch * dpr);
+    if (snap.canvas.width !== sw || snap.canvas.height !== sh) {
+      snap.canvas.width = sw;
+      snap.canvas.height = sh;
+    }
+    snap.cw = cw;
+    snap.ch = ch;
+    snap.dpr = dpr;
+    const sctx = snap.canvas.getContext("2d");
+    if (!sctx) return;
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    sctx.drawImage(canvas, 0, 0);
+    snap.active = true;
+    newStancesIntroRef.current.graphFrozen = true;
+  }
+
+  function cleanupFlightDom() {
+    const intro = newStancesIntroRef.current;
+    if (intro.waapiHandles?.length) {
+      cancelWaapiFlight(intro.waapiHandles);
+      intro.waapiHandles = [];
+    }
+    const layer = introFlightLayerRef.current;
+    if (layer) layer.replaceChildren();
+    intro.flightDomActive = false;
+    intro.motionProfiler = null;
+  }
+
+  function onFlightAvatarLanded(xUserId) {
+    const intro = newStancesIntroRef.current;
+    if (!intro.active) return;
+    const item = intro.items.find((it) => it.xUserId === xUserId);
+    if (!item || item.landed) return;
+    item.landed = true;
+    intro.landedIds.add(xUserId);
+    if (item.handle) intro.landedHandles.add(normalizeHandle(item.handle));
+    scheduleDraw();
+    if (intro.items.every((it) => it.landed)) {
+      cleanupFlightDom();
+      releaseGraphSnapshot();
+      finishNewStancesIntro();
+    }
+  }
+
+  function beginFlightDomAnimations(viewIntro) {
+    const intro = newStancesIntroRef.current;
+    const layer = introFlightLayerRef.current;
+    if (!layer || intro.flightDomActive) return;
+
+    intro.flightDomActive = true;
+    intro.waapiHandles = [];
+    layer.replaceChildren();
+
+    const baseNoSlash = getBase().replace(/\/$/, "");
+    const missingSrc = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
+
+    intro.items.forEach((item, itemIndex) => {
+      if (item.landed) return;
+      const baseSide = item.stagingSidePx || Math.max(8, item.finalSide * viewIntro.scale);
+      const shell = document.createElement("div");
+      shell.className = `newStancesFlightAvatar newStancesFlightAvatar--${item.stance}`;
+      shell.style.width = `${baseSide}px`;
+      shell.style.height = `${baseSide}px`;
+      shell.dataset.xUserId = item.xUserId;
+
+      const img = document.createElement("img");
+      img.alt = "";
+      img.decoding = "async";
+      const url = resolveIntroAvatarUrl(item);
+      const cached = getGraphAvatar(url);
+      img.src =
+        cached?.complete && cached.naturalWidth > 0 ? cached.src : url || missingSrc;
+      shell.appendChild(img);
+      layer.appendChild(shell);
+
+      const handle = startWaapiFlightAnimation({
+        element: shell,
+        item,
+        view: viewIntro,
+        reducedMotion: intro.reducedMotion,
+        itemIndex,
+        onFinished: onFlightAvatarLanded,
+      });
+      intro.waapiHandles.push(handle);
+    });
+
+    if (intro.motionProfiler && intro.motionDebug) {
+      setTimeout(() => {
+        if (!intro.motionProfiler || !intro.motionDebug) return;
+        if (intro.motionProfiler.shouldSimplifyEffects(INTRO_FLIGHT_PERF_SAMPLE_MS)) {
+          intro.simplifiedEffects = true;
+          for (const child of layer.children) {
+            child.classList.add("newStancesFlightAvatar--simplified");
+          }
+        }
+        const report = intro.motionProfiler.buildReport({
+          flightDurationMs: flightDurationMs(intro.reducedMotion),
+          flyingAvatarCount: intro.items.length,
+          simplifiedEffects: intro.simplifiedEffects,
+          reducedMotion: intro.reducedMotion,
+        });
+        const debugEl = introMotionDebugRef.current;
+        if (debugEl) {
+          debugEl.textContent = [
+            `FPS (250ms): ${report.measuredFps}`,
+            `Long frames >32ms: ${report.longFramesAbove32Ms}`,
+            `Flight: ${report.flightDurationMs}ms`,
+            `Avatars: ${report.flyingAvatarCount}`,
+            `Simplified: ${report.simplifiedEffects ? "yes" : "no"}`,
+            `Reduced motion: ${report.reducedMotion ? "yes" : "no"}`,
+          ].join("\n");
+        }
+        if (typeof console !== "undefined" && console.info) {
+          console.info("[newStances motion]", report);
+        }
+      }, INTRO_FLIGHT_PERF_SAMPLE_MS + 40);
+    }
+  }
+
   function finishNewStancesIntro() {
     const intro = newStancesIntroRef.current;
+    if (!intro.active) return;
+    cleanupFlightDom();
+    releaseGraphSnapshot();
     if (intro.rafId) cancelAnimationFrame(intro.rafId);
     intro.rafId = 0;
     intro.active = false;
@@ -2634,7 +2807,8 @@ export default function App() {
       const marker = pickNewestMarker(markerEvents);
       if (marker) writeLastSeenMarker(localStorage, marker);
     }
-    setNewStancesUi({ headingOpacity: 0, debug: false, bandActive: false, ariaLabels: [] });
+    setNewStancesUi({ headingOpacity: 0, debug: false, debugMotion: false, bandActive: false, ariaLabels: [] });
+    syncHeadingOpacity(0);
     scheduleDraw();
   }
 
@@ -2643,31 +2817,43 @@ export default function App() {
     if (!intro.active) return;
     const now = performance.now();
     const elapsed = now - intro.startedAt;
-    intro.phase = getIntroPhase(elapsed, intro.reducedMotion);
-    const headingOpacity = headingOpacityForPhase(
-      intro.phase,
-      elapsed,
-      intro.reducedMotion,
-      intro.items.length
-    );
-    setNewStancesUi((prev) =>
-      prev.headingOpacity === headingOpacity
-        ? prev
-        : { ...prev, headingOpacity }
-    );
+    const prevPhase = intro.lastPhase || "fade-in";
+    const phase = getIntroPhase(elapsed, intro.reducedMotion);
+    intro.phase = phase;
 
-    for (const item of intro.items) {
-      if (!item.landed && now >= item.flightEnd) {
-        item.landed = true;
-        intro.landedIds.add(item.xUserId);
-        if (item.handle) intro.landedHandles.add(normalizeHandle(item.handle));
+    if (prevPhase !== phase) {
+      intro.lastPhase = phase;
+      if (phase === "flying" && !intro.flightDomActive) {
+        intro.captureSnapshotPending = true;
+        syncIntroOverlayDom({ x: 0, y: 0, w: 0, h: 0 }, 0, intro, elapsed, phase);
+        syncHeadingOpacity(headingOpacityForPhase(phase, elapsed, intro.reducedMotion, intro.items.length));
+        scheduleDraw();
       }
     }
 
-    if (intro.phase === "done") {
+    if (phase === "flying") {
+      if (intro.motionProfiler) intro.motionProfiler.tick(now);
+      if (elapsed < INTRO_TIMING.holdMs + INTRO_TIMING.headingFadeOutMs) {
+        syncHeadingOpacity(
+          headingOpacityForPhase(phase, elapsed, intro.reducedMotion, intro.items.length)
+        );
+      } else if (intro.headingOpacityCached !== 0) {
+        syncHeadingOpacity(0);
+      }
+      if (intro.items.every((it) => it.landed)) {
+        finishNewStancesIntro();
+        return;
+      }
+      intro.rafId = requestAnimationFrame(newStancesIntroTick);
+      return;
+    }
+
+    if (phase === "done") {
       finishNewStancesIntro();
       return;
     }
+
+    syncHeadingOpacity(headingOpacityForPhase(phase, elapsed, intro.reducedMotion, intro.items.length));
     scheduleDraw();
     intro.rafId = requestAnimationFrame(newStancesIntroTick);
   }
@@ -2760,8 +2946,23 @@ export default function App() {
     }
 
     const reducedMotion = prefersReducedMotion();
+    const motionDebug = parseDebugNewStancesMotionParams(
+      typeof window !== "undefined" ? window.location.search : ""
+    );
+    if (motionDebug.enabled && typeof console !== "undefined" && console.info) {
+      console.info("[newStances motion] reduced-motion preference:", readReducedMotionPreference());
+    }
     intro.active = true;
     intro.startedAt = performance.now();
+    intro.lastPhase = "fade-in";
+    intro.flightDomActive = false;
+    intro.graphFrozen = false;
+    intro.captureSnapshotPending = false;
+    intro.simplifiedEffects = false;
+    intro.motionDebug = motionDebug.enabled;
+    intro.motionProfiler = motionDebug.enabled ? new IntroFlightMotionProfiler(intro.startedAt) : null;
+    intro.waapiHandles = [];
+    intro.headingOpacityCached = -1;
     const flightBase = intro.startedAt + INTRO_TIMING.holdMs;
     const scheduled = scheduleFlightTimes(items, flightBase, reducedMotion);
 
@@ -2785,6 +2986,7 @@ export default function App() {
     setNewStancesUi({
       headingOpacity: 0,
       debug: debug.enabled,
+      debugMotion: motionDebug.enabled,
       bandActive: true,
       ariaLabels: scheduled.map((it) => introAvatarAriaLabel(it.handle, it.stance)),
     });
@@ -2819,6 +3021,12 @@ export default function App() {
     const elapsedIntro = nowIntro - intro.startedAt;
     const phase = getIntroPhase(elapsedIntro, intro.reducedMotion);
     const viewIntro = getNewStancesStagingView();
+
+    if (intro.flightDomActive) {
+      syncIntroOverlayDom({ x: 0, y: 0, w: 0, h: 0 }, 0, intro, elapsedIntro, phase);
+      return;
+    }
+
     const stagingSide = intro.items[0]?.stagingSidePx || 48;
     const panelBounds = computeStagingPanelBounds(intro.items.length, stagingSide, viewIntro);
     const panelAlpha = stagingPanelOpacityForPhase(
@@ -2919,6 +3127,92 @@ export default function App() {
     }
   }
 
+  function drawIntroLandedNodesOnly(ctx) {
+    const intro = newStancesIntroRef.current;
+    if (!intro.landedIds.size) return;
+    const nodes = nodesRef.current;
+    const view = viewRef.current;
+    if (!nodes?.length || !view) return;
+    const { scale, tx, ty } = view;
+    const labels = labelsRef.current;
+    const radius = (side) => Math.min(14, side * 0.22);
+    const glowQuality = glowProfile.quality;
+
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.scale(scale, scale);
+
+    for (const n of nodes) {
+      const xid = String(n.x_user_id ?? "").trim();
+      if (!xid || !intro.landedIds.has(xid)) continue;
+      const drawHalf = n.side / 2;
+      const drawX = n.x - drawHalf;
+      const drawY = n.y - drawHalf;
+      const drawSide = n.side;
+      const r = radius(drawSide);
+      const stance = getNodeStance(n, labels);
+      const aura = stanceColor(stance);
+      const baseFill =
+        aura && n.tweetCount > 0
+          ? aura.replace(/[\d.]+\)$/, "0.16)")
+          : n.tweetCount > 0
+            ? "rgba(40,45,55,0.16)"
+            : "rgba(70,75,85,0.16)";
+      const baseStroke = aura ? aura.replace(/[\d.]+\)$/, "0.72)") : "rgba(120,130,150,0.72)";
+      if (aura) {
+        const bucketSide = Math.max(6, Math.round(drawSide));
+        const cacheKey = `${GLOW_CACHE_VERSION}|${aura}|${bucketSide}|0|${glowProfile.id}`;
+        const cache = glowCacheRef.current;
+        let glow = cache.get(cacheKey);
+        if (!glow) {
+          glow = createGlowSprite(aura, bucketSide, false, glowQuality, {
+            blurMultiplier: glowProfile.blurMultiplier,
+            opacityMultiplier: glowProfile.opacityMultiplier,
+          });
+          cache.set(cacheKey, glow);
+        }
+        if (glow?.canvas) {
+          ctx.save();
+          ctx.globalCompositeOperation = "lighter";
+          ctx.drawImage(glow.canvas, drawX - glow.pad, drawY - glow.pad);
+          ctx.restore();
+        }
+      }
+      const img = getGraphAvatar(resolveDrawAvatarUrl(n));
+      if (img?.complete && img.naturalWidth > 0) {
+        ctx.save();
+        ctx.beginPath();
+        if (typeof ctx.roundRect === "function") {
+          ctx.roundRect(drawX, drawY, drawSide, drawSide, r);
+        } else {
+          ctx.rect(drawX, drawY, drawSide, drawSide);
+        }
+        ctx.clip();
+        ctx.drawImage(img, drawX, drawY, drawSide, drawSide);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = baseFill;
+        ctx.beginPath();
+        if (typeof ctx.roundRect === "function") {
+          ctx.roundRect(drawX, drawY, drawSide, drawSide, r);
+        } else {
+          ctx.rect(drawX, drawY, drawSide, drawSide);
+        }
+        ctx.fill();
+      }
+      ctx.strokeStyle = baseStroke;
+      ctx.lineWidth = 1 / scale;
+      ctx.beginPath();
+      if (typeof ctx.roundRect === "function") {
+        ctx.roundRect(drawX, drawY, drawSide, drawSide, r);
+      } else {
+        ctx.rect(drawX, drawY, drawSide, drawSide);
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   function draw() {
     drawRef.current = draw;
 
@@ -2943,6 +3237,18 @@ export default function App() {
       canvas.style.width = `${cw}px`;
       canvas.style.height = `${ch}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    const introEarly = newStancesIntroRef.current;
+    const snap = introGraphSnapshotRef.current;
+    const useFrozenIntroGraph =
+      introEarly.active && introEarly.graphFrozen && snap.active && snap.canvas;
+
+    if (useFrozenIntroGraph) {
+      ctx.drawImage(snap.canvas, 0, 0, cw, ch);
+      drawIntroLandedNodesOnly(ctx);
+      drawNewStancesOverlay(cw, ch, dpr);
+      return;
     }
 
     ctx.clearRect(0, 0, cw, ch);
@@ -3281,6 +3587,12 @@ export default function App() {
     }
 
     drawNewStancesOverlay(cw, ch, dpr);
+
+    if (intro.captureSnapshotPending) {
+      captureGraphSnapshot(cw, ch, dpr);
+      intro.captureSnapshotPending = false;
+      beginFlightDomAnimations(getNewStancesStagingView());
+    }
   }
 
   function historyPlaybackResolvePlayable() {
@@ -3920,8 +4232,10 @@ export default function App() {
               />
               <div ref={introPanelRef} className="newStancesPanel" aria-hidden="true" />
               <canvas ref={introCanvasRef} style={styles.introCanvas} aria-hidden="true" />
+              <div ref={introFlightLayerRef} className="newStancesFlightLayer" aria-hidden="true" />
               {(newStancesUi.headingOpacity > 0.01 || newStancesUi.bandActive) && (
                 <div
+                  ref={introHeadingRef}
                   className="newStancesHeading"
                   style={{ opacity: newStancesUi.headingOpacity }}
                   aria-live="polite"
@@ -3941,6 +4255,9 @@ export default function App() {
               </div>
               {newStancesUi.debug && (
                 <div className="newStancesDebugLabel">Debug new stances</div>
+              )}
+              {newStancesUi.debugMotion && (
+                <div ref={introMotionDebugRef} className="newStancesMotionDebug" aria-hidden="true" />
               )}
               <div ref={tooltipRef} style={{ ...styles.tooltip, display: "none" }}>
                 <div ref={tooltipHandleRef} style={{ fontWeight: 700 }} />

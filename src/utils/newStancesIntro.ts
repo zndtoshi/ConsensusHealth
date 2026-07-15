@@ -543,6 +543,60 @@ export function itemOpacityForPhase(
   return 1;
 }
 
+export type FlightKeyframe = {
+  transform: string;
+  offset: number;
+};
+
+/** Builds WAAPI keyframes along the approved quadratic-bezier flight path. */
+export function buildFlightKeyframes(
+  item: IntroItem,
+  view: StagingView,
+  reducedMotion: boolean,
+  steps = 24
+): FlightKeyframe[] {
+  const finalSx = item.finalX * view.scale + view.tx;
+  const finalSy = item.finalY * view.scale + view.ty;
+  const finalSidePx = Math.max(8, item.finalSide * view.scale);
+  const stagingSidePx = item.stagingSidePx || finalSidePx;
+  const baseSide = stagingSidePx;
+  const mid = reducedMotion
+    ? null
+    : {
+        x: (item.stagingSx + finalSx) / 2,
+        y: Math.min(item.stagingSy, finalSy) - 40,
+      };
+
+  const keyframes: FlightKeyframe[] = [];
+  const stepCount = Math.max(2, steps);
+  for (let i = 0; i <= stepCount; i++) {
+    const tRaw = i / stepCount;
+    const t = easeIntroFlight(tRaw);
+    const sidePx = stagingSidePx + (finalSidePx - stagingSidePx) * t;
+    let sx: number;
+    let sy: number;
+    if (reducedMotion || !mid) {
+      sx = item.stagingSx + (finalSx - item.stagingSx) * t;
+      sy = item.stagingSy + (finalSy - item.stagingSy) * t;
+    } else {
+      const pt = quadBezierPoint(
+        t,
+        { x: item.stagingSx, y: item.stagingSy },
+        mid,
+        { x: finalSx, y: finalSy }
+      );
+      sx = pt.x;
+      sy = pt.y;
+    }
+    const scale = sidePx / baseSide;
+    keyframes.push({
+      transform: `translate3d(${sx - baseSide / 2}px, ${sy - baseSide / 2}px, 0) scale(${scale})`,
+      offset: tRaw,
+    });
+  }
+  return keyframes;
+}
+
 export function computeFlightScreenPos(
   item: IntroItem,
   now: number,
