@@ -4,7 +4,9 @@ import type { NewStanceEvent } from "../api/newStances.js";
 import { NEW_STANCES_PUBLIC_ENABLED } from "../config/newStances.js";
 import {
   LAST_SEEN_MARKER_KEY,
+  computeFlightScreenPos,
   computeStagingLayouts,
+  computeStagingSidePx,
   isIntroNodeHidden,
   matchEventsToIntroItems,
   normalizeIntroEvents,
@@ -153,24 +155,62 @@ test("write and read marker roundtrip", () => {
   assert.deepEqual(readLastSeenMarker(s), { eventId: 77, createdAt: "2026-07-15T12:00:00.000Z" });
 });
 
-test("staging layouts group by stance cloud center", () => {
-  const layouts = computeStagingLayouts(
-    [
-      { xUserId: "a", stance: "against" },
-      { xUserId: "b", stance: "approve" },
-    ],
-    {
-      cw: 800,
-      ch: 600,
-      headerHeight: 56,
-      scale: 1,
-      tx: 0,
-      ty: 0,
-      stanceCenterX: { against: 200, neutral: 400, approve: 600 },
-    }
-  );
-  assert.ok(layouts.get("a"));
-  assert.ok(layouts.get("b"));
-  assert.ok((layouts.get("a")!.sx ?? 0) < 400);
-  assert.ok((layouts.get("b")!.sx ?? 0) > 400);
+test("staging layouts use equal size in a centered top row", () => {
+  const view = {
+    cw: 900,
+    ch: 600,
+    headerHeight: 56,
+    scale: 1,
+    tx: 0,
+    ty: 0,
+    stanceCenterX: { against: 200, neutral: 450, approve: 700 },
+  };
+  const layouts = computeStagingLayouts([{ xUserId: "a" }, { xUserId: "b" }, { xUserId: "c" }], view);
+  const a = layouts.get("a")!;
+  const b = layouts.get("b")!;
+  const c = layouts.get("c")!;
+  assert.equal(a.stagingSidePx, b.stagingSidePx);
+  assert.equal(b.stagingSidePx, c.stagingSidePx);
+  assert.ok(a.sx < b.sx && b.sx < c.sx);
+  assert.ok(Math.abs((a.sx + c.sx) / 2 - view.cw / 2) < 2);
+  assert.equal(computeStagingSidePx(3, view), a.stagingSidePx);
+});
+
+test("flight interpolates avatar size and fades handle label", () => {
+  const item = {
+    eventId: 1,
+    xUserId: "u1",
+    handle: "alice",
+    stance: "approve" as const,
+    createdAt: "2026-07-15T00:00:00.000Z",
+    avatarUrl: "/a.jpg",
+    finalX: 400,
+    finalY: 300,
+    finalSide: 20,
+    stagingSx: 450,
+    stagingSy: 80,
+    stagingSidePx: 72,
+    flightStart: 1000,
+    flightEnd: 2000,
+    landed: false,
+    opacity: 1,
+  };
+  const view = {
+    cw: 900,
+    ch: 600,
+    headerHeight: 56,
+    scale: 1,
+    tx: 0,
+    ty: 0,
+    stanceCenterX: { against: 200, neutral: 450, approve: 700 },
+  };
+  const hold = computeFlightScreenPos(item, 500, view, false);
+  assert.equal(hold.sidePx, 72);
+  assert.equal(hold.labelOpacity, 1);
+  const mid = computeFlightScreenPos(item, 1500, view, false);
+  assert.ok(mid.sidePx < 72 && mid.sidePx > 20);
+  assert.ok(mid.labelOpacity < 1 && mid.labelOpacity > 0);
+  const done = computeFlightScreenPos(item, 2500, view, false);
+  assert.equal(done.sidePx, 20);
+  assert.equal(done.labelOpacity, 0);
 });

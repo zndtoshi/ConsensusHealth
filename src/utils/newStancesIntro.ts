@@ -29,9 +29,11 @@ export type IntroItem = {
   finalX: number;
   finalY: number;
   finalSide: number;
-  /** Staging screen coordinates (CSS px). */
+  /** Staging screen coordinates (CSS px) — center of avatar. */
   stagingSx: number;
   stagingSy: number;
+  /** Uniform large avatar size while staged (screen px). */
+  stagingSidePx: number;
   /** Flight timing (performance.now ms). */
   flightStart: number;
   flightEnd: number;
@@ -217,38 +219,44 @@ export type StagingView = {
 export type StagingLayout = {
   sx: number;
   sy: number;
+  stagingSidePx: number;
 };
 
-/** Compute screen-space staging positions grouped above each stance cloud. */
+export const INTRO_HEADING_TOP_PX = 12;
+export const INTRO_HEADING_HEIGHT_PX = 22;
+export const INTRO_HEADING_GAP_PX = 14;
+export const INTRO_LABEL_GAP_PX = 8;
+
+/** Pick one equal staging size that fits all intro avatars in a centered row. */
+export function computeStagingSidePx(count: number, view: StagingView): number {
+  if (count <= 0) return 64;
+  const padX = 24;
+  const gap = 14;
+  const availW = Math.max(100, view.cw - padX * 2);
+  const maxByWidth = (availW - gap * Math.max(0, count - 1)) / count;
+  return Math.max(48, Math.min(76, maxByWidth));
+}
+
+/** Compute centered top-middle staging positions under the heading (equal size for all). */
 export function computeStagingLayouts(
-  items: Array<{ xUserId: string; stance: StanceKey }>,
+  items: Array<{ xUserId: string }>,
   view: StagingView
 ): Map<string, StagingLayout> {
-  const groups: Record<StanceKey, string[]> = { against: [], neutral: [], approve: [] };
-  for (const it of items) groups[it.stance]?.push(it.xUserId);
-
   const out = new Map<string, StagingLayout>();
-  const padX = 16;
-  const baseY = view.headerHeight + 52;
-  const bobRoom = 6;
+  const count = items.length;
+  if (count === 0) return out;
 
-  for (const stance of ["against", "neutral", "approve"] as const) {
-    const ids = groups[stance];
-    if (!ids.length) continue;
-    const worldCx = view.stanceCenterX[stance] ?? view.cw / 2;
-    const groupCx = worldCx * view.scale + view.tx;
-    const count = ids.length;
-    const spacing = Math.min(56, Math.max(36, (view.cw - padX * 2) / Math.max(count, 1)));
-    const totalW = spacing * Math.max(0, count - 1);
-    let startX = groupCx - totalW / 2;
-    startX = Math.max(padX, Math.min(view.cw - padX - totalW, startX));
+  const stagingSidePx = computeStagingSidePx(count, view);
+  const gap = 14;
+  const totalW = count * stagingSidePx + Math.max(0, count - 1) * gap;
+  const rowStartX = (view.cw - totalW) / 2;
+  const avatarCenterY =
+    INTRO_HEADING_TOP_PX + INTRO_HEADING_HEIGHT_PX + INTRO_HEADING_GAP_PX + stagingSidePx / 2;
 
-    ids.forEach((id, i) => {
-      const sx = count === 1 ? groupCx : startX + i * spacing;
-      const sy = baseY + bobRoom + (i % 2 === 0 ? 0 : 4);
-      out.set(id, { sx: Math.max(padX, Math.min(view.cw - padX, sx)), sy });
-    });
-  }
+  items.forEach((item, i) => {
+    const sx = rowStartX + i * (stagingSidePx + gap) + stagingSidePx / 2;
+    out.set(item.xUserId, { sx, sy: avatarCenterY, stagingSidePx });
+  });
   return out;
 }
 
@@ -334,25 +342,30 @@ export function computeFlightScreenPos(
   now: number,
   view: StagingView,
   reducedMotion: boolean
-): { sx: number; sy: number; scaleFactor: number } {
+): { sx: number; sy: number; sidePx: number; labelOpacity: number } {
   const finalSx = item.finalX * view.scale + view.tx;
   const finalSy = item.finalY * view.scale + view.ty;
+  const finalSidePx = Math.max(8, item.finalSide * view.scale);
+  const stagingSidePx = item.stagingSidePx || finalSidePx;
 
   if (item.landed || now >= item.flightEnd) {
-    return { sx: finalSx, sy: finalSy, scaleFactor: 1 };
+    return { sx: finalSx, sy: finalSy, sidePx: finalSidePx, labelOpacity: 0 };
   }
   if (now < item.flightStart) {
     const bob = reducedMotion ? 0 : Math.sin(now * 0.0025) * 3;
-    return { sx: item.stagingSx, sy: item.stagingSy + bob, scaleFactor: 1 };
+    return { sx: item.stagingSx, sy: item.stagingSy + bob, sidePx: stagingSidePx, labelOpacity: 1 };
   }
 
   const tRaw = (now - item.flightStart) / Math.max(1, item.flightEnd - item.flightStart);
   const t = easeInOutCubic(tRaw);
+  const sidePx = stagingSidePx + (finalSidePx - stagingSidePx) * t;
+  const labelOpacity = Math.max(0, 1 - t * 1.2);
   if (reducedMotion) {
     return {
       sx: item.stagingSx + (finalSx - item.stagingSx) * t,
       sy: item.stagingSy + (finalSy - item.stagingSy) * t,
-      scaleFactor: 1,
+      sidePx,
+      labelOpacity,
     };
   }
   const mid = {
@@ -365,7 +378,7 @@ export function computeFlightScreenPos(
     mid,
     { x: finalSx, y: finalSy }
   );
-  return { sx: pt.x, sy: pt.y, scaleFactor: 1 };
+  return { sx: pt.x, sy: pt.y, sidePx, labelOpacity };
 }
 
 export function scheduleFlightTimes(
@@ -432,6 +445,7 @@ export function matchEventsToIntroItems(
       finalSide: node.side,
       stagingSx: 0,
       stagingSy: 0,
+      stagingSidePx: 64,
       flightStart: 0,
       flightEnd: 0,
       landed: false,

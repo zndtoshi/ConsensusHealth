@@ -354,12 +354,13 @@ html[data-browser="firefox"] .stanceGlow {
   transform: translateX(-50%);
   z-index: 12;
   pointer-events: none;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   letter-spacing: 0.01em;
   color: rgba(255, 255, 255, 0.92);
   text-align: center;
   padding: 0 16px;
+  white-space: nowrap;
   transition: opacity 220ms ease;
   text-shadow: 0 1px 12px rgba(0, 0, 0, 0.55);
 }

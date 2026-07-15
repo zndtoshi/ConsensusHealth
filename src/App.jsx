@@ -2475,7 +2475,9 @@ export default function App() {
     const layouts = computeStagingLayouts(intro.items, getNewStancesStagingView());
     intro.items = intro.items.map((it) => {
       const lay = layouts.get(it.xUserId);
-      return lay ? { ...it, stagingSx: lay.sx, stagingSy: lay.sy } : it;
+      return lay
+        ? { ...it, stagingSx: lay.sx, stagingSy: lay.sy, stagingSidePx: lay.stagingSidePx }
+        : it;
     });
   }
 
@@ -2601,6 +2603,7 @@ export default function App() {
       if (lay) {
         it.stagingSx = lay.sx;
         it.stagingSy = lay.sy;
+        it.stagingSidePx = lay.stagingSidePx;
       }
     }
 
@@ -2983,7 +2986,7 @@ export default function App() {
       for (const item of intro.items) {
         if (item.landed) continue;
         const pos = computeFlightScreenPos(item, nowIntro, viewIntro, intro.reducedMotion);
-        const sidePx = Math.max(8, item.finalSide * viewIntro.scale);
+        const sidePx = Math.max(8, pos.sidePx);
         const drawX = pos.sx - sidePx / 2;
         const drawY = pos.sy - sidePx / 2;
         const rOv = Math.min(14, sidePx * 0.22);
@@ -3028,6 +3031,15 @@ export default function App() {
           ctx.rect(drawX, drawY, sidePx, sidePx);
         }
         ctx.stroke();
+        if (pos.labelOpacity > 0.02 && item.handle) {
+          ctx.globalAlpha = fadeAlpha * pos.labelOpacity;
+          const fontSize = Math.max(11, Math.min(14, sidePx * 0.19));
+          ctx.font = `600 ${fontSize}px system-ui, -apple-system, Segoe UI, sans-serif`;
+          ctx.fillStyle = "rgba(255,255,255,0.94)";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "top";
+          ctx.fillText(`@${item.handle}`, pos.sx, pos.sy + sidePx / 2 + 6);
+        }
         ctx.restore();
       }
     }
