@@ -15,6 +15,11 @@ import {
 } from "./utils/authPopup";
 import { fetchNewStanceEvents } from "./api/newStances";
 import { NEW_STANCES_HEADING, NEW_STANCES_PUBLIC_ENABLED } from "./config/newStances";
+import { ENABLE_CLUSTER_HALO } from "./config/clusterHalo";
+import {
+  drawClusterHalos,
+  shouldShowClusterHalo,
+} from "./utils/clusterHalo";
 import {
   introAvatarAriaLabel,
   introAvatarEntrance,
@@ -898,6 +903,14 @@ export default function App() {
   const [selectedHandle, setSelectedHandle] = useState(null);
   const [search, setSearch] = useState("");
   const [me, setMe] = useState(null);
+  const showClusterHalo = useMemo(
+    () =>
+      shouldShowClusterHalo({
+        enabled: ENABLE_CLUSTER_HALO,
+        authenticatedHandle: me?.authenticated ? me?.handle : null,
+      }),
+    [me?.authenticated, me?.handle]
+  );
   const [authBusy, setAuthBusy] = useState(false);
   // OAuth popup bookkeeping. beginLogin opens a popup and we complete login by
   // re-reading /api/me (no full-page reload / graph refetch). Refs avoid stale
@@ -1695,6 +1708,20 @@ export default function App() {
     };
   }, [pulseSelectedEnabled, selectedHandle]);
 
+  // Gentle cluster-halo breathing repaint (admin preview only).
+  useEffect(() => {
+    if (!showClusterHalo || stanceListsViewEnabled) return;
+    let raf = 0;
+    const tick = () => {
+      drawRef.current();
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [showClusterHalo, stanceListsViewEnabled]);
+
   // Load canonical accounts from public/data at mount (needed to render the graph).
   useEffect(() => {
     let dead = false;
@@ -2015,6 +2042,8 @@ export default function App() {
   const starfieldCanvasRef = useRef(null);
   const starfieldKeyRef = useRef("");
   const stanceZoneCacheRef = useRef(new Map());
+  const clusterHaloCacheRef = useRef(new Map());
+  const clusterHaloSmoothRef = useRef({});
   labelsRef.current = labels;
   selectedHandleRef.current = selectedHandle;
 
@@ -2987,38 +3016,58 @@ export default function App() {
 
     viewRef.current = { scale, tx, ty };
 
-    // Subtle stance anchor zones (cached radial sprites), rendered behind nodes.
-    const r = regionRef.current;
-    const againstCx = r?.stanceCenterX?.[STANCE.AGAINST] ?? (w * 0.33);
-    const neutralCx = r?.stanceCenterX?.[STANCE.NEUTRAL] ?? (w * 0.5);
-    const approveCx = r?.stanceCenterX?.[STANCE.APPROVE] ?? (w * 0.67);
-    const zoneCyWorld = h / 2;
-    const againstX = againstCx * scale + tx;
-    const neutralX = neutralCx * scale + tx;
-    const approveX = approveCx * scale + tx;
-    const zoneY = zoneCyWorld * scale + ty;
-    const baseRadius = Math.min(cw, ch) * (isFirefoxBrowser ? 0.28 : 0.31);
-    const zoneRadius = Math.max(120, Math.min(420, baseRadius));
-    const getZone = (key, rgb, alpha) => {
-      const cacheKey = `${key}|${Math.round(zoneRadius)}|${alpha}|${glowProfile.id}`;
-      const cache = stanceZoneCacheRef.current;
-      if (cache.has(cacheKey)) return cache.get(cacheKey);
-      const sprite = createStanceZoneSprite(rgb, zoneRadius, alpha);
-      if (cache.size > 24) cache.clear();
-      cache.set(cacheKey, sprite);
-      return sprite;
-    };
-    const zoneAlphaMul = glowProfile.zoneAlphaMultiplier;
-    const redZone = getZone("red", [220, 38, 38], (isFirefoxBrowser ? 0.055 : 0.07) * zoneAlphaMul);
-    const neutralZone = getZone("neutral", [156, 163, 175], (isFirefoxBrowser ? 0.032 : 0.042) * zoneAlphaMul);
-    const greenZone = getZone("green", [34, 197, 94], (isFirefoxBrowser ? 0.055 : 0.07) * zoneAlphaMul);
-    const drawZone = (sprite, cx, cy) => {
-      const rad = sprite.width / 2;
-      ctx.drawImage(sprite, cx - rad, cy - rad);
-    };
-    drawZone(redZone, againstX, zoneY);
-    drawZone(neutralZone, neutralX, zoneY);
-    drawZone(greenZone, approveX, zoneY);
+    ctx.save();
+    ctx.translate(tx, ty);
+    ctx.scale(scale, scale);
+
+    // Ambient cluster halos (admin preview) — world-space pass before avatars.
+    if (showClusterHalo) {
+      clusterHaloSmoothRef.current = drawClusterHalos(
+        ctx,
+        nodes,
+        (n) => getNodeStance(n, labels),
+        performance.now(),
+        clusterHaloCacheRef.current,
+        clusterHaloSmoothRef.current
+      );
+    }
+
+    ctx.restore();
+
+    // Legacy stance anchor zones (production default when cluster halos are off).
+    if (!showClusterHalo) {
+      const r = regionRef.current;
+      const againstCx = r?.stanceCenterX?.[STANCE.AGAINST] ?? (w * 0.33);
+      const neutralCx = r?.stanceCenterX?.[STANCE.NEUTRAL] ?? (w * 0.5);
+      const approveCx = r?.stanceCenterX?.[STANCE.APPROVE] ?? (w * 0.67);
+      const zoneCyWorld = h / 2;
+      const againstX = againstCx * scale + tx;
+      const neutralX = neutralCx * scale + tx;
+      const approveX = approveCx * scale + tx;
+      const zoneY = zoneCyWorld * scale + ty;
+      const baseRadius = Math.min(cw, ch) * (isFirefoxBrowser ? 0.28 : 0.31);
+      const zoneRadius = Math.max(120, Math.min(420, baseRadius));
+      const getZone = (key, rgb, alpha) => {
+        const cacheKey = `${key}|${Math.round(zoneRadius)}|${alpha}|${glowProfile.id}`;
+        const cache = stanceZoneCacheRef.current;
+        if (cache.has(cacheKey)) return cache.get(cacheKey);
+        const sprite = createStanceZoneSprite(rgb, zoneRadius, alpha);
+        if (cache.size > 24) cache.clear();
+        cache.set(cacheKey, sprite);
+        return sprite;
+      };
+      const zoneAlphaMul = glowProfile.zoneAlphaMultiplier;
+      const redZone = getZone("red", [220, 38, 38], (isFirefoxBrowser ? 0.055 : 0.07) * zoneAlphaMul);
+      const neutralZone = getZone("neutral", [156, 163, 175], (isFirefoxBrowser ? 0.032 : 0.042) * zoneAlphaMul);
+      const greenZone = getZone("green", [34, 197, 94], (isFirefoxBrowser ? 0.055 : 0.07) * zoneAlphaMul);
+      const drawZone = (sprite, cx, cy) => {
+        const rad = sprite.width / 2;
+        ctx.drawImage(sprite, cx - rad, cy - rad);
+      };
+      drawZone(redZone, againstX, zoneY);
+      drawZone(neutralZone, neutralX, zoneY);
+      drawZone(greenZone, approveX, zoneY);
+    }
 
     ctx.save();
     ctx.translate(tx, ty);
