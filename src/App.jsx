@@ -413,14 +413,14 @@ function normalizeIslandEdgeGaps(nodes, labelsMap, minGap = 18, blend = 0.45) {
 // size, the viewport, and the layout-affecting modes.
 const LAYOUT_CACHE_KEY = "consensushealth:layout:v2";
 
-function computeLayoutSignature(nodes, labelsMap, w, h, plebsMode, equalAvatarSizeEnabled, equalSizeRowFill) {
+function computeLayoutSignature(nodes, labelsMap, w, h, plebsMode, equalAvatarSizeEnabled) {
   const parts = nodes
     .map((n) => `${normalizeHandle(n.handle)}:${getNodeStance(n, labelsMap)}:${Math.round(n.side)}`)
     .sort();
   const str = parts.join("|");
   let hash = 0;
   for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) | 0;
-  return `${hash}|${nodes.length}|${Math.round(w)}x${Math.round(h)}|${plebsMode ? 1 : 0}|${equalAvatarSizeEnabled ? 1 : 0}|${equalSizeRowFill ? 1 : 0}`;
+  return `${hash}|${nodes.length}|${Math.round(w)}x${Math.round(h)}|${plebsMode ? 1 : 0}|${equalAvatarSizeEnabled ? 1 : 0}`;
 }
 
 function loadLayoutPositions(signature) {
@@ -1229,11 +1229,6 @@ export default function App() {
   const meStance = me?.stance ? normalizedStance(me.stance) : "";
   const meHandleLower = safeLower(me?.handle);
   const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
-  /** Admin preview: row-first follower ordering in equal-size grid. */
-  const equalSizeGridFillDirection = useMemo(
-    () => (isPrivilegedEditor ? "row" : "column"),
-    [isPrivilegedEditor]
-  );
 
   useEffect(() => {
     if (!API_BASE) {
@@ -2139,7 +2134,7 @@ export default function App() {
       }
       layoutSettlingRef.current = false;
       simRef.current = null;
-      regionRef.current = layoutEqualSizeGrid(nodes, labelsRef.current, w, h, equalSizeGridFillDirection);
+      regionRef.current = layoutEqualSizeGrid(nodes, labelsRef.current, w, h);
       draw();
       tryStartNewStancesIntro();
       return () => {};
@@ -2185,8 +2180,7 @@ export default function App() {
       w,
       h,
       plebsMode,
-      equalAvatarSizeEnabled,
-      equalSizeGridFillDirection === "row"
+      equalAvatarSizeEnabled
     );
     const cachedPos = loadLayoutPositions(layoutSig);
     const restored = cachedPos ? applyLayoutPositions(nodes, cachedPos) : 0;
@@ -2259,7 +2253,7 @@ export default function App() {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, err, visibleAccounts.length, w, h, plebsMode, equalAvatarSizeEnabled, equalSizeGridFillDirection, stanceListsViewEnabled]);
+  }, [loading, err, visibleAccounts.length, w, h, plebsMode, equalAvatarSizeEnabled, stanceListsViewEnabled]);
 
   // On resize: recompute stance regions and update forces
   useEffect(() => {
@@ -2289,7 +2283,7 @@ export default function App() {
     // column when a stance changes (no force sim involved).
     if (equalAvatarSizeEnabled) {
       if (nodes && nodes.length > 0) {
-        regionRef.current = layoutEqualSizeGrid(nodes, labels, w, h, equalSizeGridFillDirection);
+        regionRef.current = layoutEqualSizeGrid(nodes, labels, w, h);
       }
       draw();
       return;
@@ -4339,9 +4333,8 @@ export default function App() {
           <div>Within each stance: avatar + @username, multi-column grid, followers (highest first).</div>
         ) : equalAvatarSizeEnabled ? (
           <div>
-            {isPrivilegedEditor
-              ? "Equal-size grid preview: within each stance, highest followers fill left-to-right, then down."
-              : "Equal-size avatars packed to fill the screen; each stance column's width reflects its number of users."}
+            Equal-size avatars packed to fill the screen; within each stance, highest followers fill
+            left-to-right, then down.
           </div>
         ) : (
           <div>Size of avatars is proportional to number of followers.</div>

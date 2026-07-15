@@ -6,6 +6,9 @@ export const STANCE = {
 
 export type EqualSizeGridFillDirection = "column" | "row";
 
+/** Default fill order for equal-size grids: highest followers left-to-right, then down. */
+export const EQUAL_SIZE_GRID_FILL_DIRECTION: EqualSizeGridFillDirection = "row";
+
 export type EqualSizeGridNode = {
   handle?: string;
   seedStance?: string;
@@ -53,7 +56,7 @@ export function layoutEqualSizeGrid(
   labelsMap: Record<string, string>,
   w: number,
   h: number,
-  fillDirection: EqualSizeGridFillDirection = "column"
+  fillDirection: EqualSizeGridFillDirection = EQUAL_SIZE_GRID_FILL_DIRECTION
 ): EqualSizeGridRegion | null {
   if (!nodes || nodes.length === 0 || w < 10 || h < 10) return null;
   const order = [STANCE.AGAINST, STANCE.NEUTRAL, STANCE.APPROVE];

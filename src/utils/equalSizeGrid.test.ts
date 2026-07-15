@@ -12,6 +12,15 @@ function makeNodes(handles: string[], followers: number[]): EqualSizeGridNode[] 
   }));
 }
 
+test("row fill is the default sort direction", () => {
+  const nodes = makeNodes(["a", "b", "c", "d", "e", "f"], [600, 500, 400, 300, 200, 100]);
+  const labels = Object.fromEntries(nodes.map((n) => [n.handle!, STANCE.AGAINST]));
+  layoutEqualSizeGrid(nodes, labels, 400, 200);
+  const byHandle = Object.fromEntries(nodes.map((n) => [n.handle!, n]));
+  assert.ok(byHandle.a!.x < byHandle.b!.x);
+  assert.ok(Math.abs(byHandle.a!.y - byHandle.b!.y) < 0.01);
+});
+
 test("column fill places highest followers down the first column", () => {
   const nodes = makeNodes(["a", "b", "c", "d", "e", "f"], [600, 500, 400, 300, 200, 100]);
   const labels = Object.fromEntries(nodes.map((n) => [n.handle!, STANCE.AGAINST]));
