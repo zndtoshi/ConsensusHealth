@@ -381,10 +381,6 @@ export function StatisticsCards({
             <PanelRow
               left={<span style={overviewLabelStyle}>Stance changes (last 7 days)</span>}
               right={formatInt(data.totalStanceChangesLast7Days)}
-            />
-            <PanelRow
-              left={<span style={overviewLabelStyle}>Top flows (last 7 days)</span>}
-              right={data.topFlowsLast7Days.length ? formatInt(data.topFlowsLast7Days.length) : "None"}
               last
             />
           </Panel>
