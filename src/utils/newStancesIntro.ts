@@ -252,8 +252,8 @@ export type StagingLayout = {
   stagingSidePx: number;
 };
 
-/** Matches `.newStancesHeading { top: 14px }` in index.css. */
-export const INTRO_HEADING_TOP_PX = 14;
+/** Matches `.newStancesHeading { top: 24px }` in index.css (nudged ~10px lower). */
+export const INTRO_HEADING_TOP_PX = 24;
 /** Single-line heading (~14px font). */
 export const INTRO_HEADING_HEIGHT_PX = 20;
 /** Space between heading baseline block and avatar row tops. */
@@ -262,14 +262,15 @@ export const INTRO_HEADING_GAP_PX = 18;
 export const INTRO_PANEL_PAD_X = 16;
 export const INTRO_PANEL_PAD_TOP = 10;
 export const INTRO_PANEL_PAD_BOTTOM = 14;
-export const INTRO_PANEL_MAX_WIDTH_PX = 760;
-export const INTRO_PANEL_RADIUS_PX = 18;
+/** Narrower cap so the panel reads as a floating notification, not a full-width bar. */
+export const INTRO_PANEL_MAX_WIDTH_PX = 660;
+export const INTRO_PANEL_RADIUS_PX = 22;
 export const INTRO_COUNTDOWN_HEIGHT_PX = 10;
 /** Matches `.newStancesHeading` (14px semibold + 16px side padding). */
 export const INTRO_HEADING_FONT_PX = 14;
 export const INTRO_HEADING_TEXT_PAD_X_PX = 32;
-/** Horizontal gap between staged avatars. */
-export const STAGING_AVATAR_GAP_PX = 10;
+/** Horizontal gap between staged avatars (a touch more breathing room). */
+export const STAGING_AVATAR_GAP_PX = 16;
 /** Staged avatar size bounds (~12% larger than prior 54px cap). */
 export const STAGING_MAX_SIDE_PX = 60;
 export const STAGING_MIN_SIDE_PX = 42;
@@ -495,32 +496,49 @@ export function headingOpacityForPhase(
   if (phase === "fade-in") return easeIntroEntrance(elapsedMs / INTRO_TIMING.fadeInMs);
   if (phase === "hold") return 1;
   if (phase === "flying") {
-    const panel = stagingPanelOpacityForPhase(phase, elapsedMs, itemCount, reducedMotion);
-    return panel > 0 ? panel / 0.94 : 0;
-  }
-  return 0;
-}
-
-/** Panel stays solid through the staging hold, then fades out as avatars fly away. */
-export function stagingPanelOpacityForPhase(
-  phase: IntroPhase,
-  elapsedMs: number,
-  itemCount: number,
-  reducedMotion: boolean
-): number {
-  const maxAlpha = 0.94;
-  if (phase === "idle" || phase === "done") return 0;
-  if (phase === "fade-in") return easeInOutCubic(elapsedMs / INTRO_TIMING.fadeInMs) * maxAlpha;
-  if (phase === "hold") return maxAlpha;
-  if (phase === "flying") {
+    // Title fades out first — quickly, independent of the slower panel exit.
     const flightElapsed = Math.max(0, elapsedMs - INTRO_TIMING.holdMs);
     const fadeMs = reducedMotion
       ? INTRO_TIMING.reducedCrossfadeMs
       : INTRO_TIMING.headingFadeOutMs;
     const t = Math.min(1, flightElapsed / Math.max(1, fadeMs));
-    return maxAlpha * (1 - easeIntroFlight(t));
+    return 1 - easeIntroFlight(t);
   }
   return 0;
+}
+
+/**
+ * Panel background opacity while it is JS-driven (fade-in + hold). During the
+ * flight the panel exit is handled by a single GPU-composited CSS opacity
+ * transition (see `panelFlightExitDurationMs`), so this returns the full alpha
+ * for the flying phase — the panel stays until the last avatar lands.
+ */
+export function stagingPanelOpacityForPhase(
+  phase: IntroPhase,
+  elapsedMs: number,
+  _itemCount: number,
+  _reducedMotion: boolean
+): number {
+  const maxAlpha = 0.94;
+  if (phase === "idle" || phase === "done") return 0;
+  if (phase === "fade-in") return easeInOutCubic(elapsedMs / INTRO_TIMING.fadeInMs) * maxAlpha;
+  if (phase === "hold") return maxAlpha;
+  if (phase === "flying") return maxAlpha;
+  return 0;
+}
+
+/**
+ * Duration of the panel's flight exit fade. It spans the full arrival flight so
+ * the glass card only fully disappears once the final avatar has landed
+ * (last flightEnd = holdMs + (n-1)*stagger + flightMs, measured from intro start).
+ */
+export function panelFlightExitDurationMs(
+  itemCount: number,
+  reducedMotion = false
+): number {
+  if (reducedMotion) return INTRO_TIMING.reducedCrossfadeMs;
+  const n = Math.max(1, itemCount);
+  return (n - 1) * INTRO_TIMING.flightStaggerMs + INTRO_TIMING.flightMs;
 }
 
 export function itemOpacityForPhase(
