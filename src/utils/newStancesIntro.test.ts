@@ -14,6 +14,7 @@ import {
   introAvatarAriaLabel,
   introAvatarEntrance,
   introCountdownDotOpacity,
+  introHeadingMinContentWidthPx,
   introStanceAura,
   stagingPanelOpacityForPhase,
   INTRO_MAX_USERS,
@@ -350,6 +351,24 @@ test("computeStagingPanelBounds wraps heading and avatar row", () => {
   assert.ok(panel.h > 70);
   assert.ok(panel.x > 0);
   assert.ok(panel.x + panel.w < view.cw);
+});
+
+test("single-avatar panel is wide enough for the heading text", () => {
+  const view = {
+    cw: 900,
+    ch: 600,
+    headerHeight: 56,
+    scale: 1,
+    tx: 0,
+    ty: 0,
+    stanceCenterX: { against: 200, neutral: 450, approve: 700 },
+  };
+  const stagingSidePx = 60;
+  const panel = computeStagingPanelBounds(1, stagingSidePx, view);
+  const minInner = introHeadingMinContentWidthPx();
+  assert.ok(panel.w >= minInner + 32);
+  assert.ok(Math.abs(panel.x + panel.w / 2 - view.cw / 2) < 1);
+  assert.ok(stagingSidePx + 32 < panel.w);
 });
 
 test("flight interpolates avatar size and fades handle label", () => {

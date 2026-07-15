@@ -1,5 +1,5 @@
 import type { NewStanceEvent } from "../api/newStances.js";
-import { NEW_STANCES_PUBLIC_ENABLED } from "../config/newStances.js";
+import { NEW_STANCES_HEADING, NEW_STANCES_PUBLIC_ENABLED } from "../config/newStances.js";
 import { STANCE_COLORS } from "./stanceColors.js";
 
 export const LAST_SEEN_MARKER_KEY = "consensus_health_last_seen_stance_event_v2";
@@ -265,12 +265,25 @@ export const INTRO_PANEL_PAD_BOTTOM = 14;
 export const INTRO_PANEL_MAX_WIDTH_PX = 760;
 export const INTRO_PANEL_RADIUS_PX = 18;
 export const INTRO_COUNTDOWN_HEIGHT_PX = 10;
+/** Matches `.newStancesHeading` (14px semibold + 16px side padding). */
+export const INTRO_HEADING_FONT_PX = 14;
+export const INTRO_HEADING_TEXT_PAD_X_PX = 32;
 /** Horizontal gap between staged avatars. */
 export const STAGING_AVATAR_GAP_PX = 10;
 /** Staged avatar size bounds (~12% larger than prior 54px cap). */
 export const STAGING_MAX_SIDE_PX = 60;
 export const STAGING_MIN_SIDE_PX = 42;
 export const STAGING_ROW_PAD_X = 32;
+
+/** Minimum inner panel width so the heading fits on one line. */
+export function introHeadingMinContentWidthPx(heading = NEW_STANCES_HEADING): number {
+  let textW = INTRO_HEADING_TEXT_PAD_X_PX;
+  for (const ch of heading) {
+    const em = ch === " " ? 0.33 : 0.58;
+    textW += INTRO_HEADING_FONT_PX * em + INTRO_HEADING_FONT_PX * 0.02;
+  }
+  return Math.ceil(textW);
+}
 
 /** Raise the intro band into the lower half of the app header (canvas coords). */
 export function computeIntroBandLiftPx(headerHeight: number): number {
@@ -335,11 +348,14 @@ export function computeStagingPanelBounds(
 ): StagingPanelBounds {
   const gap = STAGING_AVATAR_GAP_PX;
   const totalW = count * stagingSidePx + Math.max(0, count - 1) * gap;
-  const rowStartX = (view.cw - totalW) / 2;
   const avatarTopY = INTRO_HEADING_TOP_PX + INTRO_HEADING_HEIGHT_PX + INTRO_HEADING_GAP_PX;
-  const x = Math.max(8, rowStartX - INTRO_PANEL_PAD_X);
+  const contentW = Math.max(totalW, introHeadingMinContentWidthPx());
+  const w = Math.min(
+    view.cw - 16,
+    Math.min(INTRO_PANEL_MAX_WIDTH_PX, contentW + INTRO_PANEL_PAD_X * 2)
+  );
+  const x = Math.max(8, (view.cw - w) / 2);
   const y = INTRO_HEADING_TOP_PX - INTRO_PANEL_PAD_TOP;
-  const w = Math.min(view.cw - 16, Math.min(INTRO_PANEL_MAX_WIDTH_PX, totalW + INTRO_PANEL_PAD_X * 2));
   const h =
     avatarTopY -
     y +
