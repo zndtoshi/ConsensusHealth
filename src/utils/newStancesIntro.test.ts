@@ -18,6 +18,8 @@ import {
   introStanceAura,
   stagingPanelOpacityForPhase,
   INTRO_MAX_USERS,
+  INTRO_FLIGHT_DURATION_MS,
+  INTRO_FLIGHT_STAGGER_MS,
   INTRO_TIMING,
   INTRO_HEADING_GAP_PX,
   INTRO_HEADING_HEIGHT_PX,
@@ -279,6 +281,14 @@ test("intro aria labels preserve accessible names without visible handles", () =
   assert.match(introAvatarAriaLabel("alice", "approve"), /@alice, stance Approve/);
 });
 
+test("arrival flight timing is tunable from shared constants", () => {
+  assert.equal(INTRO_FLIGHT_DURATION_MS, 3400);
+  assert.equal(INTRO_FLIGHT_STAGGER_MS, 120);
+  assert.equal(INTRO_TIMING.flightMs, INTRO_FLIGHT_DURATION_MS);
+  assert.equal(INTRO_TIMING.flightStaggerMs, INTRO_FLIGHT_STAGGER_MS);
+  assert.equal(INTRO_TIMING.holdMs, 3000);
+});
+
 test("countdown dots appear only near end of hold", () => {
   assert.equal(introCountdownDotOpacity(0, "hold", 1000, false), 0);
   assert.ok(introCountdownDotOpacity(0, "hold", 2500, false) > 0.1);
@@ -286,7 +296,12 @@ test("countdown dots appear only near end of hold", () => {
 });
 
 test("panel fades quickly when flight begins", () => {
-  const atFlight = stagingPanelOpacityForPhase("flying", INTRO_TIMING.holdMs + 220, 9, false);
+  const atFlight = stagingPanelOpacityForPhase(
+    "flying",
+    INTRO_TIMING.holdMs + INTRO_TIMING.panelFlightFadeMs,
+    9,
+    false
+  );
   assert.ok(atFlight < 0.2);
 });
 

@@ -366,19 +366,27 @@ export function computeStagingPanelBounds(
   return { x, y, w, h, r: INTRO_PANEL_RADIUS_PX };
 }
 
+/** Primary knob for arrival flight duration — increase to slow, decrease to speed up. */
+export const INTRO_FLIGHT_DURATION_MS = 3400;
+/** Per-avatar delay between flight launches during the arrival phase. */
+export const INTRO_FLIGHT_STAGGER_MS = 120;
+
+/** Heading + glass panel fade once flight begins (kept short vs. flight duration). */
+const INTRO_HEADING_FLIGHT_FADE_MS = 420;
+
 export const INTRO_TIMING = {
   /** Panel + avatar entrance (fade/scale stagger). */
   fadeInMs: 300,
   entranceStaggerMs: 35,
   /** Time from intro start until the first avatar flies (includes fade-in). */
   holdMs: 3000,
-  headingFadeOutMs: 500,
+  headingFadeOutMs: INTRO_HEADING_FLIGHT_FADE_MS,
   /** Heading fades only once flight begins, not before the hold ends. */
   headingFadeOutStartMs: 3000,
-  /** Glass panel fades out quickly once flight begins. */
-  panelFlightFadeMs: 220,
-  flightMs: 2200,
-  flightStaggerMs: 70,
+  /** Glass panel fades out with the heading as avatars launch. */
+  panelFlightFadeMs: INTRO_HEADING_FLIGHT_FADE_MS,
+  flightMs: INTRO_FLIGHT_DURATION_MS,
+  flightStaggerMs: INTRO_FLIGHT_STAGGER_MS,
   reducedCrossfadeMs: 400,
 };
 
@@ -386,6 +394,12 @@ export const INTRO_TIMING = {
 export function easeIntroEntrance(t: number): number {
   const x = Math.max(0, Math.min(1, t));
   return 1 - (1 - x) ** 3;
+}
+
+/** Smooth ease-in-out quart — premium arrival curve with no bounce or overshoot. */
+export function easeIntroFlight(t: number): number {
+  const x = Math.max(0, Math.min(1, t));
+  return x < 0.5 ? 8 * x ** 4 : 1 - (-2 * x + 2) ** 4 / 2;
 }
 
 export function introAvatarEntrance(
@@ -500,9 +514,11 @@ export function stagingPanelOpacityForPhase(
   if (phase === "hold") return maxAlpha;
   if (phase === "flying") {
     const flightElapsed = Math.max(0, elapsedMs - INTRO_TIMING.holdMs);
-    const fadeMs = reducedMotion ? INTRO_TIMING.reducedCrossfadeMs : INTRO_TIMING.panelFlightFadeMs;
+    const fadeMs = reducedMotion
+      ? INTRO_TIMING.reducedCrossfadeMs
+      : INTRO_TIMING.headingFadeOutMs;
     const t = Math.min(1, flightElapsed / Math.max(1, fadeMs));
-    return maxAlpha * (1 - easeInOutCubic(t));
+    return maxAlpha * (1 - easeIntroFlight(t));
   }
   return 0;
 }
@@ -548,7 +564,7 @@ export function computeFlightScreenPos(
   }
 
   const tRaw = (now - item.flightStart) / Math.max(1, item.flightEnd - item.flightStart);
-  const t = easeInOutCubic(tRaw);
+  const t = easeIntroFlight(tRaw);
   const sidePx = stagingSidePx + (finalSidePx - stagingSidePx) * t;
   const labelOpacity = 0;
   if (reducedMotion) {
