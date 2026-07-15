@@ -856,6 +856,10 @@ export default function App() {
   const statsFetchStartedAtRef = useRef(0);
   const [showDonateModal, setShowDonateModal] = useState(false);
   const [adminOptionsOpen, setAdminOptionsOpen] = useState(false);
+  // Transient "just selected" marker (ui stance key) that drives the stance
+  // segmented control's brief pop animation; cleared shortly after selection.
+  const [stancePop, setStancePop] = useState(null);
+  const stancePopTimerRef = useRef(0);
   /** Three scrollable stance columns (avatars + names) instead of force graph; mutually exclusive with Plebs / equal size / manual edit. */
   const [stanceListsViewEnabled, setStanceListsViewEnabled] = useState(false);
   const [plebsMode, setPlebsMode] = useState(false);
@@ -1031,6 +1035,19 @@ export default function App() {
       setAuthBusy(false);
     }
   }
+
+  // Wrapper for the toolbar stance buttons: triggers the brief selection pop
+  // (CSS-gated by prefers-reduced-motion) and then applies the stance.
+  function selectStance(uiStance, apiStance) {
+    setStancePop(uiStance);
+    if (stancePopTimerRef.current) clearTimeout(stancePopTimerRef.current);
+    stancePopTimerRef.current = setTimeout(() => setStancePop(null), 240);
+    setMyStance(apiStance);
+  }
+
+  useEffect(() => () => {
+    if (stancePopTimerRef.current) clearTimeout(stancePopTimerRef.current);
+  }, []);
 
   async function setEqualAvatarSizePreference(nextValue) {
     setEqualAvatarSizeEnabled(Boolean(nextValue));
@@ -3070,13 +3087,16 @@ export default function App() {
           )}
         </div>
         <div style={styles.controls}>
+          <div style={styles.accountBar}>
           <div ref={adminOptionsRef} style={styles.optionsWrap}>
             <button
               type="button"
-              style={styles.btn}
+              className="toolbarBtn"
               onClick={() => setAdminOptionsOpen((v) => !v)}
               disabled={Boolean(me?.authenticated) && authBusy}
               title="Options"
+              aria-haspopup="menu"
+              aria-expanded={adminOptionsOpen}
             >
               Options
             </button>
@@ -3146,24 +3166,55 @@ export default function App() {
                   <span>Influencers (&gt;3k followers)</span>
                   <span style={styles.optionsState}>{influencersMode ? "ON" : "OFF"}</span>
                 </label>
+                {me?.authenticated && (
+                  <>
+                    <div style={styles.optionsDivider} role="separator" />
+                    <button
+                      type="button"
+                      className="optionsMenuAction"
+                      onClick={() => {
+                        setAdminOptionsOpen(false);
+                        logout();
+                      }}
+                      disabled={authBusy}
+                      title="Log out"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true" style={styles.logoutIcon}>
+                        <path
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M15 12H4m0 0 4-4m-4 4 4 4M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"
+                        />
+                      </svg>
+                      <span>Log out</span>
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
           {!me?.authenticated ? (
-            <button type="button" style={styles.btn} onClick={beginLogin}>
-              <span style={styles.btnInline}>
-                <span>Login with</span>
-                <svg viewBox="0 0 24 24" aria-hidden="true" style={styles.xLogoIcon}>
-                  <path
-                    fill="currentColor"
-                    d="M18.244 2h3.308l-7.227 8.26L22.82 22h-6.648l-5.204-6.807L4.99 22H1.68l7.73-8.835L1 2h6.816l4.704 6.231L18.244 2Zm-1.16 18h1.833L6.82 3.894H4.853L17.084 20Z"
-                  />
-                </svg>
-              </span>
-            </button>
+            <>
+              <div style={styles.barDivider} aria-hidden="true" />
+              <button type="button" className="toolbarBtn toolbarBtn--primary" onClick={beginLogin}>
+                <span style={styles.btnInline}>
+                  <span>Login with</span>
+                  <svg viewBox="0 0 24 24" aria-hidden="true" style={styles.xLogoIcon}>
+                    <path
+                      fill="currentColor"
+                      d="M18.244 2h3.308l-7.227 8.26L22.82 22h-6.648l-5.204-6.807L4.99 22H1.68l7.73-8.835L1 2h6.816l4.704 6.231L18.244 2Zm-1.16 18h1.833L6.82 3.894H4.853L17.084 20Z"
+                    />
+                  </svg>
+                </span>
+              </button>
+            </>
           ) : (
             <>
-              <div style={styles.userChip}>
+              <div style={styles.barDivider} aria-hidden="true" />
+              <div style={styles.profileGroup}>
                 <img
                   src={meChipAvatarSrc}
                   alt={`@${me.handle}`}
@@ -3186,50 +3237,44 @@ export default function App() {
                   }}
                   style={styles.userChipAvatar}
                 />
-                <span style={styles.stanceLabel}>@{me.handle}</span>
+                <span style={styles.profileHandle}>@{me.handle}</span>
               </div>
-              <button
-                className={`stanceGlow stance-red ${meStance === "against" ? "aura aura-red" : ""}`}
-                style={{
-                  ...styles.pill,
-                  borderColor: "rgba(220,38,38,0.55)",
-                  opacity: meStance === "against" ? 1 : 0.72,
-                  ...(meStance === "against" ? pillActiveStyle("against") : null),
-                }}
-                onClick={() => setMyStance("against")}
-                disabled={authBusy}
-              >
-                Against
-              </button>
-              <button
-                className={`stanceGlow stance-gray ${meStance === "neutral" ? "aura aura-gray" : ""}`}
-                style={{
-                  ...styles.pill,
-                  borderColor: "rgba(156,163,175,0.65)",
-                  opacity: meStance === "neutral" ? 1 : 0.72,
-                  ...(meStance === "neutral" ? pillActiveStyle("neutral") : null),
-                }}
-                onClick={() => setMyStance("neutral")}
-                disabled={authBusy}
-              >
-                Neutral
-              </button>
-              <button
-                className={`stanceGlow stance-green ${meStance === "approve" ? "aura aura-green" : ""}`}
-                style={{
-                  ...styles.pill,
-                  borderColor: "rgba(34,197,94,0.55)",
-                  opacity: meStance === "approve" ? 1 : 0.72,
-                  ...(meStance === "approve" ? pillActiveStyle("support") : null),
-                }}
-                onClick={() => setMyStance("support")}
-                disabled={authBusy}
-              >
-                Approve
-              </button>
-              <button style={styles.btn} onClick={logout} disabled={authBusy}>Logout</button>
+              <div style={styles.barDivider} aria-hidden="true" />
+              <div style={styles.stanceSegment} role="group" aria-label="Set your stance">
+                <button
+                  type="button"
+                  className={`stanceSeg stanceSeg--red ${meStance === "against" ? "is-active" : ""} ${stancePop === "against" ? "just-selected" : ""}`}
+                  onClick={() => selectStance("against", "against")}
+                  disabled={authBusy}
+                  aria-pressed={meStance === "against"}
+                  title="Against"
+                >
+                  Against
+                </button>
+                <button
+                  type="button"
+                  className={`stanceSeg stanceSeg--gray ${meStance === "neutral" ? "is-active" : ""} ${stancePop === "neutral" ? "just-selected" : ""}`}
+                  onClick={() => selectStance("neutral", "neutral")}
+                  disabled={authBusy}
+                  aria-pressed={meStance === "neutral"}
+                  title="Neutral"
+                >
+                  Neutral
+                </button>
+                <button
+                  type="button"
+                  className={`stanceSeg stanceSeg--green ${meStance === "approve" ? "is-active" : ""} ${stancePop === "approve" ? "just-selected" : ""}`}
+                  onClick={() => selectStance("approve", "support")}
+                  disabled={authBusy}
+                  aria-pressed={meStance === "approve"}
+                  title="Approve"
+                >
+                  Approve
+                </button>
+              </div>
             </>
           )}
+          </div>
         </div>
       </div>
 
@@ -3636,6 +3681,63 @@ const styles = {
     gap: 8,
     alignItems: "center",
     flexWrap: "wrap",
+    justifyContent: "flex-end",
+    maxWidth: "calc(100vw - 32px)",
+  },
+  // One cohesive floating toolbar surface that groups all account controls.
+  accountBar: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 4,
+    padding: 4,
+    borderRadius: 12,
+    border: "1px solid rgba(255,255,255,0.1)",
+    background: "rgba(17,24,39,0.72)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
+    boxShadow: "0 6px 20px rgba(0,0,0,0.35)",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    maxWidth: "calc(100vw - 32px)",
+  },
+  // Subtle vertical separator between toolbar groups.
+  barDivider: {
+    width: 1,
+    alignSelf: "stretch",
+    minHeight: 22,
+    margin: "2px 4px",
+    background: "rgba(255,255,255,0.08)",
+  },
+  // Profile group: avatar + handle, no heavy outline of its own.
+  profileGroup: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "0 6px",
+  },
+  profileHandle: {
+    fontSize: 12,
+    fontWeight: 700,
+    color: "#f1f5f9",
+    whiteSpace: "nowrap",
+    maxWidth: 140,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  // Segmented stance control track (three equal-width cells).
+  stanceSegment: {
+    display: "inline-grid",
+    gridTemplateColumns: "repeat(3, 1fr)",
+    gap: 3,
+    padding: 3,
+    borderRadius: 10,
+    background: "rgba(0,0,0,0.28)",
+    border: "1px solid rgba(255,255,255,0.06)",
+  },
+  optionsDivider: {
+    height: 1,
+    margin: "4px 2px",
+    background: "rgba(255,255,255,0.08)",
   },
   search: {
     width: 260,
@@ -3709,6 +3811,13 @@ const styles = {
     width: 12,
     height: 12,
     display: "inline-block",
+  },
+  logoutIcon: {
+    width: 15,
+    height: 15,
+    display: "inline-block",
+    flexShrink: 0,
+    opacity: 0.85,
   },
   main: {
     flex: 1,
