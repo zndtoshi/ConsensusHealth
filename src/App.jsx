@@ -2637,11 +2637,7 @@ export default function App() {
     const reducedMotion = prefersReducedMotion();
     intro.active = true;
     intro.startedAt = performance.now();
-    const flightBase =
-      intro.startedAt +
-      (reducedMotion
-        ? INTRO_TIMING.fadeInMs + INTRO_TIMING.reducedHoldMs
-        : INTRO_TIMING.holdMs);
+    const flightBase = intro.startedAt + INTRO_TIMING.holdMs;
     const scheduled = scheduleFlightTimes(items, flightBase, reducedMotion);
 
     intro.items = scheduled;

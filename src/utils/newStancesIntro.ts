@@ -308,14 +308,13 @@ export function computeStagingPanelBounds(
 
 export const INTRO_TIMING = {
   fadeInMs: 400,
-  /** Full staging hold before any avatar flies (must stay 6s). */
-  holdMs: 6000,
+  /** Time from intro start until the first avatar flies (includes fade-in). */
+  holdMs: 4000,
   headingFadeOutMs: 500,
-  /** Heading fades only once flight begins, not before the 6s hold ends. */
-  headingFadeOutStartMs: 6000,
+  /** Heading fades only once flight begins, not before the hold ends. */
+  headingFadeOutStartMs: 4000,
   flightMs: 1100,
   flightStaggerMs: 70,
-  reducedHoldMs: 1200,
   reducedCrossfadeMs: 400,
 };
 
@@ -335,15 +334,12 @@ export function resetIntroSessionLockForTests(): void {
 export type IntroPhase = "idle" | "fade-in" | "hold" | "flying" | "done";
 
 export function getIntroPhase(elapsedMs: number, reducedMotion: boolean): IntroPhase {
-  if (reducedMotion) {
-    if (elapsedMs < INTRO_TIMING.fadeInMs) return "fade-in";
-    if (elapsedMs < INTRO_TIMING.fadeInMs + INTRO_TIMING.reducedHoldMs) return "hold";
-    if (elapsedMs < INTRO_TIMING.fadeInMs + INTRO_TIMING.reducedHoldMs + INTRO_TIMING.reducedCrossfadeMs) return "flying";
-    return "done";
-  }
   if (elapsedMs < INTRO_TIMING.fadeInMs) return "fade-in";
   if (elapsedMs < INTRO_TIMING.holdMs) return "hold";
-  if (elapsedMs < INTRO_TIMING.holdMs + INTRO_TIMING.flightMs + INTRO_TIMING.flightStaggerMs * INTRO_MAX_USERS) return "flying";
+  const flightSpan = reducedMotion
+    ? INTRO_TIMING.reducedCrossfadeMs
+    : INTRO_TIMING.flightMs + INTRO_TIMING.flightStaggerMs * INTRO_MAX_USERS;
+  if (elapsedMs < INTRO_TIMING.holdMs + flightSpan) return "flying";
   return "done";
 }
 
@@ -363,7 +359,7 @@ export function headingOpacityForPhase(
   return 0;
 }
 
-/** Panel stays solid through the 6s hold, then fades out as avatars fly away. */
+/** Panel stays solid through the staging hold, then fades out as avatars fly away. */
 export function stagingPanelOpacityForPhase(
   phase: IntroPhase,
   elapsedMs: number,
@@ -375,10 +371,7 @@ export function stagingPanelOpacityForPhase(
   if (phase === "fade-in") return easeInOutCubic(elapsedMs / INTRO_TIMING.fadeInMs) * maxAlpha;
   if (phase === "hold") return maxAlpha;
   if (phase === "flying") {
-    const holdEnd = reducedMotion
-      ? INTRO_TIMING.fadeInMs + INTRO_TIMING.reducedHoldMs
-      : INTRO_TIMING.holdMs;
-    const flightElapsed = Math.max(0, elapsedMs - holdEnd);
+    const flightElapsed = Math.max(0, elapsedMs - INTRO_TIMING.holdMs);
     const flightSpan = reducedMotion
       ? INTRO_TIMING.reducedCrossfadeMs
       : INTRO_TIMING.flightMs + INTRO_TIMING.flightStaggerMs * Math.max(0, itemCount - 1);
