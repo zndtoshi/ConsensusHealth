@@ -226,6 +226,11 @@ export const INTRO_HEADING_TOP_PX = 4;
 export const INTRO_HEADING_HEIGHT_PX = 20;
 export const INTRO_HEADING_GAP_PX = 6;
 export const INTRO_LABEL_GAP_PX = 4;
+
+/** Raise the intro band into the lower half of the app header (canvas coords). */
+export function computeIntroBandLiftPx(headerHeight: number): number {
+  return Math.round(Math.max(0, headerHeight) / 2);
+}
 /** Horizontal gap between staged avatars. */
 export const STAGING_AVATAR_GAP_PX = 8;
 /** Keep the staging band compact so it stays above the graph clusters. */

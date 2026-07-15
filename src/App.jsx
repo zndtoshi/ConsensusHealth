@@ -19,6 +19,7 @@ import {
   lockIntroSession,
   clearPlayingSession,
   computeFlightScreenPos,
+  computeIntroBandLiftPx,
   computeStagingLayouts,
   computeStagingPanelBounds,
   easeInOutCubic,
@@ -942,11 +943,30 @@ export default function App() {
     phase: "idle",
   });
   const meRef = useRef(null);
-  const [newStancesUi, setNewStancesUi] = useState({ headingOpacity: 0, debug: false });
+  const [newStancesUi, setNewStancesUi] = useState({ headingOpacity: 0, debug: false, bandActive: false });
+  const headerRef = useRef(null);
+  const [headerHeightPx, setHeaderHeightPx] = useState(56);
 
   useEffect(() => {
     meRef.current = me;
   }, [me]);
+
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const next = Math.max(1, Math.round(el.getBoundingClientRect().height));
+      setHeaderHeightPx((prev) => (prev === next ? prev : next));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [loading, err]);
 
   useEffect(() => {
     try {
@@ -2314,7 +2334,7 @@ export default function App() {
     refreshIntroStagingPositions();
     if (newStancesIntroRef.current.active) scheduleDraw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [w, h]);
+  }, [w, h, headerHeightPx]);
 
   useEffect(() => {
     draw();
@@ -2463,7 +2483,7 @@ export default function App() {
     return {
       cw: Math.max(1, w),
       ch: Math.max(1, h),
-      headerHeight: 56,
+      headerHeight: headerHeightPx,
       scale: view?.scale ?? fit?.scale ?? 1,
       tx: view?.tx ?? fit?.tx ?? 0,
       ty: view?.ty ?? fit?.ty ?? 0,
@@ -2512,7 +2532,7 @@ export default function App() {
       const marker = pickNewestMarker(markerEvents);
       if (marker) writeLastSeenMarker(localStorage, marker);
     }
-    setNewStancesUi({ headingOpacity: 0, debug: false });
+    setNewStancesUi({ headingOpacity: 0, debug: false, bandActive: false });
     scheduleDraw();
   }
 
@@ -2529,7 +2549,9 @@ export default function App() {
       intro.items.length
     );
     setNewStancesUi((prev) =>
-      prev.headingOpacity === headingOpacity ? prev : { ...prev, headingOpacity }
+      prev.headingOpacity === headingOpacity
+        ? prev
+        : { ...prev, headingOpacity }
     );
 
     for (const item of intro.items) {
@@ -2657,7 +2679,7 @@ export default function App() {
       });
     }
 
-    setNewStancesUi({ headingOpacity: 0, debug: debug.enabled });
+    setNewStancesUi({ headingOpacity: 0, debug: debug.enabled, bandActive: true });
     if (intro.rafId) cancelAnimationFrame(intro.rafId);
     intro.rafId = requestAnimationFrame(newStancesIntroTick);
     scheduleDraw();
@@ -3407,7 +3429,7 @@ export default function App() {
 
   return (
     <div style={styles.page}>
-      <div style={styles.header}>
+      <div ref={headerRef} style={styles.header}>
         <div style={styles.headerLeft}>
           <div style={styles.brandWrap}>
             <div style={styles.title}>Consensus Health</div>
@@ -3690,11 +3712,22 @@ export default function App() {
         </div>
       </div>
 
-      <div style={styles.main}>
+      <div
+        style={{
+          ...styles.main,
+          ...(newStancesUi.bandActive
+            ? {
+                marginTop: -computeIntroBandLiftPx(headerHeightPx),
+                position: "relative",
+                zIndex: 12,
+              }
+            : null),
+        }}
+      >
         <div ref={containerRef} style={styles.canvasWrap}>
           {!stanceListsViewEnabled ? (
             <>
-              {(newStancesUi.headingOpacity > 0.01 || newStancesIntroRef.current.active) && (
+              {(newStancesUi.headingOpacity > 0.01 || newStancesUi.bandActive) && (
                 <div
                   className="newStancesHeading"
                   style={{ opacity: newStancesUi.headingOpacity }}
@@ -3983,9 +4016,11 @@ const styles = {
     fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial",
     background: "radial-gradient(ellipse 120% 100% at 50% 0%, #0f172a 0%, #020617 50%, #000 100%)",
     color: "#e2e8f0",
+    overflow: "hidden",
   },
   header: {
     position: "relative",
+    zIndex: 11,
     padding: "10px 16px",
     display: "flex",
     alignItems: "center",

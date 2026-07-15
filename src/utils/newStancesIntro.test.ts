@@ -5,6 +5,7 @@ import { NEW_STANCES_PUBLIC_ENABLED } from "../config/newStances.js";
 import {
   LAST_SEEN_MARKER_KEY,
   computeFlightScreenPos,
+  computeIntroBandLiftPx,
   computeStagingLayouts,
   computeStagingPanelBounds,
   computeStagingSidePx,
@@ -159,6 +160,11 @@ test("write and read marker roundtrip", () => {
   const s = memStorage();
   writeLastSeenMarker(s, { eventId: 77, createdAt: "2026-07-15T12:00:00.000Z" });
   assert.deepEqual(readLastSeenMarker(s), { eventId: 77, createdAt: "2026-07-15T12:00:00.000Z" });
+});
+
+test("intro band lift reaches the header vertical midpoint", () => {
+  assert.equal(computeIntroBandLiftPx(56), 28);
+  assert.equal(computeIntroBandLiftPx(0), 0);
 });
 
 test("staging layouts use a tight centered row under the heading", () => {
