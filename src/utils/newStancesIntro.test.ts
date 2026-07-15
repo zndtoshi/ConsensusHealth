@@ -7,6 +7,7 @@ import {
   computeFlightScreenPos,
   computeStagingLayouts,
   computeStagingSidePx,
+  formatIntroHandleLabel,
   isIntroNodeHidden,
   matchEventsToIntroItems,
   normalizeIntroEvents,
@@ -155,7 +156,7 @@ test("write and read marker roundtrip", () => {
   assert.deepEqual(readLastSeenMarker(s), { eventId: 77, createdAt: "2026-07-15T12:00:00.000Z" });
 });
 
-test("staging layouts use equal size in a centered top row with wide slots", () => {
+test("staging layouts use a tight centered row under the heading", () => {
   const view = {
     cw: 900,
     ch: 600,
@@ -178,9 +179,14 @@ test("staging layouts use equal size in a centered top row with wide slots", () 
   const c = layouts.get("c")!;
   assert.equal(a.stagingSidePx, b.stagingSidePx);
   assert.equal(b.stagingSidePx, c.stagingSidePx);
-  assert.ok(b.sx - a.sx >= 70);
-  assert.ok(c.sx - b.sx >= 70);
-  assert.ok(Math.abs((a.sx + c.sx) / 2 - view.cw / 2) < 4);
+  assert.ok(b.sx - a.sx < 70);
+  assert.ok(Math.abs((a.sx + c.sx) / 2 - view.cw / 2) < 2);
+  assert.ok(a.sy < 70);
+});
+
+test("formatIntroHandleLabel truncates long handles", () => {
+  assert.equal(formatIntroHandleLabel("verylonghandle"), "@verylongh…");
+  assert.equal(formatIntroHandleLabel("bob"), "@bob");
 });
 
 test("flight interpolates avatar size and fades handle label", () => {

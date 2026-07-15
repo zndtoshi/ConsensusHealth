@@ -222,48 +222,39 @@ export type StagingLayout = {
   stagingSidePx: number;
 };
 
-export const INTRO_HEADING_TOP_PX = 12;
-export const INTRO_HEADING_HEIGHT_PX = 22;
-export const INTRO_HEADING_GAP_PX = 14;
-export const INTRO_LABEL_GAP_PX = 8;
+export const INTRO_HEADING_TOP_PX = 10;
+export const INTRO_HEADING_HEIGHT_PX = 20;
+export const INTRO_HEADING_GAP_PX = 8;
+export const INTRO_LABEL_GAP_PX = 4;
+/** Horizontal gap between staged avatars. */
+export const STAGING_AVATAR_GAP_PX = 8;
+/** Keep the staging band compact so it stays above the graph clusters. */
+export const STAGING_MAX_SIDE_PX = 54;
+export const STAGING_MIN_SIDE_PX = 38;
+export const STAGING_ROW_PAD_X = 40;
 
-/** Pick one equal staging avatar size; slots may be wider for @handle labels. */
-export function computeStagingSidePx(count: number, view: StagingView, maxLabelLen = 10): number {
-  if (count <= 0) return 64;
-  const padX = 24;
-  const minSlotGap = 22;
-  const labelCharPx = 7.2;
-  const availW = Math.max(100, view.cw - padX * 2);
-  const slotW = Math.max(64, maxLabelLen * labelCharPx + 12);
-  const totalW = count * slotW + Math.max(0, count - 1) * minSlotGap;
-  const fitScale = totalW > availW ? availW / totalW : 1;
-  const maxBySlot = (slotW - 12) * fitScale;
-  const maxByWidth =
-    ((availW - minSlotGap * Math.max(0, count - 1)) / Math.max(1, count) - 12) * fitScale;
-  return Math.max(44, Math.min(68, Math.min(maxBySlot, maxByWidth)));
+/** Shorten long handles so labels fit in tight slots without widening the row. */
+export function formatIntroHandleLabel(handle: unknown, maxLen = 11): string {
+  const h = normalizeHandle(handle);
+  if (!h) return "@user";
+  const label = `@${h}`;
+  if (label.length <= maxLen) return label;
+  return `${label.slice(0, Math.max(4, maxLen - 1))}…`;
 }
 
-export function computeStagingSlotWidth(
-  count: number,
-  view: StagingView,
-  maxLabelLen: number,
-  stagingSidePx: number
-): { slotW: number; gap: number } {
-  const padX = 24;
-  const minSlotGap = 22;
-  const labelCharPx = 7.2;
-  const availW = Math.max(100, view.cw - padX * 2);
-  let slotW = Math.max(stagingSidePx + 16, maxLabelLen * labelCharPx + 12);
-  let gap = minSlotGap;
-  const totalW = count * slotW + Math.max(0, count - 1) * gap;
-  if (totalW > availW && count > 0) {
-    slotW = (availW - gap * (count - 1)) / count;
-    gap = Math.max(10, gap * (availW / totalW));
-  }
-  return { slotW, gap };
+/** Pick one equal staging avatar size that fits a tight centered row without overlapping the graph. */
+export function computeStagingSidePx(count: number, view: StagingView): number {
+  if (count <= 0) return STAGING_MAX_SIDE_PX;
+  const availW = Math.max(120, view.cw - STAGING_ROW_PAD_X * 2);
+  const gap = STAGING_AVATAR_GAP_PX;
+  const byWidth = (availW - gap * Math.max(0, count - 1)) / Math.max(1, count);
+  return Math.max(
+    STAGING_MIN_SIDE_PX,
+    Math.min(STAGING_MAX_SIDE_PX, Math.floor(byWidth))
+  );
 }
 
-/** Compute centered top-middle staging positions under the heading (equal size for all). */
+/** Compute a tight, centered top row directly under the heading. */
 export function computeStagingLayouts(
   items: Array<{ xUserId: string; handle?: string }>,
   view: StagingView
@@ -272,22 +263,15 @@ export function computeStagingLayouts(
   const count = items.length;
   if (count === 0) return out;
 
-  const maxLabelLen = Math.max(
-    8,
-    ...items.map((it) => {
-      const h = normalizeHandle(it.handle);
-      return h ? `@${h}`.length : 8;
-    })
-  );
-  const stagingSidePx = computeStagingSidePx(count, view, maxLabelLen);
-  const { slotW, gap } = computeStagingSlotWidth(count, view, maxLabelLen, stagingSidePx);
-  const totalW = count * slotW + Math.max(0, count - 1) * gap;
+  const stagingSidePx = computeStagingSidePx(count, view);
+  const gap = STAGING_AVATAR_GAP_PX;
+  const totalW = count * stagingSidePx + Math.max(0, count - 1) * gap;
   const rowStartX = (view.cw - totalW) / 2;
   const avatarTopY = INTRO_HEADING_TOP_PX + INTRO_HEADING_HEIGHT_PX + INTRO_HEADING_GAP_PX;
   const avatarCenterY = avatarTopY + stagingSidePx / 2;
 
   items.forEach((item, i) => {
-    const sx = rowStartX + i * (slotW + gap) + slotW / 2;
+    const sx = rowStartX + i * (stagingSidePx + gap) + stagingSidePx / 2;
     out.set(item.xUserId, { sx, sy: avatarCenterY, stagingSidePx });
   });
   return out;

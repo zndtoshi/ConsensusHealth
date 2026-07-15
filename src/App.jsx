@@ -14,6 +14,7 @@ import {
 import { fetchNewStanceEvents } from "./api/newStances";
 import { NEW_STANCES_HEADING, NEW_STANCES_PUBLIC_ENABLED } from "./config/newStances";
 import {
+  formatIntroHandleLabel,
   INTRO_LABEL_GAP_PX,
   lockIntroSession,
   clearPlayingSession,
@@ -3055,7 +3056,7 @@ export default function App() {
           ctx.fillStyle = "rgba(255,255,255,0.94)";
           ctx.textAlign = "center";
           ctx.textBaseline = "top";
-          ctx.fillText(`@${item.handle}`, pos.sx, drawY + sidePx + INTRO_LABEL_GAP_PX);
+          ctx.fillText(formatIntroHandleLabel(item.handle), pos.sx, drawY + sidePx + INTRO_LABEL_GAP_PX);
         }
         ctx.restore();
       }
