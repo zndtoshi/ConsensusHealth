@@ -6,6 +6,7 @@ import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./util
 import { fetchCommunityUsers } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
 import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
+import { followersForAvatarSize } from "./utils/avatarSize";
 import {
   AUTH_CHANNEL_NAME,
   LOGIN_RETURN_KEY,
@@ -2088,8 +2089,8 @@ export default function App() {
       })
       .filter(({ tweetCount, hasManualStance }) => tweetCount > 0 || hasManualStance)
       .map(({ a, tweetCount, seedStance }) => {
-        const rawFollowers = Number(a.followers_count || 0);
-        const followersForSize = rawFollowers > 0 ? rawFollowers : (seedStance ? 5000 : 0);
+        const followerInfo = getFollowersFromUser(a);
+        const followersForSize = followersForAvatarSize(followerInfo, Boolean(seedStance));
         const side = equalAvatarSizeEnabled ? EQUAL_AVATAR_SIDE : sideFromFollowers(followersForSize);
         const resolvedAvatar = avatarSrc(a);
         const hasStance = Boolean(seedStance);
@@ -2108,7 +2109,7 @@ export default function App() {
           handle: a.handle,
           x_user_id: String(a.x_user_id ?? a.xUserId ?? "").trim() || null,
           seedStance,
-          followers: rawFollowers,
+          followers: followerInfo.followers,
           bio: String(a.bio ?? "").trim() || null,
           accountCreatedAt: a.accountCreatedAt ?? a.account_created_at ?? null,
           hasUserStanceChange: Boolean(a.hasUserStanceChange),
