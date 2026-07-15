@@ -214,63 +214,63 @@ function createStanceZoneSprite(color, radius, alpha) {
   return canvas;
 }
 
-/** Compute stance weights (sum of sqrt(followers)) and region layout. Neutral at width/2; all three in a tight band so islands stay cohesive. */
+/**
+ * Region layout for the three stance clusters.
+ *
+ * Each cluster's half-width is estimated from the ACTUAL total avatar area it
+ * holds (not a fraction of the screen width), because avatars are sized in
+ * absolute pixels — on a narrow screen a fraction-of-width region is far smaller
+ * than the cluster it must hold, so the large "against" cluster used to overflow
+ * into the neutral zone.
+ *
+ * The three clusters are then placed left→right with EQUAL gaps between adjacent
+ * edges and the whole group is centered. This keeps the neutral cluster in the
+ * middle of the empty space between "against" and "approve" regardless of how
+ * lopsided the counts are, and is screen-width independent (the fit step scales
+ * it to the viewport), so phone and desktop stay consistent.
+ */
 function computeStanceRegions(nodes, labels, width) {
   if (!nodes || nodes.length === 0) return null;
-  let redW = 0, greyW = 0, greenW = 0;
+  let redArea = 0, greyArea = 0, greenArea = 0;
   for (const d of nodes) {
     const stance = getNodeStance(d, labels);
-    const w = Math.sqrt(Math.max(1, d.followers));
-    if (stance === STANCE.AGAINST) redW += w;
-    else if (stance === STANCE.NEUTRAL) greyW += w;
-    else if (stance === STANCE.APPROVE) greenW += w;
-    else greyW += w; // unlabeled -> neutral
+    const side = Math.max(6, Number(d.side) || 12);
+    const area = side * side;
+    if (stance === STANCE.AGAINST) redArea += area;
+    else if (stance === STANCE.APPROVE) greenArea += area;
+    else greyArea += area; // neutral + unlabeled
   }
-  const total = redW + greyW + greenW || 1;
-  const gapPx = Math.max(12, width * 0.012);
-  // Tight centered band keeps islands cohesive while preserving symmetric centers.
-  const contentWidth = width * 0.6;
-  const contentLeft = (width - contentWidth) / 2;
-  const contentRight = contentLeft + contentWidth;
+
   const mid = width / 2;
+  // Radius of a loosely packed blob whose members total `area` px² (random
+  // circle packing ~0.62 density), i.e. cluster half-width in world px.
+  const radiusOf = (area) => (area > 0 ? Math.sqrt(area / 0.62 / Math.PI) : 0);
+  const rRed = radiusOf(redArea);
+  const rGrey = radiusOf(greyArea);
+  const rGreen = radiusOf(greenArea);
 
-  // Mild weighting for side widths while avoiding extreme visual drift.
-  const baseRegion = contentWidth * 0.22;
-  const scale = contentWidth * 0.16;
-  const safeTotal = Math.max(total, 1);
-  const redWidth = clamp(baseRegion + scale * (redW / safeTotal), contentWidth * 0.16, contentWidth * 0.34);
-  const greenWidth = clamp(baseRegion + scale * (greenW / safeTotal), contentWidth * 0.16, contentWidth * 0.34);
-  const greyWidth = clamp(baseRegion + scale * (greyW / safeTotal), contentWidth * 0.18, contentWidth * 0.36);
+  const activeCount = Math.max(1, [rRed, rGrey, rGreen].filter((r) => r > 0).length);
+  const avgRadius = (rRed + rGrey + rGreen) / activeCount;
+  // Visible separation between adjacent clusters, scaled to cluster size.
+  const gap = Math.max(Math.max(12, width * 0.012), avgRadius * 0.5);
 
-  // Neutral remains fixed center. Left/right centers are symmetric around neutral.
-  const minCenterDist = Math.max(
-    greyWidth / 2 + gapPx + redWidth / 2,
-    greyWidth / 2 + gapPx + greenWidth / 2
-  );
-  const maxCenterDist = Math.min(
-    mid - contentLeft - redWidth / 2,
-    contentRight - mid - greenWidth / 2
-  );
-  const centerDist = clamp(contentWidth * 0.24, minCenterDist, maxCenterDist);
-  const redCx = mid - centerDist;
-  const greyCx = mid;
-  const greenCx = mid + centerDist;
+  // Equal-gap, group-centered placement (derivation keeps both gaps == `gap`):
+  //   against | gap | neutral | gap | approve
+  const greyCx = mid + (rRed - rGreen);
+  const redCx = greyCx - (rRed + gap + rGrey);
+  const greenCx = greyCx + (rGrey + gap + rGreen);
 
-  const redEnd = redCx + redWidth / 2;
-  const greyStart = greyCx - greyWidth / 2;
-  const greyEnd = greyCx + greyWidth / 2;
-  const greenStart = greenCx - greenWidth / 2;
   return {
     stanceCenterX: {
       [STANCE.AGAINST]: redCx,
       [STANCE.NEUTRAL]: greyCx,
       [STANCE.APPROVE]: greenCx,
     },
-    redEnd,
-    greyStart,
-    greyEnd,
-    greenStart,
-    gapPx,
+    redEnd: redCx + rRed,
+    greyStart: greyCx - rGrey,
+    greyEnd: greyCx + rGrey,
+    greenStart: greenCx - rGreen,
+    gapPx: gap,
     width,
   };
 }
@@ -441,7 +441,7 @@ function layoutEqualSizeGrid(nodes, labelsMap, w, h) {
 // (no recompute, no fly-in animation). Keyed by a signature that captures
 // everything the layout depends on: the exact node set + each node's stance and
 // size, the viewport, and the layout-affecting modes.
-const LAYOUT_CACHE_KEY = "consensushealth:layout:v1";
+const LAYOUT_CACHE_KEY = "consensushealth:layout:v2";
 
 function computeLayoutSignature(nodes, labelsMap, w, h, plebsMode, equalAvatarSizeEnabled) {
   const parts = nodes

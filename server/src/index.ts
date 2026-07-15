@@ -1765,10 +1765,15 @@ app.get("/api/stats", async (_req, res, next) => {
         WHERE stance_norm IN ('against', 'neutral', 'approve') AND rn = 1
       `),
       pool.query(`
+        -- Distinct users who have any real stance transition. This intentionally
+        -- INCLUDES first-time adoptions (Unset -> stance, previous_stance IS NULL),
+        -- because every other metric here (total_changes, changes_last_7d,
+        -- transitions, flows) counts Unset -> X as a change. Requiring
+        -- previous_stance IS NOT NULL made this the odd one out and produced an
+        -- impossible value (e.g. 60 while 285 users did Unset -> Against).
         SELECT COUNT(DISTINCT x_user_id)::int AS changed_ever
         FROM stance_history
-        WHERE previous_stance IS NOT NULL
-          AND previous_stance IS DISTINCT FROM new_stance
+        WHERE previous_stance IS DISTINCT FROM new_stance
       `),
       pool.query(`
         SELECT COUNT(*)::int AS changes_last_7d

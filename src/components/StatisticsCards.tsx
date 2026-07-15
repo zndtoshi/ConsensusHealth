@@ -301,7 +301,11 @@ export function StatisticsCards({
       if (byFrom !== 0) return byFrom;
       return b.count - a.count;
     })
-    .slice(0, 8);
+    // Show every distinct flow type. There are at most 9 possible (4 "from"
+    // states x 3 "to" states, minus self-transitions that never occur), so
+    // slicing hid rare flows and made the visible flows stop summing to the
+    // "Stance changes (last 7 days)" total.
+    .slice(0, 12);
   const flowsPerColumn = Math.ceil(sortedTopFlows.length / 2);
   const leftFlows = sortedTopFlows.slice(0, flowsPerColumn);
   const rightFlows = sortedTopFlows.slice(flowsPerColumn);
