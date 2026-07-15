@@ -11,6 +11,32 @@ import {
   isAuthResultMessage,
   isAuthSuccessMessage,
 } from "./utils/authPopup";
+import { fetchNewStanceEvents } from "./api/newStances";
+import { NEW_STANCES_HEADING, NEW_STANCES_PUBLIC_ENABLED } from "./config/newStances";
+import {
+  lockIntroSession,
+  clearPlayingSession,
+  computeFlightScreenPos,
+  computeStagingLayouts,
+  easeInOutCubic,
+  getIntroPhase,
+  headingOpacityForPhase,
+  isIntroNodeHidden,
+  matchEventsToIntroItems,
+  normalizeIntroEvents,
+  parseDebugNewStancesParams,
+  pickNewestMarker,
+  prefersReducedMotion,
+  readLastSeenMarker,
+  readPlayingSession,
+  resolveFetchAfterEventId,
+  resolveShowIntroDecision,
+  scheduleFlightTimes,
+  shouldPersistMarker,
+  writeLastSeenMarker,
+  writePlayingSession,
+  INTRO_TIMING,
+} from "./utils/newStancesIntro";
 
 // Lazily loaded so the Statistics UI (StatisticsCards, CSV export) and the QR
 // library (qrcode.react) are split into separate chunks fetched only on demand.
@@ -897,9 +923,26 @@ export default function App() {
     rafId: 0,
     currentHandle: null,
   });
+  const newStancesIntroRef = useRef({
+    active: false,
+    startedAt: 0,
+    items: [],
+    hiddenIds: new Set(),
+    landedIds: new Set(),
+    reducedMotion: false,
+    rafId: 0,
+    batchId: "",
+    markerEvents: [],
+    phase: "idle",
+  });
+  const meRef = useRef(null);
+  const [newStancesUi, setNewStancesUi] = useState({ headingOpacity: 0, debug: false });
 
   useEffect(() => {
-    // Cleanup legacy persisted stance overrides so backend data is canonical across devices.
+    meRef.current = me;
+  }, [me]);
+
+  useEffect(() => {
     try {
       localStorage.removeItem(LABELS_STORAGE_KEY);
     } catch {
@@ -1963,6 +2006,7 @@ export default function App() {
         }
         return {
           handle: a.handle,
+          x_user_id: String(a.x_user_id ?? a.xUserId ?? "").trim() || null,
           seedStance,
           followers: rawFollowers,
           bio: String(a.bio ?? "").trim() || null,
@@ -2055,6 +2099,7 @@ export default function App() {
       simRef.current = null;
       regionRef.current = layoutEqualSizeGrid(nodes, labelsRef.current, w, h);
       draw();
+      tryStartNewStancesIntro();
       return () => {};
     }
 
@@ -2109,6 +2154,7 @@ export default function App() {
       // immediately. No simulation, no delay.
       layoutSettlingRef.current = false;
       draw();
+      tryStartNewStancesIntro();
       return () => {
         sim.stop();
       };
@@ -2149,6 +2195,7 @@ export default function App() {
       settleRafRef.current = 0;
       layoutSettlingRef.current = false;
       draw(); // single paint of the fully-settled layout
+      tryStartNewStancesIntro();
     };
     settleRafRef.current = requestAnimationFrame(settleChunk);
 
@@ -2251,6 +2298,19 @@ export default function App() {
   }, [labels]);
 
   useEffect(() => {
+    if (loading || err || layoutSettlingRef.current) return;
+    if (stanceListsViewEnabled || !nodesRef.current?.length) return;
+    tryStartNewStancesIntro();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me, loading, err]);
+
+  useEffect(() => {
+    refreshIntroStagingPositions();
+    if (newStancesIntroRef.current.active) scheduleDraw();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [w, h]);
+
+  useEffect(() => {
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedHandle]);
@@ -2260,6 +2320,10 @@ export default function App() {
       if (zoomCueRafRef.current) cancelAnimationFrame(zoomCueRafRef.current);
       if (drawRafRef.current) cancelAnimationFrame(drawRafRef.current);
       if (settleRafRef.current) cancelAnimationFrame(settleRafRef.current);
+      const intro = newStancesIntroRef.current;
+      if (intro.rafId) cancelAnimationFrame(intro.rafId);
+      intro.rafId = 0;
+      intro.active = false;
     };
   }, []);
 
@@ -2386,6 +2450,192 @@ export default function App() {
     });
   }
 
+  function getNewStancesStagingView() {
+    const fit = fitRef.current;
+    const view = viewRef.current;
+    const r = regionRef.current;
+    return {
+      cw: Math.max(1, w),
+      ch: Math.max(1, h),
+      headerHeight: 56,
+      scale: view?.scale ?? fit?.scale ?? 1,
+      tx: view?.tx ?? fit?.tx ?? 0,
+      ty: view?.ty ?? fit?.ty ?? 0,
+      stanceCenterX: {
+        [STANCE.AGAINST]: r?.stanceCenterX?.[STANCE.AGAINST] ?? w * 0.33,
+        [STANCE.NEUTRAL]: r?.stanceCenterX?.[STANCE.NEUTRAL] ?? w * 0.5,
+        [STANCE.APPROVE]: r?.stanceCenterX?.[STANCE.APPROVE] ?? w * 0.67,
+      },
+    };
+  }
+
+  function refreshIntroStagingPositions() {
+    const intro = newStancesIntroRef.current;
+    if (!intro.active || !intro.items.length) return;
+    const layouts = computeStagingLayouts(intro.items, getNewStancesStagingView());
+    intro.items = intro.items.map((it) => {
+      const lay = layouts.get(it.xUserId);
+      return lay ? { ...it, stagingSx: lay.sx, stagingSy: lay.sy } : it;
+    });
+  }
+
+  function finishNewStancesIntro() {
+    const intro = newStancesIntroRef.current;
+    if (intro.rafId) cancelAnimationFrame(intro.rafId);
+    intro.rafId = 0;
+    intro.active = false;
+    const markerEvents = intro.markerEvents;
+    intro.items = [];
+    intro.hiddenIds = new Set();
+    intro.landedIds = new Set();
+    intro.markerEvents = [];
+    intro.phase = "done";
+
+    const debug = parseDebugNewStancesParams(typeof window !== "undefined" ? window.location.search : "");
+    const decision = resolveShowIntroDecision({
+      adminPreviewFromServer: Boolean(meRef.current?.new_stances_preview),
+      publicEnabled: NEW_STANCES_PUBLIC_ENABLED,
+      debug,
+    });
+    clearPlayingSession(sessionStorage);
+    if (shouldPersistMarker(decision) && markerEvents.length) {
+      const marker = pickNewestMarker(markerEvents);
+      if (marker) writeLastSeenMarker(localStorage, marker);
+    }
+    setNewStancesUi({ headingOpacity: 0, debug: false });
+    scheduleDraw();
+  }
+
+  function newStancesIntroTick() {
+    const intro = newStancesIntroRef.current;
+    if (!intro.active) return;
+    const now = performance.now();
+    const elapsed = now - intro.startedAt;
+    intro.phase = getIntroPhase(elapsed, intro.reducedMotion);
+    const headingOpacity = headingOpacityForPhase(intro.phase, elapsed, intro.reducedMotion);
+    setNewStancesUi((prev) =>
+      prev.headingOpacity === headingOpacity ? prev : { ...prev, headingOpacity }
+    );
+
+    for (const item of intro.items) {
+      if (!item.landed && now >= item.flightEnd) {
+        item.landed = true;
+        intro.landedIds.add(item.xUserId);
+      }
+    }
+
+    if (intro.phase === "done") {
+      finishNewStancesIntro();
+      return;
+    }
+    scheduleDraw();
+    intro.rafId = requestAnimationFrame(newStancesIntroTick);
+  }
+
+  async function tryStartNewStancesIntro() {
+    const intro = newStancesIntroRef.current;
+    if (intro.active) return;
+    if (stanceListsViewEnabled || historyPlaybackRef.current.active) return;
+    if (layoutSettlingRef.current) return;
+
+    const debug = parseDebugNewStancesParams(typeof window !== "undefined" ? window.location.search : "");
+    const decision = resolveShowIntroDecision({
+      adminPreviewFromServer: Boolean(meRef.current?.new_stances_preview),
+      publicEnabled: NEW_STANCES_PUBLIC_ENABLED,
+      debug,
+    });
+    if (!decision.show) return;
+
+    const playing = readPlayingSession(sessionStorage);
+    if (playing && decision.publicEnabled && !decision.adminPreview && !decision.debug.enabled) {
+      return;
+    }
+    if (!lockIntroSession()) return;
+
+    const marker =
+      decision.publicEnabled && !decision.adminPreview && !decision.debug.enabled
+        ? readLastSeenMarker(localStorage)
+        : null;
+    const afterEventId = resolveFetchAfterEventId({
+      adminPreview: decision.adminPreview,
+      publicEnabled: decision.publicEnabled,
+      debug: decision.debug,
+      marker,
+    });
+    const limit = decision.debug.enabled ? debug.limit : 9;
+
+    let events = [];
+    try {
+      events = await fetchNewStanceEvents({ afterEventId, limit });
+    } catch {
+      return;
+    }
+    events = normalizeIntroEvents(events, limit);
+    if (!events.length) return;
+
+    const nodes = nodesRef.current;
+    if (!nodes?.length) return;
+
+    const base = getBase();
+    const baseNoSlash = base.replace(/\/$/, "");
+    const missingSrc = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
+
+    const items = matchEventsToIntroItems(events, nodes, (e, nodeUrl) => {
+      const path = String(e.avatarPath ?? "").trim();
+      if (path) {
+        const rel = path.startsWith("/") ? path : `/${path}`;
+        return canonicalAvatarSrc(`${baseNoSlash}${rel}`);
+      }
+      return nodeUrl || missingSrc;
+    });
+    if (!items.length) return;
+
+    preloadAvatarUrls(
+      items.map((it) => it.avatarUrl),
+      { eager: true }
+    );
+
+    const layouts = computeStagingLayouts(items, getNewStancesStagingView());
+    for (const it of items) {
+      const lay = layouts.get(it.xUserId);
+      if (lay) {
+        it.stagingSx = lay.sx;
+        it.stagingSy = lay.sy;
+      }
+    }
+
+    const reducedMotion = prefersReducedMotion();
+    const flightBase =
+      performance.now() +
+      (reducedMotion
+        ? INTRO_TIMING.fadeInMs + INTRO_TIMING.reducedHoldMs
+        : INTRO_TIMING.holdMs);
+    const scheduled = scheduleFlightTimes(items, flightBase, reducedMotion);
+
+    intro.active = true;
+    intro.startedAt = performance.now();
+    intro.items = scheduled;
+    intro.hiddenIds = new Set(scheduled.map((it) => it.xUserId));
+    intro.landedIds = new Set();
+    intro.reducedMotion = reducedMotion;
+    intro.batchId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+    intro.markerEvents = events;
+    intro.phase = "fade-in";
+
+    if (decision.publicEnabled && !decision.adminPreview && !decision.debug.enabled) {
+      writePlayingSession(sessionStorage, {
+        batchId: intro.batchId,
+        eventIds: events.map((e) => e.eventId),
+        startedAt: new Date().toISOString(),
+      });
+    }
+
+    setNewStancesUi({ headingOpacity: 0, debug: debug.enabled });
+    if (intro.rafId) cancelAnimationFrame(intro.rafId);
+    intro.rafId = requestAnimationFrame(newStancesIntroTick);
+    scheduleDraw();
+  }
+
   function draw() {
     drawRef.current = draw;
 
@@ -2423,8 +2673,17 @@ export default function App() {
     const avatarCache = avatarCacheRef.current;
     const pb = historyPlaybackRef.current;
     const playbackActive = Boolean(pb.active);
+    const intro = newStancesIntroRef.current;
+    const introActive = Boolean(intro.active);
 
     if (!nodes || nodes.length === 0) return;
+
+    const introShowsWorldNode = (n) => {
+      if (!introActive) return true;
+      const xid = String(n.x_user_id ?? "").trim();
+      if (!xid) return true;
+      return !isIntroNodeHidden(xid, intro.hiddenIds, intro.landedIds);
+    };
 
     const contributesToPlaybackFit = (n) => {
       if (!playbackActive) return true;
@@ -2628,6 +2887,7 @@ export default function App() {
     };
     for (const n of nodes) {
       if (!playbackShowsWorldNode(n)) continue;
+      if (!introShowsWorldNode(n)) continue;
       if (curSelected && n.handle === curSelected) {
         if (isVisible(n, selectedScale)) selected.push(n);
       } else if (curHover && n.handle === curHover.handle) {
@@ -2709,6 +2969,66 @@ export default function App() {
           ctx.rect(drawX, drawY, sidePx, sidePx);
         }
         ctx.stroke();
+      }
+    }
+
+    if (introActive && intro.items.length) {
+      const nowIntro = performance.now();
+      const elapsedIntro = nowIntro - intro.startedAt;
+      const viewIntro = getNewStancesStagingView();
+      const fadeAlpha =
+        intro.phase === "fade-in"
+          ? easeInOutCubic(elapsedIntro / INTRO_TIMING.fadeInMs)
+          : 1;
+      for (const item of intro.items) {
+        if (item.landed) continue;
+        const pos = computeFlightScreenPos(item, nowIntro, viewIntro, intro.reducedMotion);
+        const sidePx = Math.max(8, item.finalSide * viewIntro.scale);
+        const drawX = pos.sx - sidePx / 2;
+        const drawY = pos.sy - sidePx / 2;
+        const rOv = Math.min(14, sidePx * 0.22);
+        const auraIntro = stanceColor(item.stance);
+        ctx.save();
+        ctx.globalAlpha = fadeAlpha;
+        if (auraIntro) {
+          const glow = getGlow(auraIntro, sidePx, true);
+          if (glow?.canvas) {
+            ctx.save();
+            ctx.globalCompositeOperation = "lighter";
+            ctx.drawImage(glow.canvas, drawX - glow.pad, drawY - glow.pad);
+            ctx.restore();
+          }
+        }
+        const img = item.avatarUrl ? avatarCache.get(item.avatarUrl) : null;
+        if (img?.complete && img.naturalWidth > 0) {
+          ctx.beginPath();
+          if (typeof ctx.roundRect === "function") {
+            ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+          } else {
+            ctx.rect(drawX, drawY, sidePx, sidePx);
+          }
+          ctx.clip();
+          ctx.drawImage(img, drawX, drawY, sidePx, sidePx);
+        } else {
+          ctx.fillStyle = auraIntro ? auraIntro.replace(/[\d.]+\)$/, "0.22)") : "rgba(70,75,85,0.35)";
+          ctx.beginPath();
+          if (typeof ctx.roundRect === "function") {
+            ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+          } else {
+            ctx.rect(drawX, drawY, sidePx, sidePx);
+          }
+          ctx.fill();
+        }
+        ctx.strokeStyle = auraIntro ? auraIntro.replace(/[\d.]+\)$/, "0.85)") : "rgba(120,130,150,0.9)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        if (typeof ctx.roundRect === "function") {
+          ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+        } else {
+          ctx.rect(drawX, drawY, sidePx, sidePx);
+        }
+        ctx.stroke();
+        ctx.restore();
       }
     }
   }
@@ -3316,6 +3636,18 @@ export default function App() {
         <div ref={containerRef} style={styles.canvasWrap}>
           {!stanceListsViewEnabled ? (
             <>
+              {(newStancesUi.headingOpacity > 0.01 || newStancesIntroRef.current.active) && (
+                <div
+                  className="newStancesHeading"
+                  style={{ opacity: newStancesUi.headingOpacity }}
+                  aria-live="polite"
+                >
+                  {NEW_STANCES_HEADING}
+                </div>
+              )}
+              {newStancesUi.debug && (
+                <div className="newStancesDebugLabel">Debug new stances</div>
+              )}
               <canvas
                 ref={canvasRef}
                 onWheel={onWheel}

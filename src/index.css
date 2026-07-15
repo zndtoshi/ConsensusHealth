@@ -346,3 +346,43 @@ html[data-browser="firefox"] .glow,
 html[data-browser="firefox"] .stanceGlow {
   transition: box-shadow 120ms linear !important;
 }
+
+.newStancesHeading {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  z-index: 12;
+  pointer-events: none;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.92);
+  text-align: center;
+  padding: 0 16px;
+  transition: opacity 220ms ease;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.55);
+}
+
+.newStancesDebugLabel {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 12;
+  pointer-events: none;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.45);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .newStancesHeading {
+    transition: opacity 120ms linear;
+  }
+}

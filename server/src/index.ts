@@ -23,6 +23,7 @@ import {
   createNodeAvatarDeps,
   resolveAvatarsDir,
 } from "./avatarStorage.js";
+import { clampNewStancesLimit, queryNewStanceEvents } from "./newStances.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
@@ -1319,7 +1320,15 @@ app.get("/api/me", async (req, res, next) => {
       [user.x_user_id]
     );
 
-    res.json(result.rows[0] || null);
+    const row = result.rows[0] || null;
+    if (!row) {
+      res.json(null);
+      return;
+    }
+    res.json({
+      ...row,
+      new_stances_preview: isPrivilegedManualEditorHandle(row.handle),
+    });
   } catch (err) {
     next(err);
   }
@@ -1543,6 +1552,25 @@ app.get("/api/stance-playback-sequence", async (req, res, next) => {
     }));
 
     res.json({ items });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/api/stances/new", async (req, res, next) => {
+  try {
+    const afterRaw = String(req.query.afterEventId ?? "").trim();
+    const limitRaw = String(req.query.limit ?? "").trim();
+    const afterEventId =
+      afterRaw && Number.isFinite(Number(afterRaw)) && Number(afterRaw) > 0
+        ? Math.trunc(Number(afterRaw))
+        : null;
+    const limit = clampNewStancesLimit(limitRaw || 9);
+    const items = await queryNewStanceEvents(pool, { afterEventId, limit });
+    res.json({
+      generated_at: new Date().toISOString(),
+      items,
+    });
   } catch (err) {
     next(err);
   }
