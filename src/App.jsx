@@ -942,12 +942,7 @@ export default function App() {
     phase: "idle",
   });
   const meRef = useRef(null);
-  const [newStancesUi, setNewStancesUi] = useState({
-    headingOpacity: 0,
-    panelOpacity: 0,
-    panelBounds: null,
-    debug: false,
-  });
+  const [newStancesUi, setNewStancesUi] = useState({ headingOpacity: 0, debug: false });
 
   useEffect(() => {
     meRef.current = me;
@@ -2480,13 +2475,6 @@ export default function App() {
     };
   }
 
-  function syncIntroPanelBounds() {
-    const intro = newStancesIntroRef.current;
-    if (!intro.active || !intro.items.length) return null;
-    const side = intro.items[0]?.stagingSidePx || 48;
-    return computeStagingPanelBounds(intro.items.length, side, getNewStancesStagingView());
-  }
-
   function refreshIntroStagingPositions() {
     const intro = newStancesIntroRef.current;
     if (!intro.active || !intro.items.length) return;
@@ -2497,19 +2485,6 @@ export default function App() {
         ? { ...it, stagingSx: lay.sx, stagingSy: lay.sy, stagingSidePx: lay.stagingSidePx }
         : it;
     });
-    const panelBounds = syncIntroPanelBounds();
-    if (panelBounds) {
-      setNewStancesUi((prev) => {
-        const b = prev.panelBounds;
-        const same =
-          b &&
-          b.x === panelBounds.x &&
-          b.y === panelBounds.y &&
-          b.w === panelBounds.w &&
-          b.h === panelBounds.h;
-        return same ? prev : { ...prev, panelBounds };
-      });
-    }
   }
 
   function finishNewStancesIntro() {
@@ -2537,7 +2512,7 @@ export default function App() {
       const marker = pickNewestMarker(markerEvents);
       if (marker) writeLastSeenMarker(localStorage, marker);
     }
-    setNewStancesUi({ headingOpacity: 0, panelOpacity: 0, panelBounds: null, debug: false });
+    setNewStancesUi({ headingOpacity: 0, debug: false });
     scheduleDraw();
   }
 
@@ -2553,16 +2528,9 @@ export default function App() {
       intro.reducedMotion,
       intro.items.length
     );
-    const panelOpacity = stagingPanelOpacityForPhase(
-      intro.phase,
-      elapsed,
-      intro.items.length,
-      intro.reducedMotion
+    setNewStancesUi((prev) =>
+      prev.headingOpacity === headingOpacity ? prev : { ...prev, headingOpacity }
     );
-    setNewStancesUi((prev) => {
-      if (prev.headingOpacity === headingOpacity && prev.panelOpacity === panelOpacity) return prev;
-      return { ...prev, headingOpacity, panelOpacity };
-    });
 
     for (const item of intro.items) {
       if (!item.landed && now >= item.flightEnd) {
@@ -2693,13 +2661,7 @@ export default function App() {
       });
     }
 
-    const panelBounds = computeStagingPanelBounds(
-      scheduled.length,
-      scheduled[0]?.stagingSidePx || 48,
-      getNewStancesStagingView()
-    );
-
-    setNewStancesUi({ headingOpacity: 0, panelOpacity: 0, panelBounds, debug: debug.enabled });
+    setNewStancesUi({ headingOpacity: 0, debug: debug.enabled });
     if (intro.rafId) cancelAnimationFrame(intro.rafId);
     intro.rafId = requestAnimationFrame(newStancesIntroTick);
     scheduleDraw();
@@ -3047,6 +3009,31 @@ export default function App() {
       const nowIntro = performance.now();
       const elapsedIntro = nowIntro - intro.startedAt;
       const viewIntro = getNewStancesStagingView();
+      const stagingSide = intro.items[0]?.stagingSidePx || 48;
+      const panelBounds = computeStagingPanelBounds(intro.items.length, stagingSide, viewIntro);
+      const panelAlpha = stagingPanelOpacityForPhase(
+        intro.phase,
+        elapsedIntro,
+        intro.items.length,
+        intro.reducedMotion
+      );
+      if (panelAlpha > 0.01) {
+        const { x, y, w, h, r } = panelBounds;
+        ctx.save();
+        ctx.globalAlpha = panelAlpha;
+        ctx.fillStyle = "rgba(15, 23, 42, 0.94)";
+        ctx.beginPath();
+        if (typeof ctx.roundRect === "function") {
+          ctx.roundRect(x, y, w, h, r);
+        } else {
+          ctx.rect(x, y, w, h);
+        }
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.restore();
+      }
       const fadeAlpha =
         intro.phase === "fade-in"
           ? easeInOutCubic(elapsedIntro / INTRO_TIMING.fadeInMs)
@@ -3711,20 +3698,6 @@ export default function App() {
         <div ref={containerRef} style={styles.canvasWrap}>
           {!stanceListsViewEnabled ? (
             <>
-              {newStancesUi.panelBounds && newStancesUi.panelOpacity > 0.01 && (
-                <div
-                  className="newStancesPanel"
-                  style={{
-                    left: newStancesUi.panelBounds.x,
-                    top: newStancesUi.panelBounds.y,
-                    width: newStancesUi.panelBounds.w,
-                    height: newStancesUi.panelBounds.h,
-                    borderRadius: newStancesUi.panelBounds.r,
-                    opacity: newStancesUi.panelOpacity,
-                  }}
-                  aria-hidden="true"
-                />
-              )}
               {(newStancesUi.headingOpacity > 0.01 || newStancesIntroRef.current.active) && (
                 <div
                   className="newStancesHeading"

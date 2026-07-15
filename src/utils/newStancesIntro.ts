@@ -298,7 +298,7 @@ export function computeStagingPanelBounds(
   const labelH = 15;
   const padX = 24;
   const padTop = 8;
-  const padBottom = 18;
+  const padBottom = 24;
   const x = Math.max(8, rowStartX - padX);
   const y = INTRO_HEADING_TOP_PX - padTop;
   const w = Math.min(view.cw - 16, totalW + padX * 2);
