@@ -856,6 +856,8 @@ export default function App() {
   const statsFetchStartedAtRef = useRef(0);
   const [showDonateModal, setShowDonateModal] = useState(false);
   const [adminOptionsOpen, setAdminOptionsOpen] = useState(false);
+  // Avatar profile dropdown (holds Log out), toggled by clicking the avatar.
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   // Transient "just selected" marker (ui stance key) that drives the stance
   // segmented control's brief pop animation; cleared shortly after selection.
   const [stancePop, setStancePop] = useState(null);
@@ -879,6 +881,7 @@ export default function App() {
   const [labels, setLabels] = useState(() => ({}));
   const [dropdownHoverHandle, setDropdownHoverHandle] = useState(null);
   const adminOptionsRef = useRef(null);
+  const profileMenuRef = useRef(null);
   const stancePlaybackItemsRef = useRef(null);
   const mentionsRequestedRef = useRef(false);
   const historyPlaybackRef = useRef({
@@ -1541,6 +1544,25 @@ export default function App() {
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [adminOptionsOpen]);
+
+  useEffect(() => {
+    if (!profileMenuOpen) return;
+    const onDocMouseDown = (e) => {
+      const root = profileMenuRef.current;
+      if (!root) return;
+      if (root.contains(e.target)) return;
+      setProfileMenuOpen(false);
+    };
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") setProfileMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [profileMenuOpen]);
 
   useEffect(() => {
     if (!selectedHandle) return;
@@ -3015,6 +3037,7 @@ export default function App() {
           </div>
           <div style={styles.searchWrap}>
             <input
+              className="appInput"
               style={styles.search}
               placeholder="Search @handle..."
               value={search}
@@ -3166,33 +3189,6 @@ export default function App() {
                   <span>Influencers (&gt;3k followers)</span>
                   <span style={styles.optionsState}>{influencersMode ? "ON" : "OFF"}</span>
                 </label>
-                {me?.authenticated && (
-                  <>
-                    <div style={styles.optionsDivider} role="separator" />
-                    <button
-                      type="button"
-                      className="optionsMenuAction"
-                      onClick={() => {
-                        setAdminOptionsOpen(false);
-                        logout();
-                      }}
-                      disabled={authBusy}
-                      title="Log out"
-                    >
-                      <svg viewBox="0 0 24 24" aria-hidden="true" style={styles.logoutIcon}>
-                        <path
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          d="M15 12H4m0 0 4-4m-4 4 4 4M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"
-                        />
-                      </svg>
-                      <span>Log out</span>
-                    </button>
-                  </>
-                )}
               </div>
             )}
           </div>
@@ -3213,32 +3209,6 @@ export default function App() {
             </>
           ) : (
             <>
-              <div style={styles.barDivider} aria-hidden="true" />
-              <div style={styles.profileGroup}>
-                <img
-                  src={meChipAvatarSrc}
-                  alt={`@${me.handle}`}
-                  loading="eager"
-                  decoding="async"
-                  referrerPolicy="no-referrer"
-                  onError={(e) => {
-                    const fallback = missingAvatarSrcUrl();
-                    if (canonicalAvatarSrc(e.currentTarget.src) !== fallback) e.currentTarget.src = fallback;
-                    if (!import.meta.env.PROD) {
-                      // eslint-disable-next-line no-console
-                      console.warn("[avatar-load-failed]", {
-                        handle: normalizeHandle(me.handle),
-                        avatarUrl: me.avatar_url || "",
-                        userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
-                        onErrorFired: true,
-                        placeholderFallbackUsed: true,
-                      });
-                    }
-                  }}
-                  style={styles.userChipAvatar}
-                />
-                <span style={styles.profileHandle}>@{me.handle}</span>
-              </div>
               <div style={styles.barDivider} aria-hidden="true" />
               <div style={styles.stanceSegment} role="group" aria-label="Set your stance">
                 <button
@@ -3271,6 +3241,70 @@ export default function App() {
                 >
                   Approve
                 </button>
+              </div>
+              <div style={styles.barDivider} aria-hidden="true" />
+              <div ref={profileMenuRef} style={styles.profileWrap}>
+                <button
+                  type="button"
+                  className="avatarButton"
+                  onClick={() => setProfileMenuOpen((v) => !v)}
+                  aria-haspopup="menu"
+                  aria-expanded={profileMenuOpen}
+                  aria-label={`Account menu for @${me.handle}`}
+                  title={`@${me.handle}`}
+                >
+                  <img
+                    src={meChipAvatarSrc}
+                    alt={`@${me.handle}`}
+                    loading="eager"
+                    decoding="async"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      const fallback = missingAvatarSrcUrl();
+                      if (canonicalAvatarSrc(e.currentTarget.src) !== fallback) e.currentTarget.src = fallback;
+                      if (!import.meta.env.PROD) {
+                        // eslint-disable-next-line no-console
+                        console.warn("[avatar-load-failed]", {
+                          handle: normalizeHandle(me.handle),
+                          avatarUrl: me.avatar_url || "",
+                          userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
+                          onErrorFired: true,
+                          placeholderFallbackUsed: true,
+                        });
+                      }
+                    }}
+                    style={styles.userChipAvatar}
+                  />
+                </button>
+                {profileMenuOpen && (
+                  <div style={styles.profileMenu} role="menu" aria-label="Account">
+                    <div style={styles.profileMenuHandle}>@{me.handle}</div>
+                    <div style={styles.optionsDivider} role="separator" />
+                    <button
+                      type="button"
+                      className="optionsMenuAction"
+                      role="menuitem"
+                      onClick={() => {
+                        setProfileMenuOpen(false);
+                        logout();
+                      }}
+                      disabled={authBusy}
+                      title="Log out"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true" style={styles.logoutIcon}>
+                        <path
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          d="M15 12H4m0 0 4-4m-4 4 4 4M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"
+                        />
+                      </svg>
+                      <span>Log out</span>
+                    </button>
+                  </div>
+                )}
               </div>
             </>
           )}
@@ -3422,12 +3456,12 @@ export default function App() {
         )}
       </div>
       <div style={styles.bottomControls}>
-        <button type="button" style={styles.bottomControlBtn} onClick={openStatsModal}>Stats</button>
-        <button type="button" style={styles.bottomControlBtn} onClick={() => setShowDonateModal(true)}>Donate</button>
+        <button type="button" className="toolbarBtn toolbarBtn--primary toolbarBtn--lg" onClick={openStatsModal}>Stats</button>
+        <button type="button" className="toolbarBtn toolbarBtn--primary toolbarBtn--lg" onClick={() => setShowDonateModal(true)}>Donate</button>
         {stancePlaybackSequenceCount > 0 && !stanceListsViewEnabled ? (
           <button
             type="button"
-            style={styles.bottomControlBtn}
+            className="toolbarBtn toolbarBtn--primary toolbarBtn--lg"
             onClick={() => (historyPlaybackPlaying ? stopHistoryPlayback() : beginHistoryPlayback())}
           >
             {historyPlaybackPlaying ? "Stop" : historyPlaybackHasFinishedOnce ? "Replay History" : "Play History"}
@@ -3577,10 +3611,10 @@ const styles = {
     fontSize: 11,
     fontWeight: 700,
     letterSpacing: 0.2,
-    padding: "3px 7px",
+    padding: "3px 8px",
     borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.2)",
-    background: "rgba(30,41,59,0.72)",
+    border: "1px solid rgba(255,255,255,0.1)",
+    background: "rgba(17,24,39,0.72)",
     color: "#cbd5e1",
     textTransform: "lowercase",
   },
@@ -3724,6 +3758,35 @@ const styles = {
     overflow: "hidden",
     textOverflow: "ellipsis",
   },
+  // Clickable avatar + its account dropdown, anchored at the far right.
+  profileWrap: {
+    position: "relative",
+    display: "inline-flex",
+  },
+  profileMenu: {
+    position: "absolute",
+    top: "calc(100% + 6px)",
+    right: 0,
+    minWidth: 180,
+    padding: 8,
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.18)",
+    background: "rgba(15,23,42,0.98)",
+    boxShadow: "0 8px 22px rgba(0,0,0,0.35)",
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    zIndex: 120,
+  },
+  profileMenuHandle: {
+    fontSize: 12,
+    fontWeight: 800,
+    color: "#f1f5f9",
+    padding: "2px 6px",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
   // Segmented stance control track (three equal-width cells).
   stanceSegment: {
     display: "inline-grid",
@@ -3741,11 +3804,12 @@ const styles = {
   },
   search: {
     width: 260,
-    padding: "8px 10px",
-    borderRadius: 8,
-    border: "1px solid rgba(255,255,255,0.2)",
-    outline: "none",
-    background: "rgba(30,41,59,0.8)",
+    padding: "8px 12px",
+    borderRadius: 10,
+    border: "1px solid rgba(255,255,255,0.1)",
+    background: "rgba(17,24,39,0.72)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
     color: "#e2e8f0",
   },
   btn: {
@@ -4013,12 +4077,15 @@ const styles = {
     bottom: 18,
     zIndex: 40,
     display: "flex",
-    gap: 10,
+    gap: 4,
     alignItems: "center",
-    background: "rgba(18,22,35,0.55)",
-    padding: "6px 10px",
+    background: "rgba(17,24,39,0.72)",
+    padding: 4,
     borderRadius: 12,
-    backdropFilter: "blur(6px)",
+    border: "1px solid rgba(255,255,255,0.1)",
+    boxShadow: "0 6px 20px rgba(0,0,0,0.35)",
+    backdropFilter: "blur(8px)",
+    WebkitBackdropFilter: "blur(8px)",
   },
   bottomControlBtn: {
     height: 34,

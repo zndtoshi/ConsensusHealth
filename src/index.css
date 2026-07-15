@@ -116,6 +116,30 @@ button:focus-visible {
   color: #f8fafc;
 }
 
+/* Comfortable size for standalone primary actions (e.g. bottom Stats/Donate). */
+.toolbarBtn--lg {
+  padding: 9px 14px;
+}
+
+/* Shared text input styling (search, etc.), consistent with the toolbar. */
+.appInput {
+  transition:
+    border-color 150ms ease,
+    background-color 150ms ease,
+    box-shadow 150ms ease;
+}
+.appInput::placeholder {
+  color: rgba(226, 232, 240, 0.5);
+}
+.appInput:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.appInput:focus-visible {
+  outline: 2px solid rgba(147, 197, 253, 0.95);
+  outline-offset: 2px;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
 /* Segmented stance control: three equal-width buttons on a shared track. */
 .stanceSeg {
   appearance: none;
@@ -216,6 +240,30 @@ button:focus-visible {
   .stanceSeg.just-selected {
     animation: none;
   }
+}
+
+/* Clickable avatar that opens the account dropdown. */
+.avatarButton {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+.avatarButton:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.avatarButton:focus-visible {
+  outline: 2px solid rgba(147, 197, 253, 0.95);
+  outline-offset: 2px;
 }
 
 /* Logout action inside the Options menu. */

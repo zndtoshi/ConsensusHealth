@@ -84,6 +84,15 @@ const STANCE = {
   approve: { label: STANCE_LABELS.approve, color: STANCE_COLORS.approve },
 } satisfies Record<StanceKey, { label: string; color: string }>;
 
+// Text color for stance words (dots removed; the word itself carries the color).
+// Against = red, Approve = green, Neutral = white, Unset = grey.
+const STANCE_TEXT_COLOR: Record<StanceKey, string> = {
+  against: STANCE_COLORS.against,
+  neutral: "#ffffff",
+  approve: STANCE_COLORS.approve,
+};
+const UNSET_TEXT_COLOR = "#9ca3af";
+
 function Card({
   title,
   subtitle,
@@ -217,17 +226,9 @@ function Legend({
           <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
             <span
               style={{
-                width: 10,
-                height: 10,
-                borderRadius: 999,
-                background: it.color,
-                boxShadow: "0 0 0 3px rgba(255,255,255,0.06), 0 10px 20px rgba(0,0,0,0.30)",
-              }}
-            />
-            <span
-              style={{
                 fontSize: 12,
-                color: "rgba(255,255,255,0.85)",
+                fontWeight: 800,
+                color: it.color,
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
@@ -312,7 +313,7 @@ export function StatisticsCards({
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 14 }}>
         <Card title="Overview" subtitle="Snapshot summary">
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
             <Pill>
@@ -342,91 +343,6 @@ export function StatisticsCards({
           </div>
         </Card>
 
-        <Card title="Stance distribution" subtitle="Counts + %">
-          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", alignItems: "center", gap: 14 }}>
-            <Donut size={150} thickness={16} centerTop={formatInt(total)} centerBottom="users" segments={stanceSegments} />
-            <Legend
-              items={(["against", "neutral", "approve"] as const).map((k) => ({
-                color: STANCE[k].color,
-                label: STANCE[k].label,
-                right: (
-                  <span>
-                    {formatInt(data.counts[k])}{" "}
-                    <span style={{ opacity: 0.55, fontWeight: 700 }}>({formatPct(data.percentages[k])})</span>
-                  </span>
-                ),
-              }))}
-            />
-          </div>
-        </Card>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
-        <Card title="Followers impact" subtitle="Total followers by stance">
-          <div style={{ display: "grid", gridTemplateColumns: "160px 220px", alignItems: "center", gap: 14 }}>
-            <Donut
-              size={150}
-              thickness={16}
-              centerTop={formatInt(followerTotal)}
-              centerBottom="followers"
-              segments={followerSegments}
-            />
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
-              {(["against", "neutral", "approve"] as const).map((k) => (
-                <div
-                  key={k}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 12,
-                    width: "100%",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span
-                      style={{
-                        width: 10,
-                        height: 10,
-                        borderRadius: 999,
-                        background: STANCE[k].color,
-                        boxShadow: "0 0 0 3px rgba(255,255,255,0.06), 0 10px 20px rgba(0,0,0,0.30)",
-                      }}
-                    />
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: "rgba(255,255,255,0.88)",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {STANCE[k].label}
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      width: "100%",
-                      maxWidth: 132,
-                      color: "rgba(255,255,255,0.96)",
-                      fontSize: 12,
-                      fontWeight: 800,
-                    }}
-                  >
-                    <span style={{ marginLeft: "auto" }}>
-                      {formatInt(data.totalFollowersByStance[k])}{" "}
-                      <span style={{ opacity: 0.55, fontWeight: 700 }}>
-                        ({formatPct(((followerTotal ? data.totalFollowersByStance[k] / followerTotal : 0) * 100))})
-                      </span>
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </Card>
-
         <Card title="Average followers" subtitle="Per user in stance">
           <div
             style={{
@@ -448,8 +364,7 @@ export function StatisticsCards({
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 999, background: STANCE[k].color }} />
-                  <span style={{ fontSize: 12, color: "rgba(255,255,255,0.85)", fontWeight: 800 }}>
+                  <span style={{ fontSize: 12, color: STANCE_TEXT_COLOR[k], fontWeight: 800 }}>
                     {STANCE[k].label}
                   </span>
                 </div>
@@ -480,9 +395,8 @@ export function StatisticsCards({
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                    <span style={{ width: 10, height: 10, borderRadius: 999, background: STANCE[k].color }} />
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{STANCE[k].label}</div>
+                      <div style={{ fontSize: 12, fontWeight: 900, color: STANCE_TEXT_COLOR[k] }}>{STANCE[k].label}</div>
                       <div
                         style={{
                           fontSize: 12,
@@ -507,6 +421,83 @@ export function StatisticsCards({
         </Card>
       </div>
 
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <Card title="Followers impact" subtitle="Total followers by stance">
+          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", alignItems: "center", gap: 14 }}>
+            <Donut
+              size={150}
+              thickness={16}
+              centerTop={formatInt(followerTotal)}
+              centerBottom="followers"
+              segments={followerSegments}
+            />
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
+              {(["against", "neutral", "approve"] as const).map((k) => (
+                <div
+                  key={k}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    width: "100%",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 800,
+                        color: STANCE_TEXT_COLOR[k],
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {STANCE[k].label}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      width: "100%",
+                      maxWidth: 132,
+                      color: "rgba(255,255,255,0.96)",
+                      fontSize: 12,
+                      fontWeight: 800,
+                    }}
+                  >
+                    <span style={{ marginLeft: "auto" }}>
+                      {formatInt(data.totalFollowersByStance[k])}{" "}
+                      <span style={{ opacity: 0.55, fontWeight: 700 }}>
+                        ({formatPct(((followerTotal ? data.totalFollowersByStance[k] / followerTotal : 0) * 100))})
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+
+        <Card title="Stance distribution" subtitle="Counts + %">
+          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", alignItems: "center", gap: 14 }}>
+            <Donut size={150} thickness={16} centerTop={formatInt(total)} centerBottom="users" segments={stanceSegments} />
+            <Legend
+              items={(["against", "neutral", "approve"] as const).map((k) => ({
+                color: STANCE_TEXT_COLOR[k],
+                label: STANCE[k].label,
+                right: (
+                  <span>
+                    {formatInt(data.counts[k])}{" "}
+                    <span style={{ opacity: 0.55, fontWeight: 700 }}>({formatPct(data.percentages[k])})</span>
+                  </span>
+                ),
+              }))}
+            />
+          </div>
+        </Card>
+      </div>
+
       <Card title="Flows" subtitle="Last 7 days">
         {data.topFlowsLast7Days.length === 0 ? (
           <div style={{ fontSize: 12, color: "rgba(255,255,255,0.85)" }}>No flows in the last 7 days.</div>
@@ -515,7 +506,7 @@ export function StatisticsCards({
             <div style={{ display: "grid", gap: 6 }}>
               {leftFlows.map((f, idx) => {
               const fromLabel = f.from ? STANCE[f.from].label : "Unset";
-              const fromColor = f.from ? STANCE[f.from].color : "rgba(255,255,255,0.45)";
+              const fromColor = f.from ? STANCE_TEXT_COLOR[f.from] : UNSET_TEXT_COLOR;
               const to = STANCE[f.to];
               return (
                 <div
@@ -533,11 +524,9 @@ export function StatisticsCards({
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                    <span style={{ width: 10, height: 10, borderRadius: 999, background: fromColor }} />
-                    <span style={{ fontSize: 12, fontWeight: 900, color: f.from ? "rgba(255,255,255,0.96)" : "rgba(255,255,255,0.45)" }}>{fromLabel}</span>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: fromColor }}>{fromLabel}</span>
                     <span style={{ opacity: 0.5 }}>→</span>
-                    <span style={{ width: 10, height: 10, borderRadius: 999, background: to.color }} />
-                    <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{to.label}</span>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: STANCE_TEXT_COLOR[f.to] }}>{to.label}</span>
                   </div>
                   <div style={{ marginLeft: 8, fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>
                     {formatInt(f.count)}
@@ -549,7 +538,7 @@ export function StatisticsCards({
             <div style={{ display: "grid", gap: 6 }}>
               {rightFlows.map((f, idx) => {
               const fromLabel = f.from ? STANCE[f.from].label : "Unset";
-              const fromColor = f.from ? STANCE[f.from].color : "rgba(255,255,255,0.45)";
+              const fromColor = f.from ? STANCE_TEXT_COLOR[f.from] : UNSET_TEXT_COLOR;
               const to = STANCE[f.to];
               return (
                 <div
@@ -567,11 +556,9 @@ export function StatisticsCards({
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                    <span style={{ width: 10, height: 10, borderRadius: 999, background: fromColor }} />
-                    <span style={{ fontSize: 12, fontWeight: 900, color: f.from ? "rgba(255,255,255,0.96)" : "rgba(255,255,255,0.45)" }}>{fromLabel}</span>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: fromColor }}>{fromLabel}</span>
                     <span style={{ opacity: 0.5 }}>→</span>
-                    <span style={{ width: 10, height: 10, borderRadius: 999, background: to.color }} />
-                    <span style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>{to.label}</span>
+                    <span style={{ fontSize: 12, fontWeight: 900, color: STANCE_TEXT_COLOR[f.to] }}>{to.label}</span>
                   </div>
                   <div style={{ marginLeft: 8, fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>
                     {formatInt(f.count)}
@@ -640,11 +627,21 @@ export function StatisticsCards({
                   value={
                     data.transitionCounts.length ? (
                       <span>
-                        <span style={data.transitionCounts[0].from ? undefined : { color: "rgba(255,255,255,0.45)" }}>
+                        <span
+                          style={{
+                            color: data.transitionCounts[0].from
+                              ? STANCE_TEXT_COLOR[data.transitionCounts[0].from]
+                              : UNSET_TEXT_COLOR,
+                            fontWeight: 800,
+                          }}
+                        >
                           {data.transitionCounts[0].from ? STANCE[data.transitionCounts[0].from].label : "Unset"}
                         </span>
                         {" -> "}
-                        {STANCE[data.transitionCounts[0].to].label} ({formatInt(data.transitionCounts[0].count)})
+                        <span style={{ color: STANCE_TEXT_COLOR[data.transitionCounts[0].to], fontWeight: 800 }}>
+                          {STANCE[data.transitionCounts[0].to].label}
+                        </span>{" "}
+                        ({formatInt(data.transitionCounts[0].count)})
                       </span>
                     ) : (
                       "None"
@@ -869,7 +866,7 @@ function StanceHistoryRecentList({
               <span style={{ color: "rgba(255,255,255,0.55)" }}> · </span>
               <span>
                 <span style={{ color: "rgba(255,255,255,0.62)" }}>Set stance to </span>
-                <span style={{ color: STANCE[row.to].color, fontWeight: 800 }}>{STANCE[row.to].label}</span>
+                <span style={{ color: STANCE_TEXT_COLOR[row.to], fontWeight: 800 }}>{STANCE[row.to].label}</span>
               </span>
             </div>
             <div
