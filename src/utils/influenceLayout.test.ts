@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ENABLE_INFLUENCE_LAYOUT_FOR_ALL } from "../config/influenceLayout.js";
+import { ENABLE_INFLUENCE_LAYOUT } from "../config/influenceLayout.js";
 import {
-  appendInfluenceLayoutSignatureSuffix,
+  INFLUENCE_LAYOUT_CENTER_BIAS_STRENGTH,
+  INFLUENCE_LAYOUT_STANCE_BIAS_MUL,
   breathingHaloAlpha,
   breathingHaloPhaseOffsetMs,
   centerBiasMultiplier,
@@ -11,136 +12,31 @@ import {
   createForceInfluenceCenterBias,
   deterministicUnit,
   followerInfluence,
-  isInfluenceLayoutAdminPreview,
-  parseDebugInfluenceLayoutParams,
-  resolveUseBreathingHalo,
-  resolveUseInfluenceLayout,
-  selectTopBreathingHaloHandles,
   seedInfluenceLayoutPosition,
+  selectTopBreathingHaloHandles,
+  stanceBiasMultiplier,
 } from "./influenceLayout.js";
 
-test("ENABLE_INFLUENCE_LAYOUT_FOR_ALL is false (admin-only preview)", () => {
-  assert.equal(ENABLE_INFLUENCE_LAYOUT_FOR_ALL, false);
+test("influence layout is enabled for all visitors", () => {
+  assert.equal(ENABLE_INFLUENCE_LAYOUT, true);
 });
 
-test("isInfluenceLayoutAdminPreview matches zndtoshi case-insensitively", () => {
-  assert.equal(isInfluenceLayoutAdminPreview({ handle: "zndtoshi" }), true);
-  assert.equal(isInfluenceLayoutAdminPreview({ handle: "@ZndToshi" }), true);
-  assert.equal(isInfluenceLayoutAdminPreview({ handle: "alice" }), false);
-  assert.equal(isInfluenceLayoutAdminPreview(null), false);
+test("center bias strength is the refined (reduced) coefficient", () => {
+  assert.equal(INFLUENCE_LAYOUT_CENTER_BIAS_STRENGTH, 0.0065);
 });
 
-test("resolveUseInfluenceLayout: anonymous visitor gets production layout", () => {
-  assert.equal(
-    resolveUseInfluenceLayout({
-      enabledForAll: false,
-      authenticatedUser: null,
-      layoutOverride: null,
-    }),
-    false
-  );
+test("refined coefficient is ~25-30% lower than the previous 0.009", () => {
+  const previous = 0.009;
+  const reduction = 1 - INFLUENCE_LAYOUT_CENTER_BIAS_STRENGTH / previous;
+  assert.ok(reduction >= 0.25 && reduction <= 0.3);
 });
 
-test("resolveUseInfluenceLayout: other logged-in user gets production layout", () => {
-  assert.equal(
-    resolveUseInfluenceLayout({
-      enabledForAll: false,
-      authenticatedUser: { handle: "niftynei" },
-      layoutOverride: null,
-    }),
-    false
-  );
-});
-
-test("resolveUseInfluenceLayout: authenticated zndtoshi gets influence layout", () => {
-  assert.equal(
-    resolveUseInfluenceLayout({
-      enabledForAll: false,
-      authenticatedUser: { handle: "zndtoshi" },
-      layoutOverride: null,
-    }),
-    true
-  );
-});
-
-test("resolveUseInfluenceLayout: global flag true enables for everyone", () => {
-  assert.equal(
-    resolveUseInfluenceLayout({
-      enabledForAll: true,
-      authenticatedUser: null,
-      layoutOverride: null,
-    }),
-    true
-  );
-  assert.equal(
-    resolveUseInfluenceLayout({
-      enabledForAll: true,
-      authenticatedUser: { handle: "alice" },
-      layoutOverride: null,
-    }),
-    true
-  );
-});
-
-test("resolveUseInfluenceLayout: admin debug off forces production layout", () => {
-  assert.equal(
-    resolveUseInfluenceLayout({
-      enabledForAll: false,
-      authenticatedUser: { handle: "zndtoshi" },
-      layoutOverride: false,
-    }),
-    false
-  );
-});
-
-test("resolveUseInfluenceLayout: admin debug on forces experimental layout", () => {
-  assert.equal(
-    resolveUseInfluenceLayout({
-      enabledForAll: false,
-      authenticatedUser: { handle: "zndtoshi" },
-      layoutOverride: true,
-    }),
-    true
-  );
-});
-
-test("parseDebugInfluenceLayoutParams ignores spoofed query for non-admin", () => {
-  const parsed = parseDebugInfluenceLayoutParams(
-    "?debugInfluenceLayout=on&debugInfluenceHalo=off",
-    "alice"
-  );
-  assert.equal(parsed.layoutOverride, null);
-  assert.equal(parsed.haloOverride, null);
-});
-
-test("parseDebugInfluenceLayoutParams works only for authenticated zndtoshi", () => {
-  assert.deepEqual(
-    parseDebugInfluenceLayoutParams("?debugInfluenceLayout=off", "zndtoshi"),
-    { layoutOverride: false, haloOverride: null }
-  );
-  assert.deepEqual(
-    parseDebugInfluenceLayoutParams("?debugInfluenceLayout=on", "@zndtoshi"),
-    { layoutOverride: true, haloOverride: null }
-  );
-  assert.deepEqual(
-    parseDebugInfluenceLayoutParams("?debugInfluenceHalo=off", "zndtoshi"),
-    { layoutOverride: null, haloOverride: false }
-  );
-});
-
-test("resolveUseBreathingHalo requires influence layout unless halo debug off", () => {
-  assert.equal(
-    resolveUseBreathingHalo({ useInfluenceLayout: false, haloOverride: null }),
-    false
-  );
-  assert.equal(
-    resolveUseBreathingHalo({ useInfluenceLayout: true, haloOverride: null }),
-    true
-  );
-  assert.equal(
-    resolveUseBreathingHalo({ useInfluenceLayout: true, haloOverride: false }),
-    false
-  );
+test("Neutral uses a weaker attraction than Against and Approve", () => {
+  assert.equal(stanceBiasMultiplier("against"), 1);
+  assert.equal(stanceBiasMultiplier("approve"), 1);
+  assert.ok(stanceBiasMultiplier("neutral") < 1);
+  assert.equal(stanceBiasMultiplier("neutral"), INFLUENCE_LAYOUT_STANCE_BIAS_MUL.neutral);
+  assert.equal(stanceBiasMultiplier("unknown"), 1);
 });
 
 test("followerInfluence uses logarithmic normalization within graph bounds", () => {
@@ -217,11 +113,6 @@ test("reduced motion uses stable breathing halo opacity", () => {
   assert.ok(a >= 0.94 && a <= 1);
 });
 
-test("influence layout signature suffix isolates cache from production", () => {
-  assert.equal(appendInfluenceLayoutSignatureSuffix(false), "|0");
-  assert.equal(appendInfluenceLayoutSignatureSuffix(true), "|1");
-});
-
 test("forceInfluenceCenterBias pulls high-influence nodes more strongly", () => {
   const labels = { alice: "against", bob: "against" };
   const region = { stanceCenterX: { against: 100, neutral: 200, approve: 300 }, width: 400 };
@@ -234,7 +125,7 @@ test("forceInfluenceCenterBias pulls high-influence nodes more strongly", () => 
   const force = createForceInfluenceCenterBias(
     () => region,
     () => labels,
-    (n) => "against",
+    () => "against",
     getInfluence,
     400
   );
@@ -244,6 +135,26 @@ test("forceInfluenceCenterBias pulls high-influence nodes more strongly", () => 
   force(1);
   assert.ok(Math.abs(high.vx) > Math.abs(low.vx));
   assert.ok(Math.abs(high.vy) > Math.abs(low.vy));
+});
+
+test("Neutral node receives weaker inward pull than an equal Against node", () => {
+  const region = { stanceCenterX: { against: 100, neutral: 100, approve: 300 }, width: 400 };
+  const bounds = computeFollowerInfluenceBounds([{ followers: 100_000 }]);
+  const getInfluence = (n: { followers?: number }) =>
+    followerInfluence(Number(n.followers ?? 0), bounds.minLog, bounds.maxLog);
+  const against = { x: 50, y: 50, vx: 0, vy: 0, followers: 100_000, handle: "a" };
+  const neutral = { x: 50, y: 50, vx: 0, vy: 0, followers: 100_000, handle: "n" };
+  const labels = { a: "against", n: "neutral" };
+  const force = createForceInfluenceCenterBias(
+    () => region,
+    () => labels,
+    (node) => labels[node.handle as keyof typeof labels],
+    getInfluence,
+    400
+  );
+  force.initialize([against, neutral]);
+  force(1);
+  assert.ok(Math.abs(neutral.vx) < Math.abs(against.vx));
 });
 
 test("no strict concentric-ring ordering: high influence does not guarantee closest to center", () => {

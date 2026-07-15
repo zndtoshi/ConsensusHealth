@@ -1,6 +1,17 @@
-import { INFLUENCE_LAYOUT_ADMIN_HANDLE } from "../config/influenceLayout.js";
+// Follower-based center bias for the organic stance clouds. The pull is
+// intentionally weak so clusters stay organic and randomness dominates; the
+// follower structure should only reveal itself subconsciously after a few
+// seconds of looking, never as an obvious ranking or concentric rings.
+export const INFLUENCE_LAYOUT_CENTER_BIAS_STRENGTH = 0.0065;
 
-export const INFLUENCE_LAYOUT_CENTER_BIAS_STRENGTH = 0.009;
+// Per-stance attraction multipliers. Neutral is pulled a little less than the
+// other two: it has fewer users, so any organization becomes visually obvious.
+export const INFLUENCE_LAYOUT_STANCE_BIAS_MUL = {
+  against: 1,
+  neutral: 0.78,
+  approve: 1,
+};
+
 export const INFLUENCE_LAYOUT_STANCE_ANCHOR_MUL = 0.55;
 export const INFLUENCE_LAYOUT_COLLISION_INFLUENCE_MUL = 0.12;
 export const INFLUENCE_LAYOUT_COLLISION_MAX_MUL = 1.12;
@@ -9,63 +20,8 @@ export const BREATHING_HALO_DURATION_MS = 8000;
 export const BREATHING_HALO_OPACITY_MIN = 0.94;
 export const BREATHING_HALO_OPACITY_MAX = 1;
 
-type AuthenticatedUser = { handle?: unknown } | null | undefined;
-
 export function normalizeHandle(value: unknown): string {
   return String(value ?? "").trim().toLowerCase().replace(/^@+/, "");
-}
-
-export function isInfluenceLayoutAdminPreview(authenticatedUser: AuthenticatedUser): boolean {
-  if (!authenticatedUser?.handle) return false;
-  return normalizeHandle(authenticatedUser.handle) === INFLUENCE_LAYOUT_ADMIN_HANDLE;
-}
-
-export type InfluenceLayoutDebugOverrides = {
-  layoutOverride: boolean | null;
-  haloOverride: boolean | null;
-};
-
-export function parseDebugInfluenceLayoutParams(
-  search: string,
-  authenticatedHandle: unknown
-): InfluenceLayoutDebugOverrides {
-  if (!isInfluenceLayoutAdminPreview({ handle: authenticatedHandle })) {
-    return { layoutOverride: null, haloOverride: null };
-  }
-  const raw = search.startsWith("?") ? search.slice(1) : search;
-  const params = new URLSearchParams(raw);
-  const layoutRaw = params.get("debugInfluenceLayout");
-  const haloRaw = params.get("debugInfluenceHalo");
-  return {
-    layoutOverride: layoutRaw === "off" ? false : layoutRaw === "on" ? true : null,
-    haloOverride: haloRaw === "off" ? false : null,
-  };
-}
-
-export function resolveUseInfluenceLayout(opts: {
-  enabledForAll: boolean;
-  authenticatedUser: AuthenticatedUser;
-  layoutOverride: boolean | null;
-}): boolean {
-  const { enabledForAll, authenticatedUser, layoutOverride } = opts;
-  if (enabledForAll) {
-    if (layoutOverride === false) return false;
-    return true;
-  }
-  if (!isInfluenceLayoutAdminPreview(authenticatedUser)) return false;
-  if (layoutOverride === false) return false;
-  if (layoutOverride === true) return true;
-  return true;
-}
-
-export function resolveUseBreathingHalo(opts: {
-  useInfluenceLayout: boolean;
-  haloOverride: boolean | null;
-  prefersReducedMotion?: boolean;
-}): boolean {
-  if (!opts.useInfluenceLayout) return false;
-  if (opts.haloOverride === false) return false;
-  return true;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -105,6 +61,14 @@ export function centerBiasMultiplier(influence: number): number {
   return 0.42 + 0.58 * influence;
 }
 
+export function stanceBiasMultiplier(stance: string): number {
+  const key = String(stance ?? "").toLowerCase();
+  if (key in INFLUENCE_LAYOUT_STANCE_BIAS_MUL) {
+    return INFLUENCE_LAYOUT_STANCE_BIAS_MUL[key as keyof typeof INFLUENCE_LAYOUT_STANCE_BIAS_MUL];
+  }
+  return 1;
+}
+
 export function collisionRadiusMultiplier(influence: number): number {
   const mul = 1 + influence * INFLUENCE_LAYOUT_COLLISION_INFLUENCE_MUL;
   return Math.min(mul, INFLUENCE_LAYOUT_COLLISION_MAX_MUL);
@@ -117,14 +81,17 @@ export function deterministicUnit(handle: unknown, salt: string): number {
   return ((hash >>> 0) % 10000) / 10000;
 }
 
+// Deterministic organic scatter around each stance center. The spread is
+// generous so the cloud reads as random first; the weak center bias then nudges
+// higher-follower accounts inward over the settle without producing rings.
 export function seedInfluenceLayoutPosition(
   node: { handle: unknown; x: number; y: number; vx: number; vy: number },
   stanceCenterX: number,
   viewportH: number
 ): void {
-  const xJitter = (deterministicUnit(node.handle, "layout-x") - 0.5) * 60;
+  const xJitter = (deterministicUnit(node.handle, "layout-x") - 0.5) * 90;
   const yJitter =
-    (deterministicUnit(node.handle, "layout-y") - 0.5) * Math.min(viewportH * 0.5, 400);
+    (deterministicUnit(node.handle, "layout-y") - 0.5) * Math.min(viewportH * 0.5, 460);
   node.x = stanceCenterX + xJitter;
   node.y = viewportH / 2 + yJitter;
   node.vx = 0;
@@ -213,7 +180,7 @@ export function createForceInfluenceCenterBias(
       const stance = getStance(node, getLabels());
       const cx = r.stanceCenterX[stance] ?? (r.width ?? 0) / 2;
       const influence = getInfluence(node);
-      const k = kBase * centerBiasMultiplier(influence);
+      const k = kBase * centerBiasMultiplier(influence) * stanceBiasMultiplier(stance);
       node.vx += (cx - node.x) * k;
       node.vy += (cy - node.y) * k * 0.72;
     }
@@ -222,8 +189,4 @@ export function createForceInfluenceCenterBias(
     nodes = n;
   };
   return force;
-}
-
-export function appendInfluenceLayoutSignatureSuffix(useInfluenceLayout: boolean): string {
-  return `|${useInfluenceLayout ? 1 : 0}`;
 }

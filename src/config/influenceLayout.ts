@@ -1,4 +1,6 @@
-/** Global rollout flag — must remain false until influence layout is ready for everyone. */
-export const ENABLE_INFLUENCE_LAYOUT_FOR_ALL = false;
-
-export const INFLUENCE_LAYOUT_ADMIN_HANDLE = "zndtoshi";
+/**
+ * Follower-influence graph layout feature flag.
+ * Enabled for all visitors. Kept as a flag so the layout can be toggled during
+ * future development without touching call sites.
+ */
+export const ENABLE_INFLUENCE_LAYOUT = true;

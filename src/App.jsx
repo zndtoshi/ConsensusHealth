@@ -6,6 +6,7 @@ import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./util
 import { fetchCommunityUsers } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
 import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
+import { followersForAvatarSize } from "./utils/avatarSize";
 import {
   AUTH_CHANNEL_NAME,
   LOGIN_RETURN_KEY,
@@ -17,7 +18,7 @@ import {
 import { fetchNewStanceEvents } from "./api/newStances";
 import { NEW_STANCES_HEADING, NEW_STANCES_PUBLIC_ENABLED } from "./config/newStances";
 import { ENABLE_CLUSTER_HALO } from "./config/clusterHalo";
-import { ENABLE_INFLUENCE_LAYOUT_FOR_ALL } from "./config/influenceLayout";
+import { ENABLE_INFLUENCE_LAYOUT } from "./config/influenceLayout";
 import {
   drawClusterHalos,
   shouldShowClusterHalo,
@@ -25,16 +26,12 @@ import {
 } from "./utils/clusterHalo";
 import {
   INFLUENCE_LAYOUT_STANCE_ANCHOR_MUL,
-  appendInfluenceLayoutSignatureSuffix,
   breathingHaloAlpha,
   breathingHaloPhaseOffsetMs,
   collisionRadiusMultiplier,
   computeFollowerInfluenceBounds,
   createForceInfluenceCenterBias,
   followerInfluence,
-  parseDebugInfluenceLayoutParams,
-  resolveUseBreathingHalo,
-  resolveUseInfluenceLayout,
   seedInfluenceLayoutPosition,
   selectTopBreathingHaloHandles,
 } from "./utils/influenceLayout";
@@ -428,16 +425,18 @@ function normalizeIslandEdgeGaps(nodes, labelsMap, minGap = 18, blend = 0.45) {
 // (no recompute, no fly-in animation). Keyed by a signature that captures
 // everything the layout depends on: the exact node set + each node's stance and
 // size, the viewport, and the layout-affecting modes.
-const LAYOUT_CACHE_KEY = "consensushealth:layout:v2";
+// Bumped to v3 with the follower-influence layout rollout so previously cached
+// production/experimental positions are recomputed with the refined layout.
+const LAYOUT_CACHE_KEY = "consensushealth:layout:v3";
 
-function computeLayoutSignature(nodes, labelsMap, w, h, plebsMode, equalAvatarSizeEnabled, useInfluenceLayout) {
+function computeLayoutSignature(nodes, labelsMap, w, h, plebsMode, equalAvatarSizeEnabled) {
   const parts = nodes
     .map((n) => `${normalizeHandle(n.handle)}:${getNodeStance(n, labelsMap)}:${Math.round(n.side)}`)
     .sort();
   const str = parts.join("|");
   let hash = 0;
   for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) | 0;
-  return `${hash}|${nodes.length}|${Math.round(w)}x${Math.round(h)}|${plebsMode ? 1 : 0}|${equalAvatarSizeEnabled ? 1 : 0}${appendInfluenceLayoutSignatureSuffix(useInfluenceLayout)}`;
+  return `${hash}|${nodes.length}|${Math.round(w)}x${Math.round(h)}|${plebsMode ? 1 : 0}|${equalAvatarSizeEnabled ? 1 : 0}`;
 }
 
 function loadLayoutPositions(signature) {
@@ -863,32 +862,11 @@ export default function App() {
       }),
     [me?.authenticated, me?.handle]
   );
-  const influenceLayoutDebug = useMemo(() => {
-    const search =
-      typeof window !== "undefined" && window.location ? window.location.search : "";
-    return parseDebugInfluenceLayoutParams(
-      search,
-      me?.authenticated ? me?.handle : null
-    );
-  }, [me?.authenticated, me?.handle]);
-  const useInfluenceLayout = useMemo(
-    () =>
-      resolveUseInfluenceLayout({
-        enabledForAll: ENABLE_INFLUENCE_LAYOUT_FOR_ALL,
-        authenticatedUser: me?.authenticated ? me : null,
-        layoutOverride: influenceLayoutDebug.layoutOverride,
-      }),
-    [me, influenceLayoutDebug.layoutOverride]
-  );
-  const useBreathingHalo = useMemo(
-    () =>
-      resolveUseBreathingHalo({
-        useInfluenceLayout,
-        haloOverride: influenceLayoutDebug.haloOverride,
-        prefersReducedMotion: readReducedMotionPreference(),
-      }),
-    [useInfluenceLayout, influenceLayoutDebug.haloOverride]
-  );
+  // Follower-influence layout is the default for all visitors; the breathing
+  // halo rides along with it (its motion is disabled under reduced motion at
+  // draw time, so it can stay enabled here).
+  const useInfluenceLayout = ENABLE_INFLUENCE_LAYOUT;
+  const useBreathingHalo = ENABLE_INFLUENCE_LAYOUT;
   const [authBusy, setAuthBusy] = useState(false);
   // OAuth popup bookkeeping. beginLogin opens a popup and we complete login by
   // re-reading /api/me (no full-page reload / graph refetch). Refs avoid stale
@@ -2088,8 +2066,8 @@ export default function App() {
       })
       .filter(({ tweetCount, hasManualStance }) => tweetCount > 0 || hasManualStance)
       .map(({ a, tweetCount, seedStance }) => {
-        const rawFollowers = Number(a.followers_count || 0);
-        const followersForSize = rawFollowers > 0 ? rawFollowers : (seedStance ? 5000 : 0);
+        const followerInfo = getFollowersFromUser(a);
+        const followersForSize = followersForAvatarSize(followerInfo, Boolean(seedStance));
         const side = equalAvatarSizeEnabled ? EQUAL_AVATAR_SIDE : sideFromFollowers(followersForSize);
         const resolvedAvatar = avatarSrc(a);
         const hasStance = Boolean(seedStance);
@@ -2108,7 +2086,7 @@ export default function App() {
           handle: a.handle,
           x_user_id: String(a.x_user_id ?? a.xUserId ?? "").trim() || null,
           seedStance,
-          followers: rawFollowers,
+          followers: followerInfo.followers,
           bio: String(a.bio ?? "").trim() || null,
           accountCreatedAt: a.accountCreatedAt ?? a.account_created_at ?? null,
           hasUserStanceChange: Boolean(a.hasUserStanceChange),
@@ -2298,8 +2276,7 @@ export default function App() {
       w,
       h,
       plebsMode,
-      equalAvatarSizeEnabled,
-      useInfluenceLayout
+      equalAvatarSizeEnabled
     );
     const cachedPos = loadLayoutPositions(layoutSig);
     const restored = cachedPos ? applyLayoutPositions(nodes, cachedPos) : 0;
