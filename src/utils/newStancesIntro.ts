@@ -1,5 +1,6 @@
 import type { NewStanceEvent } from "../api/newStances.js";
 import { NEW_STANCES_PUBLIC_ENABLED } from "../config/newStances.js";
+import { STANCE_COLORS } from "./stanceColors.js";
 
 export const LAST_SEEN_MARKER_KEY = "consensus_health_last_seen_stance_event_v2";
 export const PLAYING_SESSION_KEY = "consensus_health_new_stances_playing_v2";
@@ -252,40 +253,44 @@ export type StagingLayout = {
 };
 
 export const INTRO_HEADING_TOP_PX = 4;
-export const INTRO_HEADING_HEIGHT_PX = 20;
-export const INTRO_HEADING_GAP_PX = 6;
-export const INTRO_LABEL_GAP_PX = 4;
+export const INTRO_HEADING_HEIGHT_PX = 18;
+export const INTRO_HEADING_GAP_PX = 9;
+/** Panel padding and shape (glass card). */
+export const INTRO_PANEL_PAD_X = 16;
+export const INTRO_PANEL_PAD_TOP = 10;
+export const INTRO_PANEL_PAD_BOTTOM = 14;
+export const INTRO_PANEL_MAX_WIDTH_PX = 760;
+export const INTRO_PANEL_RADIUS_PX = 18;
+export const INTRO_COUNTDOWN_HEIGHT_PX = 10;
+/** Horizontal gap between staged avatars. */
+export const STAGING_AVATAR_GAP_PX = 10;
+/** Staged avatar size bounds (~12% larger than prior 54px cap). */
+export const STAGING_MAX_SIDE_PX = 60;
+export const STAGING_MIN_SIDE_PX = 42;
+export const STAGING_ROW_PAD_X = 32;
 
 /** Raise the intro band into the lower half of the app header (canvas coords). */
 export function computeIntroBandLiftPx(headerHeight: number): number {
   return Math.round(Math.max(0, headerHeight) / 2);
 }
-/** Horizontal gap between staged avatars. */
-export const STAGING_AVATAR_GAP_PX = 8;
-/** Keep the staging band compact so it stays above the graph clusters. */
-export const STAGING_MAX_SIDE_PX = 54;
-export const STAGING_MIN_SIDE_PX = 38;
-export const STAGING_ROW_PAD_X = 40;
 
-/** Shorten long handles so labels fit in tight slots without widening the row. */
-export function formatIntroHandleLabel(handle: unknown, maxLen = 11): string {
+/** Accessible name for a staged avatar (visible handles removed from panel). */
+export function introAvatarAriaLabel(handle: unknown, stance: StanceKey): string {
   const h = normalizeHandle(handle);
-  if (!h) return "@user";
-  const label = `@${h}`;
-  if (label.length <= maxLen) return label;
-  return `${label.slice(0, Math.max(4, maxLen - 1))}…`;
+  const name = h ? `@${h}` : "community member";
+  const stanceLabel =
+    stance === "against" ? "Against" : stance === "approve" ? "Approve" : "Neutral";
+  return `${name}, stance ${stanceLabel}`;
 }
 
-/** Pick one equal staging avatar size that fits a tight centered row without overlapping the graph. */
+/** Responsive staged avatar size: clamp(42px, 3.2vw, 60px) capped by row fit. */
 export function computeStagingSidePx(count: number, view: StagingView): number {
-  if (count <= 0) return STAGING_MAX_SIDE_PX;
-  const availW = Math.max(120, view.cw - STAGING_ROW_PAD_X * 2);
+  const responsive = Math.round(Math.max(STAGING_MIN_SIDE_PX, Math.min(STAGING_MAX_SIDE_PX, view.cw * 0.032)));
+  if (count <= 0) return responsive;
+  const availW = Math.max(120, Math.min(INTRO_PANEL_MAX_WIDTH_PX, view.cw - 32) - INTRO_PANEL_PAD_X * 2);
   const gap = STAGING_AVATAR_GAP_PX;
   const byWidth = (availW - gap * Math.max(0, count - 1)) / Math.max(1, count);
-  return Math.max(
-    STAGING_MIN_SIDE_PX,
-    Math.min(STAGING_MAX_SIDE_PX, Math.floor(byWidth))
-  );
+  return Math.max(STAGING_MIN_SIDE_PX, Math.min(responsive, Math.floor(byWidth)));
 }
 
 /** Compute a tight, centered top row directly under the heading. */
@@ -319,7 +324,7 @@ export type StagingPanelBounds = {
   r: number;
 };
 
-/** Background tile behind the heading + staged avatars + labels. */
+/** Background tile behind the heading + staged avatars (+ optional countdown). */
 export function computeStagingPanelBounds(
   count: number,
   stagingSidePx: number,
@@ -329,28 +334,98 @@ export function computeStagingPanelBounds(
   const totalW = count * stagingSidePx + Math.max(0, count - 1) * gap;
   const rowStartX = (view.cw - totalW) / 2;
   const avatarTopY = INTRO_HEADING_TOP_PX + INTRO_HEADING_HEIGHT_PX + INTRO_HEADING_GAP_PX;
-  const labelH = 15;
-  const padX = 24;
-  const padTop = 6;
-  const padBottom = 24;
-  const x = Math.max(8, rowStartX - padX);
-  const y = INTRO_HEADING_TOP_PX - padTop;
-  const w = Math.min(view.cw - 16, totalW + padX * 2);
-  const h = avatarTopY - y + stagingSidePx + INTRO_LABEL_GAP_PX + labelH + padBottom;
-  return { x, y, w, h, r: 16 };
+  const x = Math.max(8, rowStartX - INTRO_PANEL_PAD_X);
+  const y = INTRO_HEADING_TOP_PX - INTRO_PANEL_PAD_TOP;
+  const w = Math.min(view.cw - 16, Math.min(INTRO_PANEL_MAX_WIDTH_PX, totalW + INTRO_PANEL_PAD_X * 2));
+  const h =
+    avatarTopY -
+    y +
+    stagingSidePx +
+    INTRO_COUNTDOWN_HEIGHT_PX +
+    6 +
+    INTRO_PANEL_PAD_BOTTOM;
+  return { x, y, w, h, r: INTRO_PANEL_RADIUS_PX };
 }
 
 export const INTRO_TIMING = {
-  fadeInMs: 400,
+  /** Panel + avatar entrance (fade/scale stagger). */
+  fadeInMs: 300,
+  entranceStaggerMs: 35,
   /** Time from intro start until the first avatar flies (includes fade-in). */
   holdMs: 3000,
   headingFadeOutMs: 500,
   /** Heading fades only once flight begins, not before the hold ends. */
   headingFadeOutStartMs: 3000,
+  /** Glass panel fades out quickly once flight begins. */
+  panelFlightFadeMs: 220,
   flightMs: 1100,
   flightStaggerMs: 70,
   reducedCrossfadeMs: 400,
 };
+
+/** cubic-bezier(0.22, 1, 0.36, 1) — entrance easing */
+export function easeIntroEntrance(t: number): number {
+  const x = Math.max(0, Math.min(1, t));
+  return 1 - (1 - x) ** 3;
+}
+
+export function introAvatarEntrance(
+  itemIndex: number,
+  elapsedMs: number,
+  reducedMotion: boolean
+): { opacity: number; scale: number } {
+  if (reducedMotion) {
+    const t = Math.min(1, elapsedMs / INTRO_TIMING.fadeInMs);
+    return { opacity: easeInOutCubic(t), scale: 1 };
+  }
+  const local = Math.max(0, elapsedMs - itemIndex * INTRO_TIMING.entranceStaggerMs);
+  const t = Math.min(1, local / INTRO_TIMING.fadeInMs);
+  const eased = easeIntroEntrance(t);
+  return { opacity: eased, scale: 0.92 + 0.08 * eased };
+}
+
+/** Subtle launch dots visible only during the final ~900ms of the hold. */
+export function introCountdownDotOpacity(
+  dotIndex: number,
+  phase: IntroPhase,
+  elapsedMs: number,
+  reducedMotion: boolean
+): number {
+  if (reducedMotion || phase !== "hold") return 0;
+  const windowStart = INTRO_TIMING.holdMs - 900;
+  if (elapsedMs < windowStart || elapsedMs >= INTRO_TIMING.holdMs) return 0;
+  const t = (elapsedMs - windowStart) / 900;
+  const dotStart = dotIndex * 0.22;
+  const dotPeak = dotStart + 0.16;
+  const dotFade = dotStart + 0.42;
+  if (t < dotStart) return 0.12;
+  if (t < dotPeak) return 0.12 + 0.42 * easeInOutCubic((t - dotStart) / (dotPeak - dotStart));
+  if (t < dotFade) return 0.54;
+  return Math.max(0, 0.54 * (1 - easeInOutCubic(Math.min(1, (t - dotFade) / 0.18))));
+}
+
+/** Stance-colored border and glow for staged avatars (matches graph palette). */
+export function introStanceAura(stance: StanceKey): { border: string; glow: string; fill: string } {
+  if (stance === "against") {
+    return {
+      border: STANCE_COLORS.against,
+      glow: "rgba(239, 68, 68, 0.42)",
+      fill: "rgba(239, 68, 68, 0.14)",
+    };
+  }
+  if (stance === "approve") {
+    return {
+      border: STANCE_COLORS.approve,
+      glow: "rgba(34, 197, 94, 0.42)",
+      fill: "rgba(34, 197, 94, 0.14)",
+    };
+  }
+  return {
+    border: STANCE_COLORS.neutral,
+    glow: "rgba(255, 255, 255, 0.24)",
+    fill: "rgba(156, 163, 175, 0.16)",
+  };
+}
 
 let introSessionLock = false;
 
@@ -384,7 +459,7 @@ export function headingOpacityForPhase(
   itemCount = INTRO_MAX_USERS
 ): number {
   if (phase === "idle" || phase === "done") return 0;
-  if (phase === "fade-in") return easeInOutCubic(elapsedMs / INTRO_TIMING.fadeInMs);
+  if (phase === "fade-in") return easeIntroEntrance(elapsedMs / INTRO_TIMING.fadeInMs);
   if (phase === "hold") return 1;
   if (phase === "flying") {
     const panel = stagingPanelOpacityForPhase(phase, elapsedMs, itemCount, reducedMotion);
@@ -406,10 +481,8 @@ export function stagingPanelOpacityForPhase(
   if (phase === "hold") return maxAlpha;
   if (phase === "flying") {
     const flightElapsed = Math.max(0, elapsedMs - INTRO_TIMING.holdMs);
-    const flightSpan = reducedMotion
-      ? INTRO_TIMING.reducedCrossfadeMs
-      : INTRO_TIMING.flightMs + INTRO_TIMING.flightStaggerMs * Math.max(0, itemCount - 1);
-    const t = Math.min(1, flightElapsed / Math.max(1, flightSpan));
+    const fadeMs = reducedMotion ? INTRO_TIMING.reducedCrossfadeMs : INTRO_TIMING.panelFlightFadeMs;
+    const t = Math.min(1, flightElapsed / Math.max(1, fadeMs));
     return maxAlpha * (1 - easeInOutCubic(t));
   }
   return 0;
@@ -424,7 +497,7 @@ export function itemOpacityForPhase(
 ): number {
   if (phase === "idle") return 0;
   if (item.landed) return 1;
-  if (phase === "fade-in") return easeInOutCubic(elapsedMs / INTRO_TIMING.fadeInMs);
+  if (phase === "fade-in") return easeIntroEntrance(elapsedMs / INTRO_TIMING.fadeInMs);
   if (phase === "hold") return 1;
   if (phase === "flying") {
     const now = performance.now();
@@ -450,14 +523,15 @@ export function computeFlightScreenPos(
     return { sx: finalSx, sy: finalSy, sidePx: finalSidePx, labelOpacity: 0 };
   }
   if (now < item.flightStart) {
-    const bob = reducedMotion ? 0 : Math.sin(now * 0.0025) * 3;
-    return { sx: item.stagingSx, sy: item.stagingSy + bob, sidePx: stagingSidePx, labelOpacity: 1 };
+    const phaseOffset = (item.eventId % 7) * 0.45;
+    const bob = reducedMotion ? 0 : Math.sin(now * 0.0022 + phaseOffset) * 2.5;
+    return { sx: item.stagingSx, sy: item.stagingSy + bob, sidePx: stagingSidePx, labelOpacity: 0 };
   }
 
   const tRaw = (now - item.flightStart) / Math.max(1, item.flightEnd - item.flightStart);
   const t = easeInOutCubic(tRaw);
   const sidePx = stagingSidePx + (finalSidePx - stagingSidePx) * t;
-  const labelOpacity = Math.max(0, 1 - t * 1.2);
+  const labelOpacity = 0;
   if (reducedMotion) {
     return {
       sx: item.stagingSx + (finalSx - item.stagingSx) * t,

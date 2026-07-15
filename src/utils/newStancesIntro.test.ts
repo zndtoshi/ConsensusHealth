@@ -9,9 +9,12 @@ import {
   computeIntroBandLiftPx,
   computeStagingLayouts,
   computeStagingPanelBounds,
-  formatIntroHandleLabel,
   getIntroPhase,
   headingOpacityForPhase,
+  introAvatarAriaLabel,
+  introAvatarEntrance,
+  introCountdownDotOpacity,
+  introStanceAura,
   stagingPanelOpacityForPhase,
   INTRO_MAX_USERS,
   INTRO_TIMING,
@@ -253,6 +256,36 @@ test("intro nodes hidden until landed", () => {
   assert.equal(isIntroNodeHidden("u1", hidden, landed), false);
 });
 
+test("intro avatar entrance scales and fades with stagger", () => {
+  const first = introAvatarEntrance(0, 150, false);
+  const second = introAvatarEntrance(1, 150, false);
+  assert.ok(first.opacity > second.opacity);
+  assert.ok(first.scale > 0.92 && first.scale <= 1);
+  const reduced = introAvatarEntrance(0, 150, true);
+  assert.equal(reduced.scale, 1);
+});
+
+test("intro stance aura uses graph stance colors", () => {
+  assert.equal(introStanceAura("against").border, "#ef4444");
+  assert.equal(introStanceAura("approve").border, "#22c55e");
+  assert.equal(introStanceAura("neutral").border, "#9ca3af");
+});
+
+test("intro aria labels preserve accessible names without visible handles", () => {
+  assert.match(introAvatarAriaLabel("alice", "approve"), /@alice, stance Approve/);
+});
+
+test("countdown dots appear only near end of hold", () => {
+  assert.equal(introCountdownDotOpacity(0, "hold", 1000, false), 0);
+  assert.ok(introCountdownDotOpacity(0, "hold", 2500, false) > 0.1);
+  assert.equal(introCountdownDotOpacity(0, "flying", 3100, false), 0);
+});
+
+test("panel fades quickly when flight begins", () => {
+  const atFlight = stagingPanelOpacityForPhase("flying", INTRO_TIMING.holdMs + 220, 9, false);
+  assert.ok(atFlight < 0.2);
+});
+
 test("intro band lift reaches the header vertical midpoint", () => {
   assert.equal(computeIntroBandLiftPx(56), 28);
   assert.equal(computeIntroBandLiftPx(0), 0);
@@ -345,10 +378,10 @@ test("flight interpolates avatar size and fades handle label", () => {
   };
   const hold = computeFlightScreenPos(item, 500, view, false);
   assert.equal(hold.sidePx, 72);
-  assert.equal(hold.labelOpacity, 1);
+  assert.equal(hold.labelOpacity, 0);
   const mid = computeFlightScreenPos(item, 1500, view, false);
   assert.ok(mid.sidePx < 72 && mid.sidePx > 20);
-  assert.ok(mid.labelOpacity < 1 && mid.labelOpacity > 0);
+  assert.equal(mid.labelOpacity, 0);
   const done = computeFlightScreenPos(item, 2500, view, false);
   assert.equal(done.sidePx, 20);
   assert.equal(done.labelOpacity, 0);

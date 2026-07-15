@@ -14,8 +14,10 @@ import {
 import { fetchNewStanceEvents } from "./api/newStances";
 import { NEW_STANCES_HEADING, NEW_STANCES_PUBLIC_ENABLED } from "./config/newStances";
 import {
-  formatIntroHandleLabel,
-  INTRO_LABEL_GAP_PX,
+  introAvatarAriaLabel,
+  introAvatarEntrance,
+  introCountdownDotOpacity,
+  introStanceAura,
   lockIntroSession,
   clearPlayingSession,
   computeFlightScreenPos,
@@ -945,7 +947,14 @@ export default function App() {
     phase: "idle",
   });
   const meRef = useRef(null);
-  const [newStancesUi, setNewStancesUi] = useState({ headingOpacity: 0, debug: false, bandActive: false });
+  const [newStancesUi, setNewStancesUi] = useState({
+    headingOpacity: 0,
+    debug: false,
+    bandActive: false,
+    ariaLabels: [],
+  });
+  const introPanelRef = useRef(null);
+  const introCountdownRef = useRef(null);
   const headerRef = useRef(null);
   const [headerHeightPx, setHeaderHeightPx] = useState(56);
 
@@ -2533,7 +2542,7 @@ export default function App() {
       const marker = pickNewestMarker(markerEvents);
       if (marker) writeLastSeenMarker(localStorage, marker);
     }
-    setNewStancesUi({ headingOpacity: 0, debug: false, bandActive: false });
+    setNewStancesUi({ headingOpacity: 0, debug: false, bandActive: false, ariaLabels: [] });
     scheduleDraw();
   }
 
@@ -2676,10 +2685,50 @@ export default function App() {
       });
     }
 
-    setNewStancesUi({ headingOpacity: 0, debug: debug.enabled, bandActive: true });
+    setNewStancesUi({
+      headingOpacity: 0,
+      debug: debug.enabled,
+      bandActive: true,
+      ariaLabels: scheduled.map((it) => introAvatarAriaLabel(it.handle, it.stance)),
+    });
     if (intro.rafId) cancelAnimationFrame(intro.rafId);
     intro.rafId = requestAnimationFrame(newStancesIntroTick);
     scheduleDraw();
+  }
+
+  function syncIntroOverlayDom(panelBounds, panelAlpha, intro, elapsedIntro, phase) {
+    const panelEl = introPanelRef.current;
+    const countdownEl = introCountdownRef.current;
+    const panelOpacity = Math.min(1, panelAlpha / 0.94);
+    if (panelEl) {
+      if (panelAlpha > 0.01) {
+        panelEl.style.display = "block";
+        panelEl.style.left = `${panelBounds.x}px`;
+        panelEl.style.top = `${panelBounds.y}px`;
+        panelEl.style.width = `${panelBounds.w}px`;
+        panelEl.style.height = `${panelBounds.h}px`;
+        panelEl.style.opacity = String(panelOpacity);
+      } else {
+        panelEl.style.display = "none";
+      }
+    }
+    if (countdownEl) {
+      let showCountdown = false;
+      for (let d = 0; d < 3; d++) {
+        const op = introCountdownDotOpacity(d, phase, elapsedIntro, intro.reducedMotion);
+        const dot = countdownEl.children[d];
+        if (dot) dot.style.opacity = String(op);
+        if (op > 0.13) showCountdown = true;
+      }
+      if (showCountdown && panelAlpha > 0.01) {
+        countdownEl.style.display = "flex";
+        countdownEl.style.left = `${panelBounds.x + panelBounds.w / 2}px`;
+        countdownEl.style.top = `${panelBounds.y + panelBounds.h - 14}px`;
+        countdownEl.style.transform = "translateX(-50%)";
+      } else {
+        countdownEl.style.display = "none";
+      }
+    }
   }
 
   function draw() {
@@ -3023,50 +3072,34 @@ export default function App() {
     if (introActive && intro.items.length) {
       const nowIntro = performance.now();
       const elapsedIntro = nowIntro - intro.startedAt;
+      const phase = getIntroPhase(elapsedIntro, intro.reducedMotion);
       const viewIntro = getNewStancesStagingView();
       const stagingSide = intro.items[0]?.stagingSidePx || 48;
       const panelBounds = computeStagingPanelBounds(intro.items.length, stagingSide, viewIntro);
       const panelAlpha = stagingPanelOpacityForPhase(
-        intro.phase,
+        phase,
         elapsedIntro,
         intro.items.length,
         intro.reducedMotion
       );
-      if (panelAlpha > 0.01) {
-        const { x, y, w, h, r } = panelBounds;
-        ctx.save();
-        ctx.globalAlpha = panelAlpha;
-        ctx.fillStyle = "rgba(15, 23, 42, 0.94)";
-        ctx.beginPath();
-        if (typeof ctx.roundRect === "function") {
-          ctx.roundRect(x, y, w, h, r);
-        } else {
-          ctx.rect(x, y, w, h);
-        }
-        ctx.fill();
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
-        ctx.lineWidth = 1;
-        ctx.stroke();
-        ctx.restore();
-      }
-      const fadeAlpha =
-        intro.phase === "fade-in"
-          ? easeInOutCubic(elapsedIntro / INTRO_TIMING.fadeInMs)
-          : 1;
+      syncIntroOverlayDom(panelBounds, panelAlpha, intro, elapsedIntro, phase);
+
+      let itemIndex = 0;
       for (const item of intro.items) {
         if (item.landed) continue;
         const pos = computeFlightScreenPos(item, nowIntro, viewIntro, intro.reducedMotion);
-        const sidePx = Math.max(8, pos.sidePx);
+        const inFlight = nowIntro >= item.flightStart;
+        const entrance = inFlight
+          ? { opacity: 1, scale: 1 }
+          : introAvatarEntrance(itemIndex, elapsedIntro, intro.reducedMotion);
+        const sidePx = Math.max(8, pos.sidePx * entrance.scale);
         const drawX = pos.sx - sidePx / 2;
         const drawY = pos.sy - sidePx / 2;
         const rOv = Math.min(14, sidePx * 0.22);
-        const auraIntro = stanceColor(item.stance);
+        const aura = introStanceAura(item.stance);
         ctx.save();
-        ctx.globalAlpha = fadeAlpha;
-        const baseFill = auraIntro
-          ? auraIntro.replace(/[\d.]+\)$/, "0.18)")
-          : "rgba(70,75,85,0.35)";
-        ctx.fillStyle = baseFill;
+        ctx.globalAlpha = entrance.opacity;
+        ctx.fillStyle = aura.fill;
         ctx.beginPath();
         if (typeof ctx.roundRect === "function") {
           ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
@@ -3087,8 +3120,10 @@ export default function App() {
           ctx.drawImage(img, drawX, drawY, sidePx, sidePx);
           ctx.restore();
         }
-        ctx.strokeStyle = auraIntro ? auraIntro.replace(/[\d.]+\)$/, "0.9)") : "rgba(120,130,150,0.9)";
+        ctx.strokeStyle = aura.border;
         ctx.lineWidth = 2;
+        ctx.shadowColor = aura.glow;
+        ctx.shadowBlur = item.stance === "neutral" ? 9 : 10;
         ctx.beginPath();
         if (typeof ctx.roundRect === "function") {
           ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
@@ -3096,17 +3131,12 @@ export default function App() {
           ctx.rect(drawX, drawY, sidePx, sidePx);
         }
         ctx.stroke();
-        if (pos.labelOpacity > 0.02 && item.handle) {
-          ctx.globalAlpha = fadeAlpha * pos.labelOpacity;
-          const fontSize = Math.max(10, Math.min(12, sidePx * 0.17));
-          ctx.font = `600 ${fontSize}px system-ui, -apple-system, Segoe UI, sans-serif`;
-          ctx.fillStyle = "rgba(255,255,255,0.94)";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "top";
-          ctx.fillText(formatIntroHandleLabel(item.handle), pos.sx, drawY + sidePx + INTRO_LABEL_GAP_PX);
-        }
+        ctx.shadowBlur = 0;
         ctx.restore();
+        itemIndex += 1;
       }
+    } else {
+      syncIntroOverlayDom({ x: 0, y: 0, w: 0, h: 0 }, 0, intro, 0, "idle");
     }
   }
 
@@ -3724,6 +3754,7 @@ export default function App() {
         <div ref={containerRef} style={styles.canvasWrap}>
           {!stanceListsViewEnabled ? (
             <>
+              <div ref={introPanelRef} className="newStancesPanel" aria-hidden="true" />
               {(newStancesUi.headingOpacity > 0.01 || newStancesUi.bandActive) && (
                 <div
                   className="newStancesHeading"
@@ -3733,6 +3764,16 @@ export default function App() {
                   {NEW_STANCES_HEADING}
                 </div>
               )}
+              {newStancesUi.bandActive && newStancesUi.ariaLabels.length > 0 && (
+                <div className="sr-only" aria-live="polite">
+                  {newStancesUi.ariaLabels.join("; ")}
+                </div>
+              )}
+              <div ref={introCountdownRef} className="newStancesCountdown" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
               {newStancesUi.debug && (
                 <div className="newStancesDebugLabel">Debug new stances</div>
               )}
