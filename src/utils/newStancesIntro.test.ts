@@ -189,16 +189,16 @@ test("staging layouts use a tight centered row under the heading", () => {
   assert.ok(a.sy < 70);
 });
 
-test("staging panel stays visible through full 4s hold then fades on flight", () => {
-  const holdAt3500 = stagingPanelOpacityForPhase("hold", 3500, 9, false);
-  const holdAt3999 = stagingPanelOpacityForPhase("hold", 3999, 9, false);
+test("staging panel stays visible through full 3s hold then fades on flight", () => {
+  const holdAt2500 = stagingPanelOpacityForPhase("hold", 2500, 9, false);
+  const holdAt2999 = stagingPanelOpacityForPhase("hold", 2999, 9, false);
   const flightStart = stagingPanelOpacityForPhase("flying", INTRO_TIMING.holdMs, 9, false);
   const flightMid = stagingPanelOpacityForPhase("flying", INTRO_TIMING.holdMs + 600, 9, false);
-  assert.ok(holdAt3500 > 0.9);
-  assert.ok(holdAt3999 > 0.9);
+  assert.ok(holdAt2500 > 0.9);
+  assert.ok(holdAt2999 > 0.9);
   assert.ok(flightStart > 0.85);
   assert.ok(flightMid < flightStart);
-  assert.equal(headingOpacityForPhase("hold", 3500, false, 9), 1);
+  assert.equal(headingOpacityForPhase("hold", 2500, false, 9), 1);
 });
 
 test("reduced motion uses the same staging hold before flight", () => {

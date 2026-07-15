@@ -222,9 +222,9 @@ export type StagingLayout = {
   stagingSidePx: number;
 };
 
-export const INTRO_HEADING_TOP_PX = 10;
+export const INTRO_HEADING_TOP_PX = 4;
 export const INTRO_HEADING_HEIGHT_PX = 20;
-export const INTRO_HEADING_GAP_PX = 8;
+export const INTRO_HEADING_GAP_PX = 6;
 export const INTRO_LABEL_GAP_PX = 4;
 /** Horizontal gap between staged avatars. */
 export const STAGING_AVATAR_GAP_PX = 8;
@@ -297,7 +297,7 @@ export function computeStagingPanelBounds(
   const avatarTopY = INTRO_HEADING_TOP_PX + INTRO_HEADING_HEIGHT_PX + INTRO_HEADING_GAP_PX;
   const labelH = 15;
   const padX = 24;
-  const padTop = 8;
+  const padTop = 6;
   const padBottom = 24;
   const x = Math.max(8, rowStartX - padX);
   const y = INTRO_HEADING_TOP_PX - padTop;
@@ -309,10 +309,10 @@ export function computeStagingPanelBounds(
 export const INTRO_TIMING = {
   fadeInMs: 400,
   /** Time from intro start until the first avatar flies (includes fade-in). */
-  holdMs: 4000,
+  holdMs: 3000,
   headingFadeOutMs: 500,
   /** Heading fades only once flight begins, not before the hold ends. */
-  headingFadeOutStartMs: 4000,
+  headingFadeOutStartMs: 3000,
   flightMs: 1100,
   flightStaggerMs: 70,
   reducedCrossfadeMs: 400,
