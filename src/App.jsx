@@ -1,6 +1,8 @@
 import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { forceCollide, forceManyBody, forceCenter, forceSimulation, forceX, forceY } from "d3-force";
 import { canonicalAvatarSrc, getAvatar, preloadAvatarUrls } from "./utils/avatarCache";
+import { isChromium, isFirefox } from "./utils/browser";
+import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./utils/glowRendering";
 import { fetchCommunityUsers } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
 import {
@@ -229,7 +231,7 @@ function hasAccountStance(account, labelsMap) {
 }
 
 const LABELS_STORAGE_KEY = "consensushealth:bip110:labels:v1";
-const GLOW_CACHE_VERSION = 3;
+const GLOW_CACHE_VERSION = 4;
 const AVATAR_REV = "20260305d";
 const DATA_REV = "20260305d";
 const EQUAL_AVATAR_SIDE = 26;
@@ -541,7 +543,10 @@ function drawRoundedRectPath(ctx, x, y, w, h, r) {
   }
 }
 
-function createGlowSprite(aura, side, emphasize, quality = 1) {
+function createGlowSprite(aura, side, emphasize, quality = 1, glowOpts = {}) {
+  const blurMul = glowOpts.blurMultiplier ?? 1;
+  const opacityMul = glowOpts.opacityMultiplier ?? 1;
+  const glowAura = opacityMul === 1 ? aura : scaleRgbaAlpha(aura, opacityMul);
   const fullLayers = emphasize
     ? [
         { blur: clamp(side * 1.9, 30, 220), alpha: 0.72, line: 2.8 },
@@ -557,7 +562,7 @@ function createGlowSprite(aura, side, emphasize, quality = 1) {
       ];
   const layers = quality < 0.55 ? fullLayers.slice(0, 2) : fullLayers;
   // Prevent clipping: pad must account for the largest blur radius.
-  const maxBlur = layers.reduce((m, l) => Math.max(m, l.blur * quality), 0);
+  const maxBlur = layers.reduce((m, l) => Math.max(m, l.blur * quality * blurMul), 0);
   const padScale = 0.58 + quality * 0.42;
   const padBase = clamp(side * (emphasize ? 5.2 : 4.6) * padScale, 36, emphasize ? 360 : 300);
   const pad = Math.ceil(Math.max(padBase, maxBlur * 1.2));
@@ -575,15 +580,16 @@ function createGlowSprite(aura, side, emphasize, quality = 1) {
   g.save();
   g.globalCompositeOperation = "source-over";
   for (const layer of layers) {
-    g.shadowColor = aura;
-    g.shadowBlur = layer.blur * quality;
-    g.strokeStyle = aura.replace(/[\d.]+\)$/, `${layer.alpha})`);
+    g.shadowColor = glowAura;
+    g.shadowBlur = layer.blur * quality * blurMul;
+    g.strokeStyle = glowAura.replace(/[\d.]+\)$/, `${layer.alpha * opacityMul})`);
     g.lineWidth = layer.line;
     g.beginPath();
     drawRoundedRectPath(g, x, y, side, side, r);
     g.stroke();
   }
   g.shadowBlur = 0;
+  g.shadowColor = "transparent";
   g.restore();
   return { canvas, pad };
 }
@@ -874,10 +880,16 @@ export default function App() {
   const introCanvasRef = useRef(null);
   const containerRef = useRef(null);
   const { w, h } = useContainerSize(containerRef);
-  const isFirefox = useMemo(
-    () => typeof navigator !== "undefined" && /firefox/i.test(navigator.userAgent || ""),
-    []
-  );
+  const isFirefoxBrowser = useMemo(() => isFirefox(), []);
+  const isChromiumBrowser = useMemo(() => isChromium(), []);
+  const glowProfile = useMemo(() => {
+    const search = typeof window !== "undefined" ? window.location.search : "";
+    return resolveGlowProfile({
+      isFirefox: isFirefoxBrowser,
+      isChromium: isChromiumBrowser,
+      debugGlow: parseDebugGlowParams(search),
+    });
+  }, [isFirefoxBrowser, isChromiumBrowser]);
 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
@@ -2169,7 +2181,7 @@ export default function App() {
       .force("center", forceCenter(w / 2, h / 2))
       // Plebs mode uses denser per-stance blobs by relaxing hard X bounds and using slightly stronger packing.
       .force("stanceX", forceX(stanceCenterX).strength(plebsMode ? 0.075 : 0.11))
-      .force("stanceAnchor", forceStanceAnchor(regionRef, labelsRef, plebsMode ? (isFirefox ? 0.01 : 0.013) : (isFirefox ? 0.012 : 0.016)))
+      .force("stanceAnchor", forceStanceAnchor(regionRef, labelsRef, plebsMode ? (isFirefoxBrowser ? 0.01 : 0.013) : (isFirefoxBrowser ? 0.012 : 0.016)))
       .force("stanceBounds", plebsMode ? null : forceStanceBounds(regionRef, labelsRef, 0.07))
       .force("pullY", forceY(h / 2).strength(plebsMode ? 0.06 : 0.03))
       .force("charge", forceManyBody().strength(plebsMode ? -6 : -4))
@@ -2465,7 +2477,7 @@ export default function App() {
 
   // Drawing
   function getStarfieldCanvas(cw, ch, dpr) {
-    const key = `${cw}x${ch}|${dpr}|${isFirefox ? "ff" : "std"}`;
+    const key = `${cw}x${ch}|${dpr}|${isFirefoxBrowser ? "ff" : "std"}`;
     if (starfieldCanvasRef.current && starfieldKeyRef.current === key) return starfieldCanvasRef.current;
     const off = document.createElement("canvas");
     off.width = Math.floor(cw * dpr);
@@ -2475,7 +2487,7 @@ export default function App() {
       sctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       sctx.clearRect(0, 0, cw, ch);
       sctx.fillStyle = "rgba(255,255,255,0.4)";
-      const starCount = isFirefox ? 48 : 120;
+      const starCount = isFirefoxBrowser ? 48 : 120;
       for (let i = 0; i < starCount; i++) {
         const x = (i * 137.5 + 13) % (cw + 2);
         const y = (i * 97.3 + 17) % (ch + 2);
@@ -2892,7 +2904,7 @@ export default function App() {
     if (!ctx) return;
 
     const rawDpr = window.devicePixelRatio || 1;
-    const dpr = isFirefox ? Math.min(rawDpr, 1.5) : rawDpr;
+    const dpr = isFirefoxBrowser ? Math.min(rawDpr, 1.5) : rawDpr;
     const cw = Math.max(1, w);
     const ch = Math.max(1, h);
 
@@ -2985,10 +2997,10 @@ export default function App() {
     const neutralX = neutralCx * scale + tx;
     const approveX = approveCx * scale + tx;
     const zoneY = zoneCyWorld * scale + ty;
-    const baseRadius = Math.min(cw, ch) * (isFirefox ? 0.28 : 0.31);
+    const baseRadius = Math.min(cw, ch) * (isFirefoxBrowser ? 0.28 : 0.31);
     const zoneRadius = Math.max(120, Math.min(420, baseRadius));
     const getZone = (key, rgb, alpha) => {
-      const cacheKey = `${key}|${Math.round(zoneRadius)}|${alpha}|${isFirefox ? "ff" : "std"}`;
+      const cacheKey = `${key}|${Math.round(zoneRadius)}|${alpha}|${glowProfile.id}`;
       const cache = stanceZoneCacheRef.current;
       if (cache.has(cacheKey)) return cache.get(cacheKey);
       const sprite = createStanceZoneSprite(rgb, zoneRadius, alpha);
@@ -2996,9 +3008,10 @@ export default function App() {
       cache.set(cacheKey, sprite);
       return sprite;
     };
-    const redZone = getZone("red", [220, 38, 38], isFirefox ? 0.055 : 0.07);
-    const neutralZone = getZone("neutral", [156, 163, 175], isFirefox ? 0.032 : 0.042);
-    const greenZone = getZone("green", [34, 197, 94], isFirefox ? 0.055 : 0.07);
+    const zoneAlphaMul = glowProfile.zoneAlphaMultiplier;
+    const redZone = getZone("red", [220, 38, 38], (isFirefoxBrowser ? 0.055 : 0.07) * zoneAlphaMul);
+    const neutralZone = getZone("neutral", [156, 163, 175], (isFirefoxBrowser ? 0.032 : 0.042) * zoneAlphaMul);
+    const greenZone = getZone("green", [34, 197, 94], (isFirefoxBrowser ? 0.055 : 0.07) * zoneAlphaMul);
     const drawZone = (sprite, cx, cy) => {
       const rad = sprite.width / 2;
       ctx.drawImage(sprite, cx - rad, cy - rad);
@@ -3012,15 +3025,18 @@ export default function App() {
     ctx.scale(scale, scale);
 
     const radius = (side) => Math.min(14, side * 0.22);
-    const glowQuality = isFirefox ? 0.48 : 1;
-    const nonEmphasizedGlowPasses = isFirefox ? 1 : 3;
+    const glowQuality = glowProfile.quality;
+    const nonEmphasizedGlowPasses = glowProfile.nonEmphasizedPasses;
     const getGlow = (aura, drawSide, emphasize) => {
       const bucketSide = Math.max(6, Math.round(drawSide));
-      const key = `${aura}|${bucketSide}|${emphasize ? "1" : "0"}|${isFirefox ? "ff" : "std"}`;
+      const key = `${aura}|${bucketSide}|${emphasize ? "1" : "0"}|${glowProfile.id}`;
       const cacheKey = `${GLOW_CACHE_VERSION}|${key}`;
       const cache = glowCacheRef.current;
       if (cache.has(cacheKey)) return cache.get(cacheKey);
-      const sprite = createGlowSprite(aura, bucketSide, emphasize, glowQuality);
+      const sprite = createGlowSprite(aura, bucketSide, emphasize, glowQuality, {
+        blurMultiplier: glowProfile.blurMultiplier,
+        opacityMultiplier: glowProfile.opacityMultiplier,
+      });
       if (cache.size > 420) cache.clear();
       cache.set(cacheKey, sprite);
       return sprite;
@@ -3110,7 +3126,7 @@ export default function App() {
     const curSelected = selectedHandleRef.current;
     const base = [], hovered = [], selected = [];
     const hoverScale = 1.14;
-    const selectedScaleBase = isFirefox ? 1.72 : 2;
+    const selectedScaleBase = isFirefoxBrowser ? 1.72 : 2;
     const selectedPulseScale =
       pulseSelectedEnabled && curSelected
         ? 1 + Math.sin(performance.now() * 0.005) * 0.06
