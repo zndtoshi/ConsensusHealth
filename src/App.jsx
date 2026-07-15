@@ -43,7 +43,6 @@ import {
   lockIntroSession,
   clearPlayingSession,
   computeFlightScreenPos,
-  computeIntroBandLiftPx,
   computeStagingLayouts,
   computeStagingPanelBounds,
   easeInOutCubic,
@@ -4296,18 +4295,7 @@ export default function App() {
         </div>
       </div>
 
-      <div
-        style={{
-          ...styles.main,
-          ...(newStancesUi.bandActive
-            ? {
-                marginTop: -computeIntroBandLiftPx(headerHeightPx),
-                position: "relative",
-                zIndex: 12,
-              }
-            : null),
-        }}
-      >
+      <div style={styles.main}>
         <div ref={containerRef} style={styles.canvasWrap}>
           {!stanceListsViewEnabled ? (
             <>
