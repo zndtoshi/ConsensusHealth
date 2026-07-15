@@ -138,6 +138,80 @@ function StatRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+const panelStyle: React.CSSProperties = {
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.08)",
+  background: "rgba(0,0,0,0.40)",
+  padding: "4px 12px",
+};
+
+/** Shared dark inner panel used by the compact list-style cards. */
+function Panel({ children }: { children: React.ReactNode }) {
+  return <div style={panelStyle}>{children}</div>;
+}
+
+/** One compact row inside a Panel: left content + right value, thin separator. */
+function PanelRow({
+  left,
+  right,
+  last,
+}: {
+  left: React.ReactNode;
+  right: React.ReactNode;
+  last?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        gap: 12,
+        padding: "8px 0",
+        borderBottom: last ? "none" : "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>{left}</div>
+      <div
+        style={{
+          fontSize: 12,
+          fontWeight: 900,
+          color: "rgba(255,255,255,0.96)",
+          whiteSpace: "nowrap",
+          flex: "0 0 auto",
+        }}
+      >
+        {right}
+      </div>
+    </div>
+  );
+}
+
+const overviewLabelStyle: React.CSSProperties = { fontSize: 12, color: "rgba(255,255,255,0.62)" };
+
+function stanceWordStyle(color: string): React.CSSProperties {
+  return { fontSize: 12, fontWeight: 800, color, whiteSpace: "nowrap" };
+}
+
+/** Compact flow row: "from -> to" (colored words) with its count. */
+function FlowRow({ f, last }: { f: FlowItem; last?: boolean }) {
+  const fromLabel = f.from ? STANCE[f.from].label : "Unset";
+  const fromColor = f.from ? STANCE_TEXT_COLOR[f.from] : UNSET_TEXT_COLOR;
+  return (
+    <PanelRow
+      last={last}
+      left={
+        <>
+          <span style={stanceWordStyle(fromColor)}>{fromLabel}</span>
+          <span style={{ opacity: 0.5 }}>→</span>
+          <span style={stanceWordStyle(STANCE_TEXT_COLOR[f.to])}>{STANCE[f.to].label}</span>
+        </>
+      }
+      right={formatInt(f.count)}
+    />
+  );
+}
+
 function Donut({
   size = 140,
   thickness = 16,
@@ -244,27 +318,6 @@ function Legend({
   );
 }
 
-function Pill({ children }: { children: React.ReactNode }) {
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        borderRadius: 999,
-        padding: "6px 10px",
-        border: "1px solid rgba(255,255,255,0.12)",
-        background: "rgba(0,0,0,0.22)",
-        color: "rgba(255,255,255,0.82)",
-        fontSize: 12,
-        fontWeight: 700,
-      }}
-    >
-      {children}
-    </span>
-  );
-}
-
 export function StatisticsCards({
   data,
   apiBase = "",
@@ -315,109 +368,71 @@ export function StatisticsCards({
     <div style={{ display: "grid", gap: 14 }}>
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 14 }}>
         <Card title="Overview" subtitle="Snapshot summary">
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
-            <Pill>
-              <span style={{ opacity: 0.7 }}>Users with stance</span>
-              <span style={{ fontWeight: 900 }}>{formatInt(total)}</span>
-            </Pill>
-            <Pill>
-              <span style={{ opacity: 0.7 }}>Generated</span>
-              <span style={{ fontWeight: 900 }}>{formatDateTime(data.generatedAtISO)}</span>
-            </Pill>
-          </div>
-
-          <div
-            style={{
-              borderRadius: 14,
-              border: "1px solid rgba(255,255,255,0.08)",
-              background: "rgba(0,0,0,0.40)",
-              padding: 12,
-            }}
-          >
-            <StatRow label="Changed stance (ever)" value={formatInt(data.usersChangedStanceAtLeastOnce)} />
-            <StatRow label="Stance changes (last 7 days)" value={formatInt(data.totalStanceChangesLast7Days)} />
-            <StatRow
-              label="Top flows (last 7 days)"
-              value={data.topFlowsLast7Days.length ? formatInt(data.topFlowsLast7Days.length) : "None"}
+          <Panel>
+            <PanelRow left={<span style={overviewLabelStyle}>Users with stance</span>} right={formatInt(total)} />
+            <PanelRow
+              left={<span style={overviewLabelStyle}>Generated</span>}
+              right={<span style={{ fontWeight: 700 }}>{formatDateTime(data.generatedAtISO)}</span>}
             />
-          </div>
+            <PanelRow
+              left={<span style={overviewLabelStyle}>Changed stance (ever)</span>}
+              right={formatInt(data.usersChangedStanceAtLeastOnce)}
+            />
+            <PanelRow
+              left={<span style={overviewLabelStyle}>Stance changes (last 7 days)</span>}
+              right={formatInt(data.totalStanceChangesLast7Days)}
+            />
+            <PanelRow
+              left={<span style={overviewLabelStyle}>Top flows (last 7 days)</span>}
+              right={data.topFlowsLast7Days.length ? formatInt(data.topFlowsLast7Days.length) : "None"}
+              last
+            />
+          </Panel>
         </Card>
 
         <Card title="Average followers" subtitle="Per user in stance">
-          <div
-            style={{
-              borderRadius: 14,
-              border: "1px solid rgba(255,255,255,0.08)",
-              background: "rgba(0,0,0,0.40)",
-              padding: 12,
-            }}
-          >
-            {(["against", "neutral", "approve"] as const).map((k) => (
-              <div
+          <Panel>
+            {(["against", "neutral", "approve"] as const).map((k, i) => (
+              <PanelRow
                 key={k}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  padding: "8px 0",
-                  borderBottom: k === "approve" ? "none" : "1px solid rgba(255,255,255,0.06)",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 12, color: STANCE_TEXT_COLOR[k], fontWeight: 800 }}>
-                    {STANCE[k].label}
-                  </span>
-                </div>
-                <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>
-                  {formatInt(data.avgFollowersByStance[k])}
-                </div>
-              </div>
+                last={i === 2}
+                left={<span style={stanceWordStyle(STANCE_TEXT_COLOR[k])}>{STANCE[k].label}</span>}
+                right={formatInt(data.avgFollowersByStance[k])}
+              />
             ))}
-          </div>
+          </Panel>
         </Card>
 
         <Card title="Top accounts" subtitle="Highest followers per stance">
-          <div style={{ display: "grid", gap: 10 }}>
-            {(["against", "neutral", "approve"] as const).map((k) => {
+          <Panel>
+            {(["against", "neutral", "approve"] as const).map((k, i) => {
               const top = data.topAccountByFollowers[k];
               return (
-                <div
+                <PanelRow
                   key={k}
-                  style={{
-                    borderRadius: 14,
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    background: "rgba(0,0,0,0.40)",
-                    padding: 12,
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: 12,
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 12, fontWeight: 900, color: STANCE_TEXT_COLOR[k] }}>{STANCE[k].label}</div>
-                      <div
+                  last={i === 2}
+                  left={
+                    <>
+                      <span style={stanceWordStyle(STANCE_TEXT_COLOR[k])}>{STANCE[k].label}</span>
+                      <span
                         style={{
-                          fontSize: 12,
-                          color: "rgba(255,255,255,0.85)",
+                          fontSize: 11,
+                          color: "rgba(255,255,255,0.7)",
                           whiteSpace: "nowrap",
                           overflow: "hidden",
                           textOverflow: "ellipsis",
-                          maxWidth: 210,
+                          minWidth: 0,
                         }}
                       >
                         {top ? `@${top.handle}` : "—"}
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>
-                    {top ? formatInt(top.followers) : "—"}
-                  </div>
-                </div>
+                      </span>
+                    </>
+                  }
+                  right={top ? formatInt(top.followers) : "—"}
+                />
               );
             })}
-          </div>
+          </Panel>
         </Card>
       </div>
 
@@ -502,71 +517,17 @@ export function StatisticsCards({
         {data.topFlowsLast7Days.length === 0 ? (
           <div style={{ fontSize: 12, color: "rgba(255,255,255,0.85)" }}>No flows in the last 7 days.</div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-            <div style={{ display: "grid", gap: 6 }}>
-              {leftFlows.map((f, idx) => {
-              const fromLabel = f.from ? STANCE[f.from].label : "Unset";
-              const fromColor = f.from ? STANCE_TEXT_COLOR[f.from] : UNSET_TEXT_COLOR;
-              const to = STANCE[f.to];
-              return (
-                <div
-                  key={idx}
-                  style={{
-                    borderRadius: 14,
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    background: "rgba(0,0,0,0.40)",
-                    padding: "6px 8px",
-                    display: "flex",
-                    justifyContent: "center",
-                    alignItems: "center",
-                    gap: 6,
-                    minHeight: 30,
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                    <span style={{ fontSize: 12, fontWeight: 900, color: fromColor }}>{fromLabel}</span>
-                    <span style={{ opacity: 0.5 }}>→</span>
-                    <span style={{ fontSize: 12, fontWeight: 900, color: STANCE_TEXT_COLOR[f.to] }}>{to.label}</span>
-                  </div>
-                  <div style={{ marginLeft: 8, fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>
-                    {formatInt(f.count)}
-                  </div>
-                </div>
-              );
-            })}
-            </div>
-            <div style={{ display: "grid", gap: 6 }}>
-              {rightFlows.map((f, idx) => {
-              const fromLabel = f.from ? STANCE[f.from].label : "Unset";
-              const fromColor = f.from ? STANCE_TEXT_COLOR[f.from] : UNSET_TEXT_COLOR;
-              const to = STANCE[f.to];
-              return (
-                <div
-                  key={`right-${idx}`}
-                  style={{
-                    borderRadius: 14,
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    background: "rgba(0,0,0,0.40)",
-                    padding: "6px 8px",
-                    display: "flex",
-                    justifyContent: "center",
-                    alignItems: "center",
-                    gap: 6,
-                    minHeight: 30,
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-                    <span style={{ fontSize: 12, fontWeight: 900, color: fromColor }}>{fromLabel}</span>
-                    <span style={{ opacity: 0.5 }}>→</span>
-                    <span style={{ fontSize: 12, fontWeight: 900, color: STANCE_TEXT_COLOR[f.to] }}>{to.label}</span>
-                  </div>
-                  <div style={{ marginLeft: 8, fontSize: 12, fontWeight: 900, color: "rgba(255,255,255,0.96)" }}>
-                    {formatInt(f.count)}
-                  </div>
-                </div>
-              );
-              })}
-            </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <Panel>
+              {leftFlows.map((f, idx) => (
+                <FlowRow key={idx} f={f} last={idx === leftFlows.length - 1} />
+              ))}
+            </Panel>
+            <Panel>
+              {rightFlows.map((f, idx) => (
+                <FlowRow key={`right-${idx}`} f={f} last={idx === rightFlows.length - 1} />
+              ))}
+            </Panel>
           </div>
         )}
       </Card>
