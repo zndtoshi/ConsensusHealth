@@ -3089,9 +3089,10 @@ export default function App() {
         if (item.landed) continue;
         const pos = computeFlightScreenPos(item, nowIntro, viewIntro, intro.reducedMotion);
         const inFlight = nowIntro >= item.flightStart;
-        const entrance = inFlight
-          ? { opacity: 1, scale: 1 }
-          : introAvatarEntrance(itemIndex, elapsedIntro, intro.reducedMotion);
+        const entrance =
+          inFlight || phase === "hold"
+            ? { opacity: 1, scale: 1 }
+            : introAvatarEntrance(itemIndex, elapsedIntro, intro.reducedMotion);
         const sidePx = Math.max(8, pos.sidePx * entrance.scale);
         const drawX = pos.sx - sidePx / 2;
         const drawY = pos.sy - sidePx / 2;
@@ -4365,6 +4366,7 @@ const styles = {
     minHeight: 0,
     background: "transparent",
     overflow: "hidden",
+    isolation: "isolate",
   },
   canvas: {
     width: "100%",
@@ -4372,7 +4374,7 @@ const styles = {
     display: "block",
     cursor: "pointer",
     position: "relative",
-    zIndex: 11,
+    zIndex: 2,
   },
   stanceListsRoot: {
     position: "absolute",
@@ -4441,6 +4443,7 @@ const styles = {
     border: "1px solid rgba(255,255,255,0.15)",
     pointerEvents: "none",
     fontSize: 12,
+    zIndex: 25,
   },
   tooltipSelf: {
     display: "none",
