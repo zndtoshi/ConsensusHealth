@@ -227,34 +227,67 @@ export const INTRO_HEADING_HEIGHT_PX = 22;
 export const INTRO_HEADING_GAP_PX = 14;
 export const INTRO_LABEL_GAP_PX = 8;
 
-/** Pick one equal staging size that fits all intro avatars in a centered row. */
-export function computeStagingSidePx(count: number, view: StagingView): number {
+/** Pick one equal staging avatar size; slots may be wider for @handle labels. */
+export function computeStagingSidePx(count: number, view: StagingView, maxLabelLen = 10): number {
   if (count <= 0) return 64;
   const padX = 24;
-  const gap = 14;
+  const minSlotGap = 18;
+  const labelCharPx = 6.5;
   const availW = Math.max(100, view.cw - padX * 2);
-  const maxByWidth = (availW - gap * Math.max(0, count - 1)) / count;
-  return Math.max(48, Math.min(76, maxByWidth));
+  const slotW = Math.max(64, maxLabelLen * labelCharPx + 12);
+  const totalW = count * slotW + Math.max(0, count - 1) * minSlotGap;
+  const fitScale = totalW > availW ? availW / totalW : 1;
+  const maxBySlot = (slotW - 12) * fitScale;
+  const maxByWidth =
+    ((availW - minSlotGap * Math.max(0, count - 1)) / Math.max(1, count) - 12) * fitScale;
+  return Math.max(44, Math.min(68, Math.min(maxBySlot, maxByWidth)));
+}
+
+export function computeStagingSlotWidth(
+  count: number,
+  view: StagingView,
+  maxLabelLen: number,
+  stagingSidePx: number
+): { slotW: number; gap: number } {
+  const padX = 24;
+  const minSlotGap = 18;
+  const labelCharPx = 6.5;
+  const availW = Math.max(100, view.cw - padX * 2);
+  let slotW = Math.max(stagingSidePx + 16, maxLabelLen * labelCharPx + 12);
+  let gap = minSlotGap;
+  const totalW = count * slotW + Math.max(0, count - 1) * gap;
+  if (totalW > availW && count > 0) {
+    slotW = (availW - gap * (count - 1)) / count;
+    gap = Math.max(10, gap * (availW / totalW));
+  }
+  return { slotW, gap };
 }
 
 /** Compute centered top-middle staging positions under the heading (equal size for all). */
 export function computeStagingLayouts(
-  items: Array<{ xUserId: string }>,
+  items: Array<{ xUserId: string; handle?: string }>,
   view: StagingView
 ): Map<string, StagingLayout> {
   const out = new Map<string, StagingLayout>();
   const count = items.length;
   if (count === 0) return out;
 
-  const stagingSidePx = computeStagingSidePx(count, view);
-  const gap = 14;
-  const totalW = count * stagingSidePx + Math.max(0, count - 1) * gap;
+  const maxLabelLen = Math.max(
+    8,
+    ...items.map((it) => {
+      const h = normalizeHandle(it.handle);
+      return h ? `@${h}`.length : 8;
+    })
+  );
+  const stagingSidePx = computeStagingSidePx(count, view, maxLabelLen);
+  const { slotW, gap } = computeStagingSlotWidth(count, view, maxLabelLen, stagingSidePx);
+  const totalW = count * slotW + Math.max(0, count - 1) * gap;
   const rowStartX = (view.cw - totalW) / 2;
-  const avatarCenterY =
-    INTRO_HEADING_TOP_PX + INTRO_HEADING_HEIGHT_PX + INTRO_HEADING_GAP_PX + stagingSidePx / 2;
+  const avatarTopY = INTRO_HEADING_TOP_PX + INTRO_HEADING_HEIGHT_PX + INTRO_HEADING_GAP_PX;
+  const avatarCenterY = avatarTopY + stagingSidePx / 2;
 
   items.forEach((item, i) => {
-    const sx = rowStartX + i * (stagingSidePx + gap) + stagingSidePx / 2;
+    const sx = rowStartX + i * (slotW + gap) + slotW / 2;
     out.set(item.xUserId, { sx, sy: avatarCenterY, stagingSidePx });
   });
   return out;
@@ -262,9 +295,9 @@ export function computeStagingLayouts(
 
 export const INTRO_TIMING = {
   fadeInMs: 400,
-  holdMs: 3000,
+  holdMs: 5000,
   headingFadeOutMs: 400,
-  headingFadeOutStartMs: 2800,
+  headingFadeOutStartMs: 4600,
   flightMs: 1100,
   flightStaggerMs: 70,
   reducedHoldMs: 1200,

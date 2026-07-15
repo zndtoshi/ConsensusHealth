@@ -14,6 +14,7 @@ import {
 import { fetchNewStanceEvents } from "./api/newStances";
 import { NEW_STANCES_HEADING, NEW_STANCES_PUBLIC_ENABLED } from "./config/newStances";
 import {
+  INTRO_LABEL_GAP_PX,
   lockIntroSession,
   clearPlayingSession,
   computeFlightScreenPos,
@@ -928,7 +929,9 @@ export default function App() {
     startedAt: 0,
     items: [],
     hiddenIds: new Set(),
+    hiddenHandles: new Set(),
     landedIds: new Set(),
+    landedHandles: new Set(),
     reducedMotion: false,
     rafId: 0,
     batchId: "",
@@ -2489,7 +2492,9 @@ export default function App() {
     const markerEvents = intro.markerEvents;
     intro.items = [];
     intro.hiddenIds = new Set();
+    intro.hiddenHandles = new Set();
     intro.landedIds = new Set();
+    intro.landedHandles = new Set();
     intro.markerEvents = [];
     intro.phase = "done";
 
@@ -2523,6 +2528,7 @@ export default function App() {
       if (!item.landed && now >= item.flightEnd) {
         item.landed = true;
         intro.landedIds.add(item.xUserId);
+        if (item.handle) intro.landedHandles.add(normalizeHandle(item.handle));
       }
     }
 
@@ -2619,6 +2625,7 @@ export default function App() {
     intro.startedAt = performance.now();
     intro.items = scheduled;
     intro.hiddenIds = new Set(scheduled.map((it) => it.xUserId));
+    intro.hiddenHandles = new Set(scheduled.map((it) => normalizeHandle(it.handle)).filter(Boolean));
     intro.landedIds = new Set();
     intro.reducedMotion = reducedMotion;
     intro.batchId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
@@ -2684,8 +2691,10 @@ export default function App() {
     const introShowsWorldNode = (n) => {
       if (!introActive) return true;
       const xid = String(n.x_user_id ?? "").trim();
-      if (!xid) return true;
-      return !isIntroNodeHidden(xid, intro.hiddenIds, intro.landedIds);
+      const nh = normalizeHandle(n.handle);
+      if (xid && isIntroNodeHidden(xid, intro.hiddenIds, intro.landedIds)) return false;
+      if (nh && intro.hiddenHandles.has(nh) && !intro.landedHandles.has(nh)) return false;
+      return true;
     };
 
     const contributesToPlaybackFit = (n) => {
@@ -2993,17 +3002,20 @@ export default function App() {
         const auraIntro = stanceColor(item.stance);
         ctx.save();
         ctx.globalAlpha = fadeAlpha;
-        if (auraIntro) {
-          const glow = getGlow(auraIntro, sidePx, true);
-          if (glow?.canvas) {
-            ctx.save();
-            ctx.globalCompositeOperation = "lighter";
-            ctx.drawImage(glow.canvas, drawX - glow.pad, drawY - glow.pad);
-            ctx.restore();
-          }
+        const baseFill = auraIntro
+          ? auraIntro.replace(/[\d.]+\)$/, "0.18)")
+          : "rgba(70,75,85,0.35)";
+        ctx.fillStyle = baseFill;
+        ctx.beginPath();
+        if (typeof ctx.roundRect === "function") {
+          ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+        } else {
+          ctx.rect(drawX, drawY, sidePx, sidePx);
         }
+        ctx.fill();
         const img = item.avatarUrl ? avatarCache.get(item.avatarUrl) : null;
         if (img?.complete && img.naturalWidth > 0) {
+          ctx.save();
           ctx.beginPath();
           if (typeof ctx.roundRect === "function") {
             ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
@@ -3012,17 +3024,9 @@ export default function App() {
           }
           ctx.clip();
           ctx.drawImage(img, drawX, drawY, sidePx, sidePx);
-        } else {
-          ctx.fillStyle = auraIntro ? auraIntro.replace(/[\d.]+\)$/, "0.22)") : "rgba(70,75,85,0.35)";
-          ctx.beginPath();
-          if (typeof ctx.roundRect === "function") {
-            ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
-          } else {
-            ctx.rect(drawX, drawY, sidePx, sidePx);
-          }
-          ctx.fill();
+          ctx.restore();
         }
-        ctx.strokeStyle = auraIntro ? auraIntro.replace(/[\d.]+\)$/, "0.85)") : "rgba(120,130,150,0.9)";
+        ctx.strokeStyle = auraIntro ? auraIntro.replace(/[\d.]+\)$/, "0.9)") : "rgba(120,130,150,0.9)";
         ctx.lineWidth = 2;
         ctx.beginPath();
         if (typeof ctx.roundRect === "function") {
@@ -3033,12 +3037,12 @@ export default function App() {
         ctx.stroke();
         if (pos.labelOpacity > 0.02 && item.handle) {
           ctx.globalAlpha = fadeAlpha * pos.labelOpacity;
-          const fontSize = Math.max(11, Math.min(14, sidePx * 0.19));
+          const fontSize = Math.max(10, Math.min(12, sidePx * 0.17));
           ctx.font = `600 ${fontSize}px system-ui, -apple-system, Segoe UI, sans-serif`;
           ctx.fillStyle = "rgba(255,255,255,0.94)";
           ctx.textAlign = "center";
           ctx.textBaseline = "top";
-          ctx.fillText(`@${item.handle}`, pos.sx, pos.sy + sidePx / 2 + 6);
+          ctx.fillText(`@${item.handle}`, pos.sx, drawY + sidePx + INTRO_LABEL_GAP_PX);
         }
         ctx.restore();
       }
