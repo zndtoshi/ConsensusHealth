@@ -67,7 +67,6 @@ test("buildFlightKeyframes preserves start and end transforms", () => {
   const last = keyframes[keyframes.length - 1]!;
   assert.match(last.transform, /translate3d\(364px, 264px, 0\)/);
   assert.match(last.transform, /scale\(/);
-  assert.equal(last.offset, 1);
 });
 
 test("sampleFlightTransformAt matches baked easing samples", () => {

@@ -545,7 +545,6 @@ export function itemOpacityForPhase(
 
 export type FlightKeyframe = {
   transform: string;
-  offset: number;
 };
 
 /** Builds WAAPI keyframes along the approved quadratic-bezier flight path. */
@@ -591,7 +590,6 @@ export function buildFlightKeyframes(
     const scale = sidePx / baseSide;
     keyframes.push({
       transform: `translate3d(${sx - baseSide / 2}px, ${sy - baseSide / 2}px, 0) scale(${scale})`,
-      offset: tRaw,
     });
   }
   return keyframes;

@@ -127,18 +127,27 @@ export function startWaapiFlightAnimation(opts: {
   reducedMotion: boolean;
   itemIndex: number;
   onFinished: (itemId: string) => void;
-}): WaapiFlightHandle {
+}): WaapiFlightHandle | null {
   const { element, item, view, reducedMotion, itemIndex, onFinished } = opts;
+  if (typeof element.animate !== "function") return null;
+
   const duration = flightDurationMs(reducedMotion);
   const delay = flightStaggerMs(reducedMotion, itemIndex);
   const keyframes = buildFlightKeyframes(item, view, reducedMotion, INTRO_FLIGHT_KEYFRAME_STEPS);
+  if (!keyframes.length) return null;
+
+  const startTransform = keyframes[0]!.transform;
+  element.style.transform = startTransform;
+  element.style.willChange = "transform";
+
   const animation = element.animate(keyframes, {
     duration,
     delay,
     easing: "linear",
     fill: "forwards",
   });
-  element.style.willChange = "transform";
+
+  if (!animation || animation.playState === "finished") return null;
 
   let finished = false;
   const finish = () => {

@@ -2710,7 +2710,6 @@ export default function App() {
     const layer = introFlightLayerRef.current;
     if (!layer || intro.flightDomActive) return;
 
-    intro.flightDomActive = true;
     intro.waapiHandles = [];
     layer.replaceChildren();
 
@@ -2744,7 +2743,29 @@ export default function App() {
         itemIndex,
         onFinished: onFlightAvatarLanded,
       });
-      intro.waapiHandles.push(handle);
+      if (handle) intro.waapiHandles.push(handle);
+    });
+
+    if (!intro.waapiHandles.length) {
+      layer.replaceChildren();
+      scheduleDraw();
+      return;
+    }
+
+    intro.flightDomActive = true;
+    scheduleDraw();
+
+    requestAnimationFrame(() => {
+      if (!intro.active || !intro.flightDomActive) return;
+      const live = intro.waapiHandles.filter(
+        (h) => h.animation.playState === "running" || h.animation.playState === "pending"
+      );
+      if (live.length > 0) return;
+      intro.flightDomActive = false;
+      cancelWaapiFlight(intro.waapiHandles);
+      intro.waapiHandles = [];
+      layer.replaceChildren();
+      scheduleDraw();
     });
 
     if (intro.motionProfiler && intro.motionDebug) {
@@ -2833,6 +2854,14 @@ export default function App() {
 
     if (phase === "flying") {
       if (intro.motionProfiler) intro.motionProfiler.tick(now);
+      for (const item of intro.items) {
+        if (!item.landed && now >= item.flightEnd) {
+          onFlightAvatarLanded(item.xUserId);
+        }
+      }
+      if (!intro.flightDomActive) {
+        scheduleDraw();
+      }
       if (elapsed < INTRO_TIMING.holdMs + INTRO_TIMING.headingFadeOutMs) {
         syncHeadingOpacity(
           headingOpacityForPhase(phase, elapsed, intro.reducedMotion, intro.items.length)
@@ -3035,7 +3064,13 @@ export default function App() {
       intro.items.length,
       intro.reducedMotion
     );
-    syncIntroOverlayDom(panelBounds, panelAlpha, intro, elapsedIntro, phase);
+    if (phase === "flying") {
+      syncIntroOverlayDom({ x: 0, y: 0, w: 0, h: 0 }, 0, intro, elapsedIntro, phase);
+    } else {
+      syncIntroOverlayDom(panelBounds, panelAlpha, intro, elapsedIntro, phase);
+    }
+
+    const simpleFlightStroke = phase === "flying" && (intro.simplifiedEffects || isFirefoxBrowser);
 
     let itemIndex = 0;
     for (const item of intro.items) {
@@ -3077,8 +3112,10 @@ export default function App() {
       }
       ictx.strokeStyle = aura.border;
       ictx.lineWidth = 2;
-      ictx.shadowColor = aura.glow;
-      ictx.shadowBlur = item.stance === "neutral" ? 9 : 10;
+      if (!simpleFlightStroke) {
+        ictx.shadowColor = aura.glow;
+        ictx.shadowBlur = item.stance === "neutral" ? 9 : 10;
+      }
       ictx.beginPath();
       if (typeof ictx.roundRect === "function") {
         ictx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
