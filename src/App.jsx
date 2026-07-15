@@ -5,6 +5,7 @@ import { isChromium, isFirefox } from "./utils/browser";
 import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./utils/glowRendering";
 import { fetchCommunityUsers } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
+import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
 import {
   AUTH_CHANNEL_NAME,
   LOGIN_RETURN_KEY,
@@ -406,105 +407,20 @@ function normalizeIslandEdgeGaps(nodes, labelsMap, minGap = 18, blend = 0.45) {
   }
 }
 
-/**
- * "Equal avatar size" layout: pack every node into a screen-filling grid split
- * into three stance columns (against | neutral | approve). All avatars are the
- * same square size; a column's width is proportional to how many users it holds
- * (more users -> more sub-columns -> wider band). Positions are written in world
- * coordinates so the existing fit/zoom/pan pipeline scales the grid to fill the
- * viewport. Returns per-stance band-center x (world coords) for the ambient stance
- * zones, or null when there is nothing to lay out.
- */
-function layoutEqualSizeGrid(nodes, labelsMap, w, h) {
-  if (!nodes || nodes.length === 0 || w < 10 || h < 10) return null;
-  const order = [STANCE.AGAINST, STANCE.NEUTRAL, STANCE.APPROVE];
-  const groups = {
-    [STANCE.AGAINST]: [],
-    [STANCE.NEUTRAL]: [],
-    [STANCE.APPROVE]: [],
-  };
-  for (const n of nodes) {
-    const st = getNodeStance(n, labelsMap);
-    (groups[st] || groups[STANCE.NEUTRAL]).push(n);
-  }
-  // Largest followers first within each column (stable, meaningful ordering).
-  for (const key of order) groups[key].sort((a, b) => (b.followers || 0) - (a.followers || 0));
-
-  const counts = order.map((k) => groups[k].length);
-  const total = counts.reduce((a, c) => a + c, 0);
-  if (total === 0) return null;
-
-  const margin = Math.max(8, Math.min(w, h) * 0.02);
-  const usableW = Math.max(20, w - margin * 2);
-  const usableH = Math.max(20, h - margin * 2);
-  const activeBands = counts.filter((c) => c > 0).length;
-  const bandGutter = Math.max(6, usableW * 0.015);
-  const gutterTotal = bandGutter * Math.max(0, activeBands - 1);
-  const gridW = Math.max(10, usableW - gutterTotal);
-
-  // Pick the row count that maximizes the uniform cell size while fitting every
-  // avatar inside the usable area.
-  let best = null;
-  const maxRows = Math.min(total, 500);
-  for (let R = 1; R <= maxRows; R++) {
-    let totalCols = 0;
-    for (const c of counts) if (c > 0) totalCols += Math.ceil(c / R);
-    if (totalCols === 0) continue;
-    const cell = Math.min(usableH / R, gridW / totalCols);
-    if (!best || cell > best.cell) best = { R, totalCols, cell };
-  }
-  if (!best) return null;
-
-  const { R, cell } = best;
-  const colsPerBand = counts.map((c) => (c > 0 ? Math.ceil(c / R) : 0));
-  const contentW = best.totalCols * cell + gutterTotal;
-  const contentH = R * cell;
-  const startX = (w - contentW) / 2;
-  const startY = (h - contentH) / 2;
-  const avatarSide = Math.max(6, cell * 0.9); // small uniform gap between avatars
-
-  const regionCenters = {};
-  let xCursor = startX;
-  for (let gi = 0; gi < order.length; gi++) {
-    const key = order[gi];
-    const list = groups[key];
-    const cols = colsPerBand[gi];
-    if (cols === 0) {
-      regionCenters[key] = xCursor;
-      continue;
-    }
-    const bandW = cols * cell;
-    regionCenters[key] = xCursor + bandW / 2;
-    for (let i = 0; i < list.length; i++) {
-      const col = Math.floor(i / R);
-      const row = i % R;
-      const n = list[i];
-      n.x = xCursor + col * cell + cell / 2;
-      n.y = startY + row * cell + cell / 2;
-      n.vx = 0;
-      n.vy = 0;
-      n.side = avatarSide;
-      n.half = avatarSide / 2;
-    }
-    xCursor += bandW + bandGutter;
-  }
-  return { stanceCenterX: regionCenters, gapPx: bandGutter };
-}
-
 // Persisted graph layout so a reload shows the settled positions instantly
 // (no recompute, no fly-in animation). Keyed by a signature that captures
 // everything the layout depends on: the exact node set + each node's stance and
 // size, the viewport, and the layout-affecting modes.
 const LAYOUT_CACHE_KEY = "consensushealth:layout:v2";
 
-function computeLayoutSignature(nodes, labelsMap, w, h, plebsMode, equalAvatarSizeEnabled) {
+function computeLayoutSignature(nodes, labelsMap, w, h, plebsMode, equalAvatarSizeEnabled, equalSizeRowFill) {
   const parts = nodes
     .map((n) => `${normalizeHandle(n.handle)}:${getNodeStance(n, labelsMap)}:${Math.round(n.side)}`)
     .sort();
   const str = parts.join("|");
   let hash = 0;
   for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) | 0;
-  return `${hash}|${nodes.length}|${Math.round(w)}x${Math.round(h)}|${plebsMode ? 1 : 0}|${equalAvatarSizeEnabled ? 1 : 0}`;
+  return `${hash}|${nodes.length}|${Math.round(w)}x${Math.round(h)}|${plebsMode ? 1 : 0}|${equalAvatarSizeEnabled ? 1 : 0}|${equalSizeRowFill ? 1 : 0}`;
 }
 
 function loadLayoutPositions(signature) {
@@ -1313,6 +1229,11 @@ export default function App() {
   const meStance = me?.stance ? normalizedStance(me.stance) : "";
   const meHandleLower = safeLower(me?.handle);
   const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
+  /** Admin preview: row-first follower ordering in equal-size grid. */
+  const equalSizeGridFillDirection = useMemo(
+    () => (isPrivilegedEditor ? "row" : "column"),
+    [isPrivilegedEditor]
+  );
 
   useEffect(() => {
     if (!API_BASE) {
@@ -2218,7 +2139,7 @@ export default function App() {
       }
       layoutSettlingRef.current = false;
       simRef.current = null;
-      regionRef.current = layoutEqualSizeGrid(nodes, labelsRef.current, w, h);
+      regionRef.current = layoutEqualSizeGrid(nodes, labelsRef.current, w, h, equalSizeGridFillDirection);
       draw();
       tryStartNewStancesIntro();
       return () => {};
@@ -2258,7 +2179,15 @@ export default function App() {
 
     // Fast path: restore the previously settled positions from cache so the graph
     // appears in its FINAL layout immediately on reload — no simulation at all.
-    const layoutSig = computeLayoutSignature(nodes, labelsRef.current, w, h, plebsMode, equalAvatarSizeEnabled);
+    const layoutSig = computeLayoutSignature(
+      nodes,
+      labelsRef.current,
+      w,
+      h,
+      plebsMode,
+      equalAvatarSizeEnabled,
+      equalSizeGridFillDirection === "row"
+    );
     const cachedPos = loadLayoutPositions(layoutSig);
     const restored = cachedPos ? applyLayoutPositions(nodes, cachedPos) : 0;
     const cacheHit = nodes.length > 0 && restored >= Math.floor(nodes.length * 0.8);
@@ -2330,7 +2259,7 @@ export default function App() {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, err, visibleAccounts.length, w, h, plebsMode, equalAvatarSizeEnabled, stanceListsViewEnabled]);
+  }, [loading, err, visibleAccounts.length, w, h, plebsMode, equalAvatarSizeEnabled, equalSizeGridFillDirection, stanceListsViewEnabled]);
 
   // On resize: recompute stance regions and update forces
   useEffect(() => {
@@ -2360,7 +2289,7 @@ export default function App() {
     // column when a stance changes (no force sim involved).
     if (equalAvatarSizeEnabled) {
       if (nodes && nodes.length > 0) {
-        regionRef.current = layoutEqualSizeGrid(nodes, labels, w, h);
+        regionRef.current = layoutEqualSizeGrid(nodes, labels, w, h, equalSizeGridFillDirection);
       }
       draw();
       return;
@@ -4409,7 +4338,11 @@ export default function App() {
         {stanceListsViewEnabled ? (
           <div>Within each stance: avatar + @username, multi-column grid, followers (highest first).</div>
         ) : equalAvatarSizeEnabled ? (
-          <div>Equal-size avatars packed to fill the screen; each stance column&apos;s width reflects its number of users.</div>
+          <div>
+            {isPrivilegedEditor
+              ? "Equal-size grid preview: within each stance, highest followers fill left-to-right, then down."
+              : "Equal-size avatars packed to fill the screen; each stance column's width reflects its number of users."}
+          </div>
         ) : (
           <div>Size of avatars is proportional to number of followers.</div>
         )}
