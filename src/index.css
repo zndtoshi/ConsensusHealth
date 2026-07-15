@@ -352,22 +352,28 @@ html[data-browser="firefox"] .stanceGlow {
   position: absolute;
   left: 0;
   top: 0;
-  z-index: 1;
+  z-index: 10;
   pointer-events: none;
   display: none;
-  background: rgba(10, 18, 36, 0.58);
-  backdrop-filter: blur(16px) saturate(115%);
-  -webkit-backdrop-filter: blur(16px) saturate(115%);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.11) 0%, rgba(255, 255, 255, 0.03) 42%, rgba(255, 255, 255, 0.02) 100%),
+    rgba(12, 20, 38, 0.28);
+  backdrop-filter: blur(28px) saturate(165%) brightness(1.12);
+  -webkit-backdrop-filter: blur(28px) saturate(165%) brightness(1.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 18px;
   box-shadow:
-    0 14px 40px rgba(0, 0, 0, 0.34),
-    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+    0 20px 52px rgba(0, 0, 0, 0.36),
+    0 0 0 1px rgba(255, 255, 255, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.05);
 }
 
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .newStancesPanel {
-    background: rgba(10, 18, 36, 0.82);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.02) 100%),
+      rgba(18, 28, 48, 0.72);
   }
 }
 
@@ -376,7 +382,7 @@ html[data-browser="firefox"] .stanceGlow {
   left: 50%;
   top: 14px;
   transform: translateX(-50%);
-  z-index: 4;
+  z-index: 16;
   pointer-events: none;
   font-size: 14px;
   font-weight: 600;
@@ -391,7 +397,7 @@ html[data-browser="firefox"] .stanceGlow {
 
 .newStancesCountdown {
   position: absolute;
-  z-index: 3;
+  z-index: 17;
   display: none;
   align-items: center;
   justify-content: center;

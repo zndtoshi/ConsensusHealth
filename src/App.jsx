@@ -165,11 +165,14 @@ function collectAvatarFieldValues(obj) {
 }
 
 function resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc) {
-  // Seed accounts keep their locally hosted avatar file (fast, static, cached).
+  // Prefer locally hosted avatar files (fast, static, cached).
   const path = String(a?.avatar_path ?? "").trim();
-  if (path) return canonicalAvatarSrc(`${baseNoSlash}${path}?v=${AVATAR_REV}`);
-  // Everyone else: do NOT fetch a remote image (that routes through the server
-  // avatar proxy and slows down page load). Show the default placeholder.
+  if (path) {
+    const rel = path.startsWith("/") ? path : `/${path}`;
+    return canonicalAvatarSrc(`${baseNoSlash}${rel}?v=${AVATAR_REV}`);
+  }
+  const remote = firstNonEmptyAvatarField(a);
+  if (remote) return canonicalAvatarSrc(maybeProxyAvatarUrl(remote));
   return canonicalAvatarSrc(missingSrc);
 }
 
@@ -729,6 +732,12 @@ async function loadAccounts() {
       if (existingCandidate) rec.avatar_url = existingCandidate;
     }
 
+    const incomingPath = String(raw?.avatar_path ?? "").trim();
+    if (incomingPath) {
+      const currentPath = String(rec?.avatar_path ?? "").trim();
+      if (!currentPath || source === "community") rec.avatar_path = incomingPath;
+    }
+
     const followers = toFiniteNumber(raw?.followers_count);
     const currentFollowers = toFiniteNumber(rec?.followers_count);
     if (followers != null) {
@@ -862,6 +871,7 @@ function useContainerSize(containerRef) {
 
 export default function App() {
   const canvasRef = useRef(null);
+  const introCanvasRef = useRef(null);
   const containerRef = useRef(null);
   const { w, h } = useContainerSize(containerRef);
   const isFirefox = useMemo(
@@ -1320,6 +1330,8 @@ export default function App() {
     }
     return m;
   }, [visibleAccounts]);
+  const accountByHandleRef = useRef(new Map());
+  accountByHandleRef.current = accountByHandle;
   const pillActiveStyle = (stance) => {
     if (stance === "against") {
       return {
@@ -2071,8 +2083,9 @@ export default function App() {
     const urlToHandles = new Map();
     for (const n of nodes) {
       if (!n.avatarUrl) continue;
-      if (!urlToHandles.has(n.avatarUrl)) urlToHandles.set(n.avatarUrl, []);
-      urlToHandles.get(n.avatarUrl).push(n.handle);
+      const key = canonicalAvatarSrc(n.avatarUrl);
+      if (!urlToHandles.has(key)) urlToHandles.set(key, []);
+      urlToHandles.get(key).push(n.handle);
     }
     const missingImg = getAvatar(missingSrc);
     if ("loading" in missingImg) missingImg.loading = "eager";
@@ -2084,15 +2097,16 @@ export default function App() {
     }
     const urls = [...new Set(nodes.map((n) => n.avatarUrl).filter(Boolean))];
     urls.forEach((url) => {
-      const img = getAvatar(url);
+      const key = canonicalAvatarSrc(url);
+      const img = getAvatar(key);
       if ("decoding" in img) img.decoding = "async";
       if ("loading" in img) img.loading = "eager";
       if ("referrerPolicy" in img) img.referrerPolicy = "no-referrer";
-      cache.set(url, img);
+      cache.set(key, img);
       if (!hooked.has(img)) {
         hooked.add(img);
         const handleError = (onErrorFired = true) => {
-          const handles = urlToHandles.get(url) || [];
+          const handles = urlToHandles.get(key) || [];
           for (const handle of handles) {
             if (warnedHandles.has(handle)) continue;
             warnedHandles.add(handle);
@@ -2100,7 +2114,7 @@ export default function App() {
               // eslint-disable-next-line no-console
               console.warn("[avatar-load-failed]", {
                 handle,
-                avatarUrl: url,
+                avatarUrl: key,
                 userAgent,
                 onErrorFired,
                 placeholderFallbackUsed: true,
@@ -2108,7 +2122,7 @@ export default function App() {
             }
           }
           if (canonicalAvatarSrc(img.src) !== missingSrc) img.src = missingSrc;
-          cache.set(url, missingImg);
+          cache.set(key, missingImg);
           scheduleDraw();
         };
         img.addEventListener("load", () => scheduleDraw());
@@ -2487,6 +2501,43 @@ export default function App() {
     });
   }
 
+  function resolveDrawAvatarUrl(n) {
+    const baseNoSlash = getBase().replace(/\/$/, "");
+    const missingSrc = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
+    const account = accountByHandleRef.current.get(normalizeHandle(n.handle));
+    if (account) return resolveAvatarUrlForAccount(account, baseNoSlash, missingSrc);
+    const fallback = String(n?.avatarUrl ?? "").trim();
+    return fallback ? canonicalAvatarSrc(fallback) : missingSrc;
+  }
+
+  function resolveIntroAvatarUrl(item) {
+    const baseNoSlash = getBase().replace(/\/$/, "");
+    const missingSrc = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
+    const account = accountByHandleRef.current.get(normalizeHandle(item.handle));
+    if (account) return resolveAvatarUrlForAccount(account, baseNoSlash, missingSrc);
+    const fallback = String(item?.avatarUrl ?? "").trim();
+    return fallback ? canonicalAvatarSrc(fallback) : missingSrc;
+  }
+
+  function getGraphAvatar(url) {
+    const key = canonicalAvatarSrc(String(url ?? "").trim());
+    if (!key) return null;
+    const cache = avatarCacheRef.current;
+    let img = cache.get(key);
+    if (!img) {
+      img = getAvatar(key);
+      cache.set(key, img);
+    }
+    const hooked = avatarHookedRef.current;
+    if (!hooked.has(img)) {
+      hooked.add(img);
+      img.addEventListener("load", () => scheduleDraw());
+      img.addEventListener("error", () => scheduleDraw());
+      if (img.complete) scheduleDraw();
+    }
+    return img;
+  }
+
   function getNewStancesStagingView() {
     const fit = fitRef.current;
     const view = viewRef.current;
@@ -2628,19 +2679,24 @@ export default function App() {
       const path = String(e.avatarPath ?? "").trim();
       if (path) {
         const rel = path.startsWith("/") ? path : `/${path}`;
-        return canonicalAvatarSrc(`${baseNoSlash}${rel}`);
+        return canonicalAvatarSrc(`${baseNoSlash}${rel}?v=${AVATAR_REV}`);
       }
-      return nodeUrl || missingSrc;
+      return nodeUrl ? canonicalAvatarSrc(nodeUrl) : missingSrc;
     });
     if (!items.length) return;
+
+    for (const it of items) {
+      it.avatarUrl = resolveIntroAvatarUrl(it);
+    }
 
     const cache = avatarCacheRef.current;
     const hooked = avatarHookedRef.current;
     for (const it of items) {
       const url = it.avatarUrl;
       if (!url) continue;
-      const img = getAvatar(url);
-      cache.set(url, img);
+      const key = canonicalAvatarSrc(url);
+      const img = getAvatar(key);
+      cache.set(key, img);
       if (!hooked.has(img)) {
         hooked.add(img);
         img.addEventListener("load", () => scheduleDraw());
@@ -2694,6 +2750,97 @@ export default function App() {
     if (intro.rafId) cancelAnimationFrame(intro.rafId);
     intro.rafId = requestAnimationFrame(newStancesIntroTick);
     scheduleDraw();
+  }
+
+  function drawNewStancesOverlay(cw, ch, dpr) {
+    const introCanvas = introCanvasRef.current;
+    const intro = newStancesIntroRef.current;
+    if (!introCanvas) return;
+    const ictx = introCanvas.getContext("2d");
+    if (!ictx) return;
+
+    if (introCanvas.width !== Math.floor(cw * dpr) || introCanvas.height !== Math.floor(ch * dpr)) {
+      introCanvas.width = Math.floor(cw * dpr);
+      introCanvas.height = Math.floor(ch * dpr);
+      introCanvas.style.width = `${cw}px`;
+      introCanvas.style.height = `${ch}px`;
+      ictx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    ictx.clearRect(0, 0, cw, ch);
+
+    if (!intro.active || !intro.items.length) {
+      syncIntroOverlayDom({ x: 0, y: 0, w: 0, h: 0 }, 0, intro, 0, "idle");
+      return;
+    }
+
+    const nowIntro = performance.now();
+    const elapsedIntro = nowIntro - intro.startedAt;
+    const phase = getIntroPhase(elapsedIntro, intro.reducedMotion);
+    const viewIntro = getNewStancesStagingView();
+    const stagingSide = intro.items[0]?.stagingSidePx || 48;
+    const panelBounds = computeStagingPanelBounds(intro.items.length, stagingSide, viewIntro);
+    const panelAlpha = stagingPanelOpacityForPhase(
+      phase,
+      elapsedIntro,
+      intro.items.length,
+      intro.reducedMotion
+    );
+    syncIntroOverlayDom(panelBounds, panelAlpha, intro, elapsedIntro, phase);
+
+    let itemIndex = 0;
+    for (const item of intro.items) {
+      if (item.landed) continue;
+      const pos = computeFlightScreenPos(item, nowIntro, viewIntro, intro.reducedMotion);
+      const inFlight = nowIntro >= item.flightStart;
+      const entrance =
+        inFlight || phase === "hold"
+          ? { opacity: 1, scale: 1 }
+          : introAvatarEntrance(itemIndex, elapsedIntro, intro.reducedMotion);
+      const sidePx = Math.max(8, pos.sidePx * entrance.scale);
+      const drawX = pos.sx - sidePx / 2;
+      const drawY = pos.sy - sidePx / 2;
+      const rOv = Math.min(14, sidePx * 0.22);
+      const aura = introStanceAura(item.stance);
+      ictx.save();
+      ictx.globalAlpha = entrance.opacity;
+      const img = getGraphAvatar(resolveIntroAvatarUrl(item));
+      if (img?.complete && img.naturalWidth > 0) {
+        ictx.save();
+        ictx.beginPath();
+        if (typeof ictx.roundRect === "function") {
+          ictx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+        } else {
+          ictx.rect(drawX, drawY, sidePx, sidePx);
+        }
+        ictx.clip();
+        ictx.drawImage(img, drawX, drawY, sidePx, sidePx);
+        ictx.restore();
+      } else {
+        ictx.fillStyle = aura.fill;
+        ictx.beginPath();
+        if (typeof ictx.roundRect === "function") {
+          ictx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+        } else {
+          ictx.rect(drawX, drawY, sidePx, sidePx);
+        }
+        ictx.fill();
+      }
+      ictx.strokeStyle = aura.border;
+      ictx.lineWidth = 2;
+      ictx.shadowColor = aura.glow;
+      ictx.shadowBlur = item.stance === "neutral" ? 9 : 10;
+      ictx.beginPath();
+      if (typeof ictx.roundRect === "function") {
+        ictx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
+      } else {
+        ictx.rect(drawX, drawY, sidePx, sidePx);
+      }
+      ictx.stroke();
+      ictx.shadowBlur = 0;
+      ictx.restore();
+      itemIndex += 1;
+    }
   }
 
   function syncIntroOverlayDom(panelBounds, panelAlpha, intro, elapsedIntro, phase) {
@@ -2765,7 +2912,6 @@ export default function App() {
 
     const nodes = nodesRef.current;
     const qset = filteredHandlesSet;
-    const avatarCache = avatarCacheRef.current;
     const pb = historyPlaybackRef.current;
     const playbackActive = Boolean(pb.active);
     const intro = newStancesIntroRef.current;
@@ -2926,7 +3072,7 @@ export default function App() {
         }
       }
 
-      const img = n.avatarUrl ? avatarCache.get(n.avatarUrl) : null;
+      const img = getGraphAvatar(resolveDrawAvatarUrl(n));
       if (img && img.complete && img.naturalWidth > 0) {
         ctx.save();
         ctx.beginPath();
@@ -3035,7 +3181,7 @@ export default function App() {
             ctx.restore();
           }
         }
-        const img = nin.avatarUrl ? avatarCache.get(nin.avatarUrl) : null;
+        const img = getGraphAvatar(resolveDrawAvatarUrl(nin));
         if (img?.complete && img.naturalWidth > 0) {
           ctx.save();
           ctx.beginPath();
@@ -3069,76 +3215,7 @@ export default function App() {
       }
     }
 
-    if (introActive && intro.items.length) {
-      const nowIntro = performance.now();
-      const elapsedIntro = nowIntro - intro.startedAt;
-      const phase = getIntroPhase(elapsedIntro, intro.reducedMotion);
-      const viewIntro = getNewStancesStagingView();
-      const stagingSide = intro.items[0]?.stagingSidePx || 48;
-      const panelBounds = computeStagingPanelBounds(intro.items.length, stagingSide, viewIntro);
-      const panelAlpha = stagingPanelOpacityForPhase(
-        phase,
-        elapsedIntro,
-        intro.items.length,
-        intro.reducedMotion
-      );
-      syncIntroOverlayDom(panelBounds, panelAlpha, intro, elapsedIntro, phase);
-
-      let itemIndex = 0;
-      for (const item of intro.items) {
-        if (item.landed) continue;
-        const pos = computeFlightScreenPos(item, nowIntro, viewIntro, intro.reducedMotion);
-        const inFlight = nowIntro >= item.flightStart;
-        const entrance =
-          inFlight || phase === "hold"
-            ? { opacity: 1, scale: 1 }
-            : introAvatarEntrance(itemIndex, elapsedIntro, intro.reducedMotion);
-        const sidePx = Math.max(8, pos.sidePx * entrance.scale);
-        const drawX = pos.sx - sidePx / 2;
-        const drawY = pos.sy - sidePx / 2;
-        const rOv = Math.min(14, sidePx * 0.22);
-        const aura = introStanceAura(item.stance);
-        ctx.save();
-        ctx.globalAlpha = entrance.opacity;
-        ctx.fillStyle = aura.fill;
-        ctx.beginPath();
-        if (typeof ctx.roundRect === "function") {
-          ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
-        } else {
-          ctx.rect(drawX, drawY, sidePx, sidePx);
-        }
-        ctx.fill();
-        const img = item.avatarUrl ? getAvatar(item.avatarUrl) : null;
-        if (img?.complete && img.naturalWidth > 0) {
-          ctx.save();
-          ctx.beginPath();
-          if (typeof ctx.roundRect === "function") {
-            ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
-          } else {
-            ctx.rect(drawX, drawY, sidePx, sidePx);
-          }
-          ctx.clip();
-          ctx.drawImage(img, drawX, drawY, sidePx, sidePx);
-          ctx.restore();
-        }
-        ctx.strokeStyle = aura.border;
-        ctx.lineWidth = 2;
-        ctx.shadowColor = aura.glow;
-        ctx.shadowBlur = item.stance === "neutral" ? 9 : 10;
-        ctx.beginPath();
-        if (typeof ctx.roundRect === "function") {
-          ctx.roundRect(drawX, drawY, sidePx, sidePx, rOv);
-        } else {
-          ctx.rect(drawX, drawY, sidePx, sidePx);
-        }
-        ctx.stroke();
-        ctx.shadowBlur = 0;
-        ctx.restore();
-        itemIndex += 1;
-      }
-    } else {
-      syncIntroOverlayDom({ x: 0, y: 0, w: 0, h: 0 }, 0, intro, 0, "idle");
-    }
+    drawNewStancesOverlay(cw, ch, dpr);
   }
 
   function historyPlaybackResolvePlayable() {
@@ -3755,7 +3832,29 @@ export default function App() {
         <div ref={containerRef} style={styles.canvasWrap}>
           {!stanceListsViewEnabled ? (
             <>
+              <canvas
+                ref={canvasRef}
+                onWheel={onWheel}
+                onMouseDown={onMouseDown}
+                onMouseUp={onMouseUp}
+                onMouseLeave={() => {
+                  onMouseUp();
+                  hoverRef.current = null;
+                  hoverDrawHandleRef.current = null;
+                  updateHoverOverlay(null);
+                  drawRef.current();
+                }}
+                onMouseMove={onMouseMove}
+                onClick={onClick}
+                style={{
+                  ...styles.canvas,
+                  touchAction: "none",
+                  cursor: manualEditMode && isPrivilegedEditor ? "crosshair" : "default",
+                  pointerEvents: historyPlaybackPlaying ? "none" : "auto",
+                }}
+              />
               <div ref={introPanelRef} className="newStancesPanel" aria-hidden="true" />
+              <canvas ref={introCanvasRef} style={styles.introCanvas} aria-hidden="true" />
               {(newStancesUi.headingOpacity > 0.01 || newStancesUi.bandActive) && (
                 <div
                   className="newStancesHeading"
@@ -3778,27 +3877,6 @@ export default function App() {
               {newStancesUi.debug && (
                 <div className="newStancesDebugLabel">Debug new stances</div>
               )}
-              <canvas
-                ref={canvasRef}
-                onWheel={onWheel}
-                onMouseDown={onMouseDown}
-                onMouseUp={onMouseUp}
-                onMouseLeave={() => {
-                  onMouseUp();
-                  hoverRef.current = null;
-                  hoverDrawHandleRef.current = null;
-                  updateHoverOverlay(null);
-                  drawRef.current();
-                }}
-                onMouseMove={onMouseMove}
-                onClick={onClick}
-                style={{
-                  ...styles.canvas,
-                  touchAction: "none",
-                  cursor: manualEditMode && isPrivilegedEditor ? "crosshair" : "default",
-                  pointerEvents: historyPlaybackPlaying ? "none" : "auto",
-                }}
-              />
               <div ref={tooltipRef} style={{ ...styles.tooltip, display: "none" }}>
                 <div ref={tooltipHandleRef} style={{ fontWeight: 700 }} />
                 <div ref={tooltipSelfRef} style={styles.tooltipSelf}>You</div>
@@ -4375,6 +4453,16 @@ const styles = {
     cursor: "pointer",
     position: "relative",
     zIndex: 2,
+  },
+  introCanvas: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    width: "100%",
+    height: "100%",
+    display: "block",
+    pointerEvents: "none",
+    zIndex: 15,
   },
   stanceListsRoot: {
     position: "absolute",
