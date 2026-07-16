@@ -2010,6 +2010,23 @@ export default function App() {
   const layoutSettlingRef = useRef(false);
   const settleRafRef = useRef(0);
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  // Touch gesture state (mobile). Integrates with the same camRef transform used
+  // by desktop mouse/wheel — no separate camera system.
+  const touchStateRef = useRef({
+    mode: "none", // "pan" | "pinch"
+    startX: 0,
+    startY: 0,
+    startPanX: 0,
+    startPanY: 0,
+    startDist: 0,
+    startScaleMul: 1,
+    midWorldX: 0,
+    midWorldY: 0,
+    moved: false,
+  });
+  // Always-latest tap handler so once-mounted native touch listeners can open the
+  // correct popup (and honor manual-edit mode) without stale closures.
+  const selectAtPointRef = useRef(null);
   const labelsRef = useRef({});
   const selectedHandleRef = useRef(null);
   const hoverRef = useRef(null);
@@ -3967,10 +3984,9 @@ export default function App() {
     }
   }
 
-  function onClick(e) {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
+  // Shared selection used by both desktop click and mobile tap so behavior
+  // (popup open/close + manual-edit) stays identical across input types.
+  function selectAtCanvasPoint(mx, my) {
     const n = hitTest(mx, my);
     if (!n) {
       setSelectedHandle(null);
@@ -4011,6 +4027,133 @@ export default function App() {
       }
     }
   }
+
+  selectAtPointRef.current = selectAtCanvasPoint;
+
+  function onClick(e) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    selectAtCanvasPoint(mx, my);
+  }
+
+  // Native touch listeners (attached non-passive so preventDefault stops page
+  // scroll/pinch-zoom). One finger pans, two fingers pinch-zoom about the
+  // midpoint — both feed the existing camRef transform. Desktop mouse/wheel
+  // handlers are untouched.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+
+    const st = touchStateRef.current;
+    const ZOOM_MIN = 0.35;
+    const ZOOM_MAX = 6;
+    const TAP_MOVE_TOLERANCE_PX = 8;
+
+    function beginGesture(touches) {
+      const rect = canvas.getBoundingClientRect();
+      if (touches.length >= 2) {
+        const t0 = touches[0];
+        const t1 = touches[1];
+        const midX = (t0.clientX + t1.clientX) / 2 - rect.left;
+        const midY = (t0.clientY + t1.clientY) / 2 - rect.top;
+        const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY) || 1;
+        const v = viewRef.current || { scale: 1, tx: 0, ty: 0 };
+        st.mode = "pinch";
+        st.startDist = dist;
+        st.startScaleMul = camRef.current.scaleMul;
+        st.midWorldX = (midX - v.tx) / v.scale;
+        st.midWorldY = (midY - v.ty) / v.scale;
+      } else if (touches.length === 1) {
+        const t = touches[0];
+        st.mode = "pan";
+        st.startX = t.clientX;
+        st.startY = t.clientY;
+        st.startPanX = camRef.current.panX;
+        st.startPanY = camRef.current.panY;
+      } else {
+        st.mode = "none";
+      }
+    }
+
+    function onTouchStart(e) {
+      e.preventDefault();
+      st.moved = false;
+      beginGesture(e.touches);
+    }
+
+    function onTouchMove(e) {
+      e.preventDefault();
+      if (st.mode === "pinch" && e.touches.length >= 2) {
+        const rect = canvas.getBoundingClientRect();
+        const t0 = e.touches[0];
+        const t1 = e.touches[1];
+        const midX = (t0.clientX + t1.clientX) / 2 - rect.left;
+        const midY = (t0.clientY + t1.clientY) / 2 - rect.top;
+        const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY) || 1;
+        const fit = fitRef.current;
+        const nextScaleMul = clamp(st.startScaleMul * (dist / st.startDist), ZOOM_MIN, ZOOM_MAX);
+        const newScale = fit.scale * nextScaleMul;
+        // Keep the world point under the initial midpoint locked to the current
+        // midpoint → smooth pinch-zoom + two-finger pan in one gesture.
+        camRef.current = {
+          ...camRef.current,
+          scaleMul: nextScaleMul,
+          panX: midX - fit.tx - st.midWorldX * newScale,
+          panY: midY - fit.ty - st.midWorldY * newScale,
+        };
+        st.moved = true;
+        drawRef.current();
+      } else if (st.mode === "pan" && e.touches.length === 1) {
+        const t = e.touches[0];
+        const dx = t.clientX - st.startX;
+        const dy = t.clientY - st.startY;
+        if (Math.abs(dx) > TAP_MOVE_TOLERANCE_PX || Math.abs(dy) > TAP_MOVE_TOLERANCE_PX) {
+          st.moved = true;
+        }
+        // Panning preserves the current zoom level (scaleMul untouched).
+        camRef.current = {
+          ...camRef.current,
+          panX: st.startPanX + dx,
+          panY: st.startPanY + dy,
+        };
+        hoverRef.current = null;
+        hoverDrawHandleRef.current = null;
+        drawRef.current();
+      }
+    }
+
+    function onTouchEnd(e) {
+      if (st.mode === "pan" && !st.moved && e.touches.length === 0) {
+        const t = e.changedTouches[0];
+        if (t) {
+          const rect = canvas.getBoundingClientRect();
+          const mx = t.clientX - rect.left;
+          const my = t.clientY - rect.top;
+          if (selectAtPointRef.current) selectAtPointRef.current(mx, my);
+        }
+      }
+      if (e.touches.length > 0) {
+        // Fingers remain (e.g. lifting one of two) — re-init with what's left and
+        // suppress a stray tap.
+        beginGesture(e.touches);
+        st.moved = true;
+      } else {
+        st.mode = "none";
+      }
+    }
+
+    canvas.addEventListener("touchstart", onTouchStart, { passive: false });
+    canvas.addEventListener("touchmove", onTouchMove, { passive: false });
+    canvas.addEventListener("touchend", onTouchEnd, { passive: false });
+    canvas.addEventListener("touchcancel", onTouchEnd, { passive: false });
+    return () => {
+      canvas.removeEventListener("touchstart", onTouchStart);
+      canvas.removeEventListener("touchmove", onTouchMove);
+      canvas.removeEventListener("touchend", onTouchEnd);
+      canvas.removeEventListener("touchcancel", onTouchEnd);
+    };
+  }, [stanceListsViewEnabled, loading, err]);
 
   if (loading) {
     return (
