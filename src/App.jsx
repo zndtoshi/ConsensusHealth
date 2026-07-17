@@ -549,11 +549,11 @@ function sideFromFollowers(followers, minSide = 6, maxSide = 70) {
   return minSide + tt * (maxSide - minSide);
 }
 
-// Admin-only selection highlight: the selected avatar grows to roughly a
-// top-follower account's size and nudges nearby avatars outward to open a ring
-// of space, reverting fully on deselect. Matches `sideFromFollowers` max (70).
-const SELECTED_ADMIN_TARGET_SIDE = 70;
-const SELECTED_ADMIN_GAP_PX = 8;
+// Selection highlight: the selected avatar grows to roughly a top-follower
+// account's size and nudges nearby avatars outward to open a ring of space,
+// reverting fully on deselect. Matches `sideFromFollowers` max (70).
+const SELECTED_TARGET_SIDE = 70;
+const SELECTED_GAP_PX = 8;
 const SELECTED_FX_GROW_MS = 280;
 const SELECTED_FX_SHRINK_MS = 240;
 
@@ -2052,7 +2052,6 @@ export default function App() {
   // Cached fit transform, frozen while the selection FX runs so the whole graph
   // does not visibly rescale as neighbors are nudged.
   const frozenFitRef = useRef(null);
-  const isPrivilegedEditorRef = useRef(false);
   const labelsRef = useRef({});
   const selectedHandleRef = useRef(null);
   const hoverRef = useRef(null);
@@ -2078,9 +2077,8 @@ export default function App() {
   const introBandLiftReleasePendingRef = useRef(false);
   labelsRef.current = labels;
   selectedHandleRef.current = selectedHandle;
-  isPrivilegedEditorRef.current = isPrivilegedEditor;
 
-  // --- Admin-only selection highlight FX (enlarge selected + push neighbors) ---
+  // --- Selection highlight FX (enlarge selected + push neighbors into orbit) ---
   function restoreSelectionDisplacementImmediate() {
     const fx = selectionFxRef.current;
     for (const d of fx.displaced) {
@@ -2092,14 +2090,21 @@ export default function App() {
 
   function computeSelectionDisplacement(node) {
     const nodes = nodesRef.current || [];
-    const targetHalf = SELECTED_ADMIN_TARGET_SIDE / 2;
+    const targetHalf = SELECTED_TARGET_SIDE / 2;
+    // Mirror the force-sim collision radius so the ring of space matches what a
+    // real top-follower account carves out (diagonal bounding circle + the max
+    // influence multiplier), plus a small extra orbit gap.
+    const selectedCollideR =
+      (Math.SQRT2 * targetHalf + 0.6) * collisionRadiusMultiplier(1);
     const out = [];
     for (const m of nodes) {
       if (m === node) continue;
       const dx0 = m.x - node.x;
       const dy0 = m.y - node.y;
       let dist = Math.hypot(dx0, dy0);
-      const desired = targetHalf + (m.half || m.side / 2 || 0) + SELECTED_ADMIN_GAP_PX;
+      const mHalf = m.half || m.side / 2 || 0;
+      const mCollideR = Math.SQRT2 * mHalf + 0.6;
+      const desired = selectedCollideR + mCollideR + SELECTED_GAP_PX;
       if (dist >= desired) continue;
       let ux;
       let uy;
@@ -2170,7 +2175,7 @@ export default function App() {
     }
     fx.handle = node.handle;
     fx.node = node;
-    fx.targetScale = Math.max(1, SELECTED_ADMIN_TARGET_SIDE / Math.max(1, node.side || 1));
+    fx.targetScale = Math.max(1, SELECTED_TARGET_SIDE / Math.max(1, node.side || 1));
     fx.displaced = computeSelectionDisplacement(node);
     animateSelectionTo(1, SELECTED_FX_GROW_MS);
   }
@@ -2198,10 +2203,6 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!isPrivilegedEditor) {
-      clearSelectionFxImmediate();
-      return;
-    }
     // Avoid fighting the playback/settle animations for node positions.
     if (layoutSettlingRef.current || historyPlaybackRef.current?.active) {
       return;
@@ -2217,7 +2218,7 @@ export default function App() {
       beginSelectionShrink();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedHandle, isPrivilegedEditor]);
+  }, [selectedHandle]);
 
   // (Re)create simulation when size/data/shake changes
   useEffect(() => {
@@ -3557,8 +3558,7 @@ export default function App() {
       return false;
     };
 
-    const selectionFxActive =
-      isPrivilegedEditorRef.current && selectionFxRef.current.handle != null;
+    const selectionFxActive = selectionFxRef.current.handle != null;
 
     let fitScale;
     let fitTx;
@@ -3824,7 +3824,7 @@ export default function App() {
       );
     };
     const selFx = selectionFxRef.current;
-    const adminSelFxOn = isPrivilegedEditorRef.current && selFx.handle != null;
+    const adminSelFxOn = selFx.handle != null;
     for (const n of nodes) {
       if (!playbackShowsWorldNode(n)) continue;
       if (!introShowsWorldNode(n)) continue;
