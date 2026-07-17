@@ -2180,6 +2180,47 @@ export default function App() {
     animateSelectionTo(1, SELECTED_FX_GROW_MS);
   }
 
+  // Re-apply the highlight after the layout rebuilds or resizes (common on mobile
+  // where the viewport/address bar changes `w`/`h`, which rebuilds the node array
+  // and would otherwise drop the enlarge + neighbor orbit). Idempotent: restores
+  // any prior displacement first, then recomputes against the current nodes and
+  // snaps straight to the grown state (no re-pop).
+  function reapplySelectionFxAfterLayout() {
+    const fx = selectionFxRef.current;
+    if (fx.rafId) {
+      cancelAnimationFrame(fx.rafId);
+      fx.rafId = 0;
+    }
+    restoreSelectionDisplacementImmediate();
+    const handle = selectedHandleRef.current;
+    if (!handle) {
+      fx.handle = null;
+      fx.node = null;
+      fx.u = 0;
+      fx.scale = 1;
+      return;
+    }
+    if (layoutSettlingRef.current || historyPlaybackRef.current?.active) {
+      // Keep `selectedHandle`; the next layout-complete/resize pass re-applies.
+      return;
+    }
+    const nodes = nodesRef.current || [];
+    const node = nodes.find((n) => normalizeHandle(n.handle) === normalizeHandle(handle));
+    if (!node) {
+      fx.handle = null;
+      fx.node = null;
+      fx.u = 0;
+      fx.scale = 1;
+      return;
+    }
+    fx.handle = node.handle;
+    fx.node = node;
+    fx.targetScale = Math.max(1, SELECTED_TARGET_SIDE / Math.max(1, node.side || 1));
+    fx.displaced = computeSelectionDisplacement(node);
+    applySelectionU(1);
+    drawRef.current();
+  }
+
   function beginSelectionShrink() {
     const fx = selectionFxRef.current;
     if (!fx.handle) return;
@@ -2383,6 +2424,7 @@ export default function App() {
       simRef.current = null;
       regionRef.current = layoutEqualSizeGrid(nodes, labelsRef.current, w, h);
       draw();
+      reapplySelectionFxAfterLayout();
       tryStartNewStancesIntro();
       return () => {};
     }
@@ -2479,6 +2521,7 @@ export default function App() {
       // immediately. No simulation, no delay.
       layoutSettlingRef.current = false;
       draw();
+      reapplySelectionFxAfterLayout();
       tryStartNewStancesIntro();
       return () => {
         sim.stop();
@@ -2524,6 +2567,7 @@ export default function App() {
       settleRafRef.current = 0;
       layoutSettlingRef.current = false;
       draw(); // single paint of the fully-settled layout
+      reapplySelectionFxAfterLayout();
       tryStartNewStancesIntro();
     };
     settleRafRef.current = requestAnimationFrame(settleChunk);
@@ -2556,6 +2600,7 @@ export default function App() {
     sim.force("pullY", forceY(h / 2).strength(0.03));
     normalizeIslandEdgeGaps(nodes, labelsRef.current, Math.max(16, (regions?.gapPx || 12) * 0.85), 0.4);
     drawRef.current();
+    reapplySelectionFxAfterLayout();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [w, h, stanceListsViewEnabled]);
 
