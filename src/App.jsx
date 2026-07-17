@@ -549,6 +549,14 @@ function sideFromFollowers(followers, minSide = 6, maxSide = 70) {
   return minSide + tt * (maxSide - minSide);
 }
 
+// Admin-only selection highlight: the selected avatar grows to roughly a
+// top-follower account's size and nudges nearby avatars outward to open a ring
+// of space, reverting fully on deselect. Matches `sideFromFollowers` max (70).
+const SELECTED_ADMIN_TARGET_SIDE = 70;
+const SELECTED_ADMIN_GAP_PX = 8;
+const SELECTED_FX_GROW_MS = 280;
+const SELECTED_FX_SHRINK_MS = 240;
+
 function parseCsv(url) {
   return new Promise((resolve, reject) => {
     Papa.parse(url, {
@@ -2027,6 +2035,24 @@ export default function App() {
   // Always-latest tap handler so once-mounted native touch listeners can open the
   // correct popup (and honor manual-edit mode) without stale closures.
   const selectAtPointRef = useRef(null);
+  // Admin-only selection highlight FX state (enlarge selected + push neighbors).
+  const selectionFxRef = useRef({
+    handle: null,
+    node: null,
+    targetScale: 1,
+    scale: 1,
+    u: 0,
+    fromU: 0,
+    toU: 0,
+    dur: 0,
+    startAt: 0,
+    rafId: 0,
+    displaced: [],
+  });
+  // Cached fit transform, frozen while the selection FX runs so the whole graph
+  // does not visibly rescale as neighbors are nudged.
+  const frozenFitRef = useRef(null);
+  const isPrivilegedEditorRef = useRef(false);
   const labelsRef = useRef({});
   const selectedHandleRef = useRef(null);
   const hoverRef = useRef(null);
@@ -2052,6 +2078,146 @@ export default function App() {
   const introBandLiftReleasePendingRef = useRef(false);
   labelsRef.current = labels;
   selectedHandleRef.current = selectedHandle;
+  isPrivilegedEditorRef.current = isPrivilegedEditor;
+
+  // --- Admin-only selection highlight FX (enlarge selected + push neighbors) ---
+  function restoreSelectionDisplacementImmediate() {
+    const fx = selectionFxRef.current;
+    for (const d of fx.displaced) {
+      d.node.x = d.ox;
+      d.node.y = d.oy;
+    }
+    fx.displaced = [];
+  }
+
+  function computeSelectionDisplacement(node) {
+    const nodes = nodesRef.current || [];
+    const targetHalf = SELECTED_ADMIN_TARGET_SIDE / 2;
+    const out = [];
+    for (const m of nodes) {
+      if (m === node) continue;
+      const dx0 = m.x - node.x;
+      const dy0 = m.y - node.y;
+      let dist = Math.hypot(dx0, dy0);
+      const desired = targetHalf + (m.half || m.side / 2 || 0) + SELECTED_ADMIN_GAP_PX;
+      if (dist >= desired) continue;
+      let ux;
+      let uy;
+      if (dist < 1e-3) {
+        const ang = Math.random() * Math.PI * 2;
+        ux = Math.cos(ang);
+        uy = Math.sin(ang);
+        dist = 0;
+      } else {
+        ux = dx0 / dist;
+        uy = dy0 / dist;
+      }
+      const push = desired - dist;
+      out.push({ node: m, ox: m.x, oy: m.y, dx: ux * push, dy: uy * push });
+    }
+    return out;
+  }
+
+  function applySelectionU(u) {
+    const fx = selectionFxRef.current;
+    for (const d of fx.displaced) {
+      d.node.x = d.ox + d.dx * u;
+      d.node.y = d.oy + d.dy * u;
+    }
+    fx.u = u;
+    fx.scale = 1 + (fx.targetScale - 1) * u;
+  }
+
+  function selectionFxTick() {
+    const fx = selectionFxRef.current;
+    const now = performance.now();
+    const t = fx.dur > 0 ? clamp((now - fx.startAt) / fx.dur, 0, 1) : 1;
+    const eased = 1 - (1 - t) ** 3; // ease-out cubic
+    applySelectionU(fx.fromU + (fx.toU - fx.fromU) * eased);
+    drawRef.current();
+    if (t >= 1) {
+      fx.rafId = 0;
+      if (fx.toU <= 0) {
+        restoreSelectionDisplacementImmediate();
+        fx.handle = null;
+        fx.node = null;
+        fx.scale = 1;
+        fx.u = 0;
+        drawRef.current();
+      }
+      return;
+    }
+    fx.rafId = requestAnimationFrame(selectionFxTick);
+  }
+
+  function animateSelectionTo(toU, durMs) {
+    const fx = selectionFxRef.current;
+    if (fx.rafId) cancelAnimationFrame(fx.rafId);
+    fx.fromU = fx.u;
+    fx.toU = toU;
+    fx.dur = durMs;
+    fx.startAt = performance.now();
+    fx.rafId = requestAnimationFrame(selectionFxTick);
+  }
+
+  function beginSelectionGrow(node) {
+    const fx = selectionFxRef.current;
+    if (fx.handle && fx.node && fx.node !== node) {
+      // Switching selection: drop the previous ring before opening a new one.
+      restoreSelectionDisplacementImmediate();
+      fx.u = 0;
+      fx.scale = 1;
+    }
+    fx.handle = node.handle;
+    fx.node = node;
+    fx.targetScale = Math.max(1, SELECTED_ADMIN_TARGET_SIDE / Math.max(1, node.side || 1));
+    fx.displaced = computeSelectionDisplacement(node);
+    animateSelectionTo(1, SELECTED_FX_GROW_MS);
+  }
+
+  function beginSelectionShrink() {
+    const fx = selectionFxRef.current;
+    if (!fx.handle) return;
+    animateSelectionTo(0, SELECTED_FX_SHRINK_MS);
+  }
+
+  function clearSelectionFxImmediate() {
+    const fx = selectionFxRef.current;
+    if (fx.rafId) {
+      cancelAnimationFrame(fx.rafId);
+      fx.rafId = 0;
+    }
+    if (fx.handle || fx.displaced.length) {
+      restoreSelectionDisplacementImmediate();
+      fx.handle = null;
+      fx.node = null;
+      fx.u = 0;
+      fx.scale = 1;
+      drawRef.current();
+    }
+  }
+
+  useEffect(() => {
+    if (!isPrivilegedEditor) {
+      clearSelectionFxImmediate();
+      return;
+    }
+    // Avoid fighting the playback/settle animations for node positions.
+    if (layoutSettlingRef.current || historyPlaybackRef.current?.active) {
+      return;
+    }
+    const norm = (h) => normalizeHandle(h);
+    if (selectedHandle) {
+      const nodes = nodesRef.current || [];
+      const target = norm(selectedHandle);
+      const node = nodes.find((n) => norm(n.handle) === target);
+      if (node) beginSelectionGrow(node);
+      else clearSelectionFxImmediate();
+    } else {
+      beginSelectionShrink();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedHandle, isPrivilegedEditor]);
 
   // (Re)create simulation when size/data/shake changes
   useEffect(() => {
@@ -3391,26 +3557,39 @@ export default function App() {
       return false;
     };
 
-    const maxDrawScale = 2;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const n of nodes) {
-      if (playbackActive && !contributesToPlaybackFit(n)) continue;
-      const half = (n.side * maxDrawScale) / 2;
-      const x0 = n.x - half, y0 = n.y - half, x1 = n.x + half, y1 = n.y + half;
-      if (x0 < minX) minX = x0;
-      if (y0 < minY) minY = y0;
-      if (x1 > maxX) maxX = x1;
-      if (y1 > maxY) maxY = y1;
-    }
+    const selectionFxActive =
+      isPrivilegedEditorRef.current && selectionFxRef.current.handle != null;
 
-    const blobW = Math.max(1, maxX - minX);
-    const blobH = Math.max(1, maxY - minY);
-    const pad = 28;
-    const fitScale = Math.min((cw - pad * 2) / blobW, (ch - pad * 2) / blobH) * 0.96;
-    const blobCx = (minX + maxX) / 2;
-    const blobCy = (minY + maxY) / 2;
-    const fitTx = cw / 2 - blobCx * fitScale;
-    const fitTy = ch / 2 - blobCy * fitScale;
+    let fitScale;
+    let fitTx;
+    let fitTy;
+    if (selectionFxActive && frozenFitRef.current) {
+      // Keep the camera stable while the selected avatar enlarges and pushes its
+      // neighbors, so the whole graph does not visibly rescale.
+      ({ scale: fitScale, tx: fitTx, ty: fitTy } = frozenFitRef.current);
+    } else {
+      const maxDrawScale = 2;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const n of nodes) {
+        if (playbackActive && !contributesToPlaybackFit(n)) continue;
+        const half = (n.side * maxDrawScale) / 2;
+        const x0 = n.x - half, y0 = n.y - half, x1 = n.x + half, y1 = n.y + half;
+        if (x0 < minX) minX = x0;
+        if (y0 < minY) minY = y0;
+        if (x1 > maxX) maxX = x1;
+        if (y1 > maxY) maxY = y1;
+      }
+
+      const blobW = Math.max(1, maxX - minX);
+      const blobH = Math.max(1, maxY - minY);
+      const pad = 28;
+      fitScale = Math.min((cw - pad * 2) / blobW, (ch - pad * 2) / blobH) * 0.96;
+      const blobCx = (minX + maxX) / 2;
+      const blobCy = (minY + maxY) / 2;
+      fitTx = cw / 2 - blobCx * fitScale;
+      fitTy = ch / 2 - blobCy * fitScale;
+      frozenFitRef.current = { scale: fitScale, tx: fitTx, ty: fitTy };
+    }
 
     fitRef.current = { scale: fitScale, tx: fitTx, ty: fitTy };
 
@@ -3644,11 +3823,14 @@ export default function App() {
         sy - halfPx <= ch + cullMargin
       );
     };
+    const selFx = selectionFxRef.current;
+    const adminSelFxOn = isPrivilegedEditorRef.current && selFx.handle != null;
     for (const n of nodes) {
       if (!playbackShowsWorldNode(n)) continue;
       if (!introShowsWorldNode(n)) continue;
       if (curSelected && n.handle === curSelected) {
-        if (isVisible(n, selectedScale)) selected.push(n);
+        // Selected node always draws (it may be enlarged well past the cull box).
+        selected.push(n);
       } else if (curHover && n.handle === curHover.handle) {
         if (isVisible(n, hoverScale)) hovered.push(n);
       } else if (isVisible(n, 1)) {
@@ -3657,7 +3839,10 @@ export default function App() {
     }
     for (const n of base) drawNode(n, 1, false);
     for (const n of hovered) drawNode(n, hoverScale, true);
-    for (const n of selected) drawNode(n, selectedScale, true);
+    for (const n of selected) {
+      const useFx = adminSelFxOn && normalizeHandle(n.handle) === normalizeHandle(selFx.handle);
+      drawNode(n, useFx ? selFx.scale : selectedScale, true);
+    }
 
     ctx.restore();
 
