@@ -99,11 +99,10 @@ export function defaultJoinDateRange(
   const summary = summarizeJoinDateYears(accounts);
   const boundMin = X_JOIN_YEAR_FLOOR;
   const boundMax = Math.max(nowYear, summary.latestYear ?? nowYear);
-  const minYear = summary.earliestYear ?? boundMin;
-  const maxYear = summary.latestYear ?? boundMax;
+  // Start at the full track so enabling does not hide early (e.g. 2006) joiners.
   return {
     boundMin,
     boundMax,
-    ...normalizeJoinYearRange(minYear, maxYear, boundMin, boundMax),
+    ...normalizeJoinYearRange(boundMin, boundMax, boundMin, boundMax),
   };
 }
