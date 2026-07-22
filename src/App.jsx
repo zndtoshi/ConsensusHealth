@@ -31,6 +31,13 @@ import {
   summarizeJoinDateYears,
 } from "./utils/xJoinDateFilter";
 import { XJoinDateRangeSlider } from "./components/XJoinDateRangeSlider";
+import { StanceChoiceCard } from "./components/StanceChoiceCard";
+import {
+  shouldAutoOpenStanceChoice,
+  stanceChoiceMode,
+  toolbarStanceMeta,
+  userHasChosenStance,
+} from "./utils/stanceChoice";
 import {
   AUTH_CHANNEL_NAME,
   LOGIN_RETURN_KEY,
@@ -944,6 +951,7 @@ export default function App() {
   // segmented control's brief pop animation; cleared shortly after selection.
   const [stancePop, setStancePop] = useState(null);
   const stancePopTimerRef = useRef(0);
+  const [stanceChoiceOpen, setStanceChoiceOpen] = useState(false);
   /** Three scrollable stance columns (avatars + names) instead of force graph; mutually exclusive with Plebs / equal size / manual edit. */
   const [stanceListsViewEnabled, setStanceListsViewEnabled] = useState(false);
   const [plebsMode, setPlebsMode] = useState(false);
@@ -1162,7 +1170,7 @@ export default function App() {
   }
 
   async function setMyStance(stance) {
-    if (!me?.authenticated) return;
+    if (!me?.authenticated) return false;
     try {
       setAuthBusy(true);
       const res = await fetch(`${API_BASE}/api/stance`, {
@@ -1171,7 +1179,7 @@ export default function App() {
         credentials: "include",
         body: JSON.stringify({ stance }),
       });
-      if (!res.ok) return;
+      if (!res.ok) return false;
       const data = await res.json();
       if (data?.handle && data?.stance) {
         setLabels((prev) => ({ ...prev, [String(data.handle).toLowerCase()]: normalizedStance(data.stance) }));
@@ -1179,19 +1187,29 @@ export default function App() {
         setAccounts((prev) => upsertSelfAccountLocally(prev, data));
       }
       await loadMe();
+      return true;
     } finally {
       setAuthBusy(false);
     }
   }
 
-  // Wrapper for the toolbar stance buttons: triggers the brief selection pop
-  // (CSS-gated by prefers-reduced-motion) and then applies the stance.
-  function selectStance(uiStance, apiStance) {
+  async function chooseStanceFromCard(uiStance, apiStance) {
     setStancePop(uiStance);
     if (stancePopTimerRef.current) clearTimeout(stancePopTimerRef.current);
     stancePopTimerRef.current = setTimeout(() => setStancePop(null), 240);
-    setMyStance(apiStance);
+    const ok = await setMyStance(apiStance);
+    if (ok) setStanceChoiceOpen(false);
   }
+
+  useEffect(() => {
+    if (!me?.authenticated) {
+      setStanceChoiceOpen(false);
+      return;
+    }
+    if (shouldAutoOpenStanceChoice(me)) {
+      setStanceChoiceOpen(true);
+    }
+  }, [me?.authenticated, me?.stance, me?.x_user_id]);
 
   useEffect(() => () => {
     if (stancePopTimerRef.current) clearTimeout(stancePopTimerRef.current);
@@ -1312,6 +1330,8 @@ export default function App() {
   }, []);
 
   const meStance = me?.stance ? normalizedStance(me.stance) : "";
+  const meHasStance = userHasChosenStance(me);
+  const meStanceToolbar = toolbarStanceMeta(meStance);
   const meHandleLower = safeLower(me?.handle);
   const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
 
@@ -4983,38 +5003,37 @@ export default function App() {
           ) : (
             <>
               <div style={styles.barDivider} aria-hidden="true" />
-              <div style={styles.stanceSegment} role="group" aria-label="Set your stance">
+              {meHasStance && meStanceToolbar ? (
+                <div
+                  style={{ ...styles.stanceSegment, gridTemplateColumns: "1fr" }}
+                  role="group"
+                  aria-label="Your stance"
+                >
+                  <button
+                    type="button"
+                    className={`stanceSeg stanceSeg--solo ${meStanceToolbar.className} is-active ${stancePop === meStance ? "just-selected" : ""}`}
+                    onClick={() => setStanceChoiceOpen(true)}
+                    disabled={authBusy}
+                    aria-haspopup="dialog"
+                    aria-expanded={stanceChoiceOpen}
+                    title={`Your stance: ${meStanceToolbar.label}. Click to change.`}
+                  >
+                    {meStanceToolbar.label}
+                  </button>
+                </div>
+              ) : (
                 <button
                   type="button"
-                  className={`stanceSeg stanceSeg--red ${meStance === "against" ? "is-active" : ""} ${stancePop === "against" ? "just-selected" : ""}`}
-                  onClick={() => selectStance("against", "against")}
+                  className="toolbarBtn toolbarBtn--primary"
+                  onClick={() => setStanceChoiceOpen(true)}
                   disabled={authBusy}
-                  aria-pressed={meStance === "against"}
-                  title="Against"
+                  aria-haspopup="dialog"
+                  aria-expanded={stanceChoiceOpen}
+                  title="Choose your stance"
                 >
-                  Against
+                  Choose stance
                 </button>
-                <button
-                  type="button"
-                  className={`stanceSeg stanceSeg--gray ${meStance === "neutral" ? "is-active" : ""} ${stancePop === "neutral" ? "just-selected" : ""}`}
-                  onClick={() => selectStance("neutral", "neutral")}
-                  disabled={authBusy}
-                  aria-pressed={meStance === "neutral"}
-                  title="Neutral"
-                >
-                  Neutral
-                </button>
-                <button
-                  type="button"
-                  className={`stanceSeg stanceSeg--green ${meStance === "approve" ? "is-active" : ""} ${stancePop === "approve" ? "just-selected" : ""}`}
-                  onClick={() => selectStance("approve", "support")}
-                  disabled={authBusy}
-                  aria-pressed={meStance === "approve"}
-                  title="Approve"
-                >
-                  Approve
-                </button>
-              </div>
+              )}
               <div style={styles.barDivider} aria-hidden="true" />
               <div ref={profileMenuRef} style={styles.profileWrap}>
                 <button
@@ -5294,6 +5313,14 @@ export default function App() {
           />
         </Suspense>
       )}
+      <StanceChoiceCard
+        open={Boolean(me?.authenticated) && stanceChoiceOpen}
+        mode={stanceChoiceMode(me)}
+        currentStance={meStance}
+        busy={authBusy}
+        onSelect={chooseStanceFromCard}
+        onDismiss={() => setStanceChoiceOpen(false)}
+      />
       {manualEditMode && isPrivilegedEditor && manualEditTarget && (
         <div style={styles.modalBackdrop} onClick={() => setManualEditTarget(null)}>
           <div style={styles.manualEditCard} onClick={(e) => e.stopPropagation()}>
