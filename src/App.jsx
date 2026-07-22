@@ -2191,6 +2191,9 @@ export default function App() {
   // Coalesces bursty redraws (e.g. hundreds of cached avatar `load` events firing
   // in the same frame) into a single repaint per animation frame.
   const drawRafRef = useRef(0);
+  // Avatar-load dirty flag: many images may finish in one frame; coalesce to one redraw.
+  const avatarGraphDirtyRef = useRef(false);
+  const avatarRedrawScheduledRef = useRef(false);
   // True while the user is actively panning/pinching — skips continuous halo RAF,
   // freezes fit, and enables the fast pan-layer blit path.
   const cameraInteractingRef = useRef(false);
@@ -2575,8 +2578,7 @@ export default function App() {
     if (!hooked.has(missingImg)) {
       hooked.add(missingImg);
       missingImg.addEventListener("load", () => {
-        invalidatePanLayer();
-        scheduleDraw();
+        notifyAvatarLoaded();
       });
     }
     const rankedNodes = [...nodes].sort((a, b) => (b.followers || 0) - (a.followers || 0));
@@ -2608,12 +2610,10 @@ export default function App() {
             }
           }
           cache.set(key, missingImg);
-          invalidatePanLayer();
-          scheduleDraw();
+          notifyAvatarLoaded();
         };
         img.addEventListener("load", () => {
-          invalidatePanLayer();
-          scheduleDraw();
+          notifyAvatarLoaded();
         });
         img.addEventListener("error", () => handleError(true));
         // A brand-new Image() is `complete` with naturalWidth 0 before `src` is
@@ -2621,8 +2621,7 @@ export default function App() {
         const srcStarted = Boolean(img.getAttribute("data-ch-src") === "1" || img.src);
         if (srcStarted && img.complete) {
           if (img.naturalWidth > 0) {
-            invalidatePanLayer();
-            scheduleDraw();
+            notifyAvatarLoaded();
           } else handleError(false);
         }
       }
@@ -3057,6 +3056,20 @@ export default function App() {
     worldLayerVersionRef.current += 1;
   }
 
+  /** Coalesce avatar load/error paints: mark dirty, redraw at most once per frame. */
+  function notifyAvatarLoaded() {
+    avatarGraphDirtyRef.current = true;
+    if (avatarRedrawScheduledRef.current) return;
+    avatarRedrawScheduledRef.current = true;
+    requestAnimationFrame(() => {
+      avatarRedrawScheduledRef.current = false;
+      if (!avatarGraphDirtyRef.current) return;
+      avatarGraphDirtyRef.current = false;
+      invalidatePanLayer();
+      scheduleDraw();
+    });
+  }
+
   function refreshCanvasRect() {
     const canvas = canvasRef.current;
     if (!canvas) return null;
@@ -3158,9 +3171,9 @@ export default function App() {
     const hooked = avatarHookedRef.current;
     if (!hooked.has(img)) {
       hooked.add(img);
-      img.addEventListener("load", () => scheduleDraw());
-      img.addEventListener("error", () => scheduleDraw());
-      if (img.complete) scheduleDraw();
+      img.addEventListener("load", () => notifyAvatarLoaded());
+      img.addEventListener("error", () => notifyAvatarLoaded());
+      if (img.complete) notifyAvatarLoaded();
     }
     return img;
   }
@@ -3532,8 +3545,8 @@ export default function App() {
       cache.set(key, img);
       if (!hooked.has(img)) {
         hooked.add(img);
-        img.addEventListener("load", () => scheduleDraw());
-        img.addEventListener("error", () => scheduleDraw());
+        img.addEventListener("load", () => notifyAvatarLoaded());
+        img.addEventListener("error", () => notifyAvatarLoaded());
       }
     }
     preloadAvatarUrls(

@@ -6,7 +6,7 @@ const avatarFailureCache = new Map<string, number>();
 let emptyAvatarImage: HTMLImageElement | null = null;
 
 const FAILURE_TTL_MS = 30_000;
-const DEFAULT_CONCURRENCY = 12;
+const DEFAULT_CONCURRENCY = 24;
 
 function getEmptyAvatarImage(): HTMLImageElement {
   if (!emptyAvatarImage) {
