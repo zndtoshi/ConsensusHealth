@@ -30,6 +30,7 @@ import {
   normalizeJoinYearRange,
   summarizeJoinDateYears,
 } from "./utils/xJoinDateFilter";
+import { layoutRestoreIsSufficient } from "./utils/layoutPositionRestore";
 import { XJoinDateRangeSlider } from "./components/XJoinDateRangeSlider";
 import { StanceChoiceCard } from "./components/StanceChoiceCard";
 import { CuratedStanceInfo } from "./components/CuratedStanceInfo";
@@ -511,6 +512,18 @@ function applyLayoutPositions(nodes, pos) {
     }
   }
   return applied;
+}
+
+/** In-memory positions from the live graph — used when filters change the node set. */
+function snapshotLayoutPositions(nodes) {
+  const pos = {};
+  for (const n of nodes || []) {
+    const h = normalizeHandle(n.handle);
+    if (h && Number.isFinite(n.x) && Number.isFinite(n.y)) {
+      pos[h] = [n.x, n.y];
+    }
+  }
+  return pos;
 }
 
 function drawRoundedRectPath(ctx, x, y, w, h, r) {
@@ -2476,6 +2489,7 @@ export default function App() {
     const avatarSrc = (a) => resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc);
 
     // Build nodes: accounts that tweeted about bip110, plus manually stance-labeled accounts
+    const prevPos = snapshotLayoutPositions(nodesRef.current);
     const nodes = visibleAccounts
       .map((a) => {
         const tweetCount = tweetCountByHandle.get(a.handle) || 0;
@@ -2711,8 +2725,13 @@ export default function App() {
       equalAvatarSizeEnabled
     );
     const cachedPos = loadLayoutPositions(layoutSig);
-    const restored = cachedPos ? applyLayoutPositions(nodes, cachedPos) : 0;
-    const cacheHit = nodes.length > 0 && restored >= Math.floor(nodes.length * 0.8);
+    let restored = cachedPos ? applyLayoutPositions(nodes, cachedPos) : 0;
+    // Filters (e.g. X join date) change the node set and miss the layout cache.
+    // Reuse the previous on-screen positions so remaining avatars do not jump.
+    if (!layoutRestoreIsSufficient(nodes.length, restored) && Object.keys(prevPos).length) {
+      restored = applyLayoutPositions(nodes, prevPos);
+    }
+    const cacheHit = layoutRestoreIsSufficient(nodes.length, restored);
 
     // Cancel any settle still in flight from a previous effect run so we never
     // have two simulations driving the same nodes at once.
@@ -2722,8 +2741,9 @@ export default function App() {
     }
 
     if (cacheHit) {
-      // Previously settled positions restored from cache: paint the final layout
-      // immediately. No simulation, no delay.
+      // Previously settled positions restored from cache or the prior live graph:
+      // paint immediately. No simulation, no delay.
+      saveLayoutPositions(layoutSig, nodes);
       layoutSettlingRef.current = false;
       invalidatePanLayer();
       draw();
