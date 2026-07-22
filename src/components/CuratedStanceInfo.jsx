@@ -2,7 +2,7 @@ import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "reac
 
 const TOOLTIP_TITLE = "About curated stances";
 const TOOLTIP_BODY =
-  "The initial seed of approximately 150 accounts was curated using AI-assisted analysis and manual review of public statements.\n\nNick Szabo has not publicly endorsed BIP110. His initial placement in the Against cluster reflects his publicly known opposition to Bitcoin Core v30 and is an editorial judgment, not a direct statement about BIP110.";
+  "The initial seed of approximately 150 accounts was curated using AI-assisted analysis and manual review of public statements. Since the initial seed, all newly added accounts have been self-reported by their owners.\n\nNick Szabo has not publicly endorsed BIP110. His initial placement in the Against cluster reflects his publicly known opposition to Bitcoin Core v30 and is an editorial judgment, not a direct statement about BIP110.";
 
 /**
  * Subtle (i) icon + floating tooltip for the footer curated-stances note.
