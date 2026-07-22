@@ -1,8 +1,6 @@
 /** X join-date year helpers and client-side graph filtering. */
 
 export const X_JOIN_YEAR_FLOOR = 2006;
-/** Default left-handle year when the Options filter is first enabled. */
-export const X_JOIN_YEAR_DEFAULT_MIN = 2007;
 
 export function joinYearFromAccountCreatedAt(accountCreatedAt: unknown): number | null {
   if (accountCreatedAt == null || accountCreatedAt === "") return null;
@@ -101,10 +99,10 @@ export function defaultJoinDateRange(
   const summary = summarizeJoinDateYears(accounts);
   const boundMin = X_JOIN_YEAR_FLOOR;
   const boundMax = Math.max(nowYear, summary.latestYear ?? nowYear);
-  const minYear = Math.min(Math.max(X_JOIN_YEAR_DEFAULT_MIN, boundMin), boundMax);
+  // Start at the full track so enabling does not hide early (e.g. 2006) joiners.
   return {
     boundMin,
     boundMax,
-    ...normalizeJoinYearRange(minYear, boundMax, boundMin, boundMax),
+    ...normalizeJoinYearRange(boundMin, boundMax, boundMin, boundMax),
   };
 }
