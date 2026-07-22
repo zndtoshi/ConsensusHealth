@@ -2,12 +2,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import dotenv from "dotenv";
 import { Pool } from "pg";
-import { fetchProfileEnrichmentFromTwitterApiIo } from "./profileEnrichment.js";
+import { fetchProfileEnrichmentFromTwitterApiIo, resolveTwitterApiKey } from "./profileEnrichment.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
 const DATABASE_URL = (process.env.DATABASE_URL || "").trim();
-const TWITTERAPI_IO_KEY = (process.env.TWITTERAPI_IO_KEY || "").trim();
+const TWITTERAPI_IO_KEY = resolveTwitterApiKey();
 
 function fatal(msg: string): never {
   console.error(`\n[enrich:profiles] ${msg}\n`);
@@ -26,6 +26,7 @@ function validateDatabaseUrl(raw: string): void {
     "FRONTEND_BASE_URL=",
     "X_CLIENT_ID=",
     "X_CLIENT_SECRET=",
+    "TWITTERAPI_API_KEY=",
     "TWITTERAPI_IO_KEY=",
   ];
   for (const fragment of suspiciousFragments) {
@@ -98,7 +99,7 @@ function normalizeIsoDate(value: unknown): string | null {
 }
 
 async function run(): Promise<void> {
-  if (!TWITTERAPI_IO_KEY) fatal("TWITTERAPI_IO_KEY is required.");
+  if (!TWITTERAPI_IO_KEY) fatal("TWITTERAPI_API_KEY is required.");
   const usersPath = path.resolve(process.cwd(), "users.json");
   const usersRaw = await fs.readFile(usersPath, "utf-8");
   const parsed = JSON.parse(usersRaw);

@@ -1,14 +1,21 @@
 /**
- * One-time backfill: fetch X account join dates (`created_at`) for community
- * users (and seed handles) missing `account_created_at`, and persist them.
+ * One-off backfill: permanently store X account creation dates via twitterapi.io.
  *
- * Uses the official X API v2 (same app credentials as login) — no twitterapi.io.
- * Auth: X_BEARER_TOKEN, or X_CLIENT_ID + X_CLIENT_SECRET (client credentials).
+ * Env:
+ *   TWITTERAPI_API_KEY  (required; Render already has this)
+ *   DATABASE_URL        (required)
+ *   JOIN_DATE_BACKFILL_CONCURRENCY=2
+ *   JOIN_DATE_BACKFILL_DELAY_MS=500
  *
- * Render shell (one-time):
+ * Commands:
+ *   npm run backfill:join-dates -- --dry-run
+ *   npm run backfill:join-dates -- --handle=zndtoshi --verbose
+ *   npm run backfill:join-dates -- --limit=5
  *   npm run backfill:join-dates
  *
- * Requires DATABASE_URL (set on Render) and X app credentials already used for OAuth.
+ * Production (compiled):
+ *   npm run build:server
+ *   npm run backfill:join-dates:prod -- --dry-run
  */
 
 import fs from "node:fs/promises";
@@ -16,10 +23,21 @@ import path from "node:path";
 import dotenv from "dotenv";
 import { Pool } from "pg";
 import {
-  fetchXUsersByIds,
-  fetchXUsersByUsernames,
-  getXAppBearerToken,
-} from "../xApiUsers.js";
+  buildJoinDateCandidates,
+  emptyJoinDateBackfillStats,
+  estimateCredits,
+  isNumericXUserId,
+  normalizeHandle,
+  parseBackfillArgs,
+  type JoinDateCandidate,
+  type RawAccountRow,
+} from "../joinDateBackfill.js";
+import {
+  fetchProfileEnrichmentFromTwitterApiIo,
+  fetchProfilesByIdsFromTwitterApiIo,
+  resolveTwitterApiKey,
+  type ProfileEnrichment,
+} from "../profileEnrichment.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 dotenv.config();
@@ -30,17 +48,10 @@ function fatal(msg: string): never {
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((r) => setTimeout(r, ms));
 }
 
-function normalizeHandle(value: unknown): string {
-  return String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/^@+/, "");
-}
-
-async function loadSeedHandles(): Promise<Array<{ handle: string; xUserId: string | null }>> {
+async function loadSeedRows(): Promise<RawAccountRow[]> {
   const candidates = [
     path.resolve(process.cwd(), "public", "data", "accounts_stanced.json"),
     path.resolve(process.cwd(), "dist", "data", "accounts_stanced.json"),
@@ -50,14 +61,7 @@ async function loadSeedHandles(): Promise<Array<{ handle: string; xUserId: strin
       const raw = await fs.readFile(p, "utf-8");
       const data = JSON.parse(raw);
       if (!Array.isArray(data)) continue;
-      const out: Array<{ handle: string; xUserId: string | null }> = [];
-      for (const row of data) {
-        const handle = normalizeHandle(row?.handle ?? row?.username);
-        if (!handle) continue;
-        const xUserId = String(row?.x_user_id ?? row?.xUserId ?? "").trim() || null;
-        out.push({ handle, xUserId });
-      }
-      return out;
+      return data.map((row) => ({ ...row, source: "seed" as const }));
     } catch {
       // try next
     }
@@ -65,194 +69,366 @@ async function loadSeedHandles(): Promise<Array<{ handle: string; xUserId: strin
   return [];
 }
 
-async function main(): Promise<void> {
-  const connectionString = (process.env.DATABASE_URL || "").trim();
-  if (!connectionString) fatal("DATABASE_URL is required.");
+async function runPool(
+  items: JoinDateCandidate[],
+  concurrency: number,
+  worker: (item: JoinDateCandidate) => Promise<void>
+): Promise<void> {
+  let i = 0;
+  async function loop() {
+    while (i < items.length) {
+      const idx = i++;
+      await worker(items[idx]!);
+    }
+  }
+  const n = Math.max(1, Math.min(concurrency, items.length || 1));
+  await Promise.all(Array.from({ length: n }, () => loop()));
+}
 
-  const delayMs = Math.max(0, Number(process.env.JOIN_DATE_BACKFILL_DELAY_MS || 500) || 500);
-  const dryRun = String(process.env.DRY_RUN || "").trim() === "1";
+async function persistJoinDate(
+  pool: Pool,
+  opts: {
+    dbXUserId: string | null;
+    resolvedId: string | null;
+    handle: string | null;
+    createdAt: string;
+    dryRun: boolean;
+  }
+): Promise<"updated" | "skipped"> {
+  const { dbXUserId, resolvedId, handle, createdAt, dryRun } = opts;
+  if (dryRun) return "updated";
 
-  let bearer: string;
-  try {
-    bearer = await getXAppBearerToken();
-  } catch (e) {
-    fatal(String((e as Error)?.message || e));
+  const primaryId =
+    (resolvedId && isNumericXUserId(resolvedId) && resolvedId) ||
+    (dbXUserId && isNumericXUserId(dbXUserId) && dbXUserId) ||
+    (handle ? `manual:${handle}` : null);
+  if (!primaryId) return "skipped";
+
+  // Prefer filling existing rows by stable id or handle — never overwrite dates.
+  const updated = await pool.query(
+    `
+    UPDATE community_users
+    SET
+      account_created_at = COALESCE(account_created_at, $3::timestamptz),
+      handle = COALESCE(NULLIF(handle, ''), $2),
+      updated_at = NOW()
+    WHERE account_created_at IS NULL
+      AND (
+        x_user_id = $1
+        OR ($2::text IS NOT NULL AND lower(handle) = lower($2))
+        OR ($2::text IS NOT NULL AND x_user_id = 'manual:' || lower($2))
+      )
+    `,
+    [primaryId, handle, createdAt]
+  );
+
+  if ((updated.rowCount ?? 0) > 0) {
+    // If we resolved a numeric id and an older manual:handle row exists, keep its date filled too.
+    if (handle && isNumericXUserId(primaryId)) {
+      await pool.query(
+        `
+        UPDATE community_users
+        SET account_created_at = COALESCE(account_created_at, $2::timestamptz),
+            updated_at = NOW()
+        WHERE x_user_id = $1
+          AND account_created_at IS NULL
+        `,
+        [`manual:${handle}`, createdAt]
+      );
+    }
+    return "updated";
   }
 
-  const pool = new Pool({ connectionString });
+  // Seed-only accounts: store join date without inventing stance/bio/followers.
+  await pool.query(
+    `
+    INSERT INTO community_users (x_user_id, handle, account_created_at, updated_at)
+    VALUES ($1, $2, $3::timestamptz, NOW())
+    ON CONFLICT (x_user_id) DO UPDATE SET
+      handle = COALESCE(NULLIF(EXCLUDED.handle, ''), community_users.handle),
+      account_created_at = COALESCE(community_users.account_created_at, EXCLUDED.account_created_at),
+      updated_at = NOW()
+    WHERE community_users.account_created_at IS NULL
+    `,
+    [primaryId, handle, createdAt]
+  );
+
+  return "updated";
+}
+
+async function main(): Promise<void> {
+  const args = parseBackfillArgs(process.argv.slice(2));
+  const apiKey = resolveTwitterApiKey();
+  if (!args.dryRun && !apiKey) {
+    fatal("TWITTERAPI_API_KEY is required (Render env var).");
+  }
+
+  const connectionString = (process.env.DATABASE_URL || "").trim();
+  if (!connectionString && !args.dryRun) fatal("DATABASE_URL is required.");
+
+  const concurrency = Math.max(
+    1,
+    Math.min(8, Number(process.env.JOIN_DATE_BACKFILL_CONCURRENCY || 2) || 2)
+  );
+  const delayMs = Math.max(
+    0,
+    Number(process.env.JOIN_DATE_BACKFILL_DELAY_MS || 500) || 500
+  );
+
+  const stats = emptyJoinDateBackfillStats();
+  const pool = connectionString ? new Pool({ connectionString }) : null;
+
   try {
-    await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS account_created_at TIMESTAMPTZ;`);
-
-    const seedHandles = await loadSeedHandles();
-    let seedUpserts = 0;
-    for (const seed of seedHandles) {
-      const xUserId =
-        seed.xUserId && /^\d+$/.test(seed.xUserId) ? seed.xUserId : `manual:${seed.handle}`;
-      if (dryRun) {
-        seedUpserts += 1;
-        continue;
-      }
-      const res = await pool.query(
-        `
-        INSERT INTO community_users (x_user_id, handle, updated_at)
-        VALUES ($1, $2, NOW())
-        ON CONFLICT (x_user_id) DO UPDATE SET
-          handle = COALESCE(NULLIF(EXCLUDED.handle, ''), community_users.handle)
-        WHERE community_users.handle IS NULL OR community_users.handle = ''
-        `,
-        [xUserId, seed.handle]
-      );
-      seedUpserts += Number(res.rowCount ?? 0);
-    }
-    console.log(
-      "[backfill:join-dates] seed rows touched:",
-      seedUpserts,
-      "from",
-      seedHandles.length,
-      "seed handles"
-    );
-
-    const missing = await pool.query<{
-      x_user_id: string;
-      handle: string | null;
-    }>(
-      `
-      SELECT x_user_id, handle
-      FROM community_users
-      WHERE account_created_at IS NULL
-        AND (
-          (handle IS NOT NULL AND length(trim(handle)) > 0)
-          OR (x_user_id ~ '^[0-9]+$')
-        )
-      ORDER BY updated_at DESC NULLS LAST, id ASC
-      `
-    );
-
-    const rows = missing.rows;
-    console.log(
-      "[backfill:join-dates] missing account_created_at:",
-      rows.length,
-      dryRun ? "(dry-run)" : "",
-      "(via X API)"
-    );
-
-    const byId: string[] = [];
-    const byHandle: Array<{ xUserId: string; handle: string }> = [];
-    for (const row of rows) {
-      const xUserId = String(row.x_user_id ?? "").trim();
-      const handle = normalizeHandle(row.handle);
-      if (/^\d+$/.test(xUserId)) byId.push(xUserId);
-      else if (handle) byHandle.push({ xUserId, handle });
-    }
-
-    let updated = 0;
-    let skipped = 0;
-    let failed = 0;
-
-    // Batch by numeric X user id (100 / request).
-    for (let i = 0; i < byId.length; i += 100) {
-      const chunk = byId.slice(i, i + 100);
+    const seedRows = await loadSeedRows();
+    let dbRows: RawAccountRow[] = [];
+    if (pool) {
       try {
-        const profiles = await fetchXUsersByIds(bearer, chunk);
-        for (const id of chunk) {
-          const createdAt = profiles.get(id)?.createdAt ?? null;
-          if (!createdAt) {
-            skipped += 1;
-            continue;
-          }
-          if (dryRun) {
-            updated += 1;
-            continue;
-          }
-          const res = await pool.query(
-            `
-            UPDATE community_users
-            SET account_created_at = COALESCE(account_created_at, $2::timestamptz),
-                updated_at = NOW()
-            WHERE x_user_id = $1
-              AND account_created_at IS NULL
-            `,
-            [id, createdAt]
-          );
-          if (Number(res.rowCount ?? 0) > 0) updated += 1;
-          else skipped += 1;
-        }
-      } catch (e) {
-        failed += chunk.length;
-        console.warn("[backfill:join-dates] id-batch failed", {
-          from: i,
-          size: chunk.length,
-          error: String(e),
-        });
-      }
-      console.log("[backfill:join-dates] id progress", {
-        done: Math.min(i + 100, byId.length),
-        total: byId.length,
-        updated,
-        skipped,
-        failed,
-      });
-      if (delayMs > 0) await sleep(delayMs);
-    }
-
-    // Batch by handle for manual:* rows (100 / request).
-    for (let i = 0; i < byHandle.length; i += 100) {
-      const chunk = byHandle.slice(i, i + 100);
-      try {
-        const profiles = await fetchXUsersByUsernames(
-          bearer,
-          chunk.map((c) => c.handle)
+        await pool.query(
+          `ALTER TABLE community_users ADD COLUMN IF NOT EXISTS account_created_at TIMESTAMPTZ;`
         );
-        for (const row of chunk) {
-          const createdAt = profiles.get(row.handle)?.createdAt ?? null;
-          if (!createdAt) {
-            skipped += 1;
-            continue;
-          }
-          if (dryRun) {
-            updated += 1;
-            continue;
-          }
-          const res = await pool.query(
-            `
-            UPDATE community_users
-            SET account_created_at = COALESCE(account_created_at, $2::timestamptz),
-                updated_at = NOW()
-            WHERE x_user_id = $1
-              AND account_created_at IS NULL
-            `,
-            [row.xUserId, createdAt]
-          );
-          if (Number(res.rowCount ?? 0) > 0) updated += 1;
-          else skipped += 1;
-        }
+        const res = await pool.query(
+          `
+          SELECT x_user_id, handle, account_created_at
+          FROM community_users
+          `
+        );
+        dbRows = res.rows.map((r) => ({
+          x_user_id: r.x_user_id,
+          handle: r.handle,
+          account_created_at: r.account_created_at,
+          source: "community" as const,
+        }));
       } catch (e) {
-        failed += chunk.length;
-        console.warn("[backfill:join-dates] handle-batch failed", {
-          from: i,
-          size: chunk.length,
-          error: String(e),
-        });
+        if (args.dryRun) {
+          console.warn(
+            "[backfill:join-dates] dry-run: database unavailable; using seed accounts only",
+            String(e)
+          );
+        } else {
+          throw e;
+        }
       }
-      console.log("[backfill:join-dates] handle progress", {
-        done: Math.min(i + 100, byHandle.length),
-        total: byHandle.length,
-        updated,
-        skipped,
-        failed,
-      });
-      if (delayMs > 0) await sleep(delayMs);
     }
 
-    console.log("[backfill:join-dates] done", {
-      totalMissing: rows.length,
-      updated,
-      skipped,
-      failed,
-      via: "X API v2",
+    let candidates = buildJoinDateCandidates([...seedRows, ...dbRows]);
+    if (args.handle) {
+      candidates = candidates.filter((c) => c.handle === args.handle);
+      if (!candidates.length) {
+        candidates = [
+          {
+            dbXUserId: null,
+            lookupXUserId: null,
+            handle: args.handle,
+            source: "seed",
+            alreadyHasJoinDate: false,
+          },
+        ];
+      }
+    }
+
+    stats.candidates = candidates.length;
+    stats.alreadyPopulated = candidates.filter((c) => c.alreadyHasJoinDate).length;
+    let missing = candidates.filter((c) => !c.alreadyHasJoinDate);
+    if (args.limit != null) missing = missing.slice(0, args.limit);
+    stats.toRequest = missing.length;
+
+    const withNumericId = missing.filter((c) => c.lookupXUserId).length;
+    const credits = estimateCredits(missing.length, withNumericId);
+
+    console.log("[backfill:join-dates] summary", {
+      keyEnv: "TWITTERAPI_API_KEY",
+      dryRun: args.dryRun,
+      handleFilter: args.handle,
+      limit: args.limit,
+      seedAccounts: seedRows.length,
+      communityRows: dbRows.length,
+      uniqueCandidates: stats.candidates,
+      alreadyPopulated: stats.alreadyPopulated,
+      toRequest: stats.toRequest,
+      withNumericXUserId: withNumericId,
+      estimatedCredits: `${credits.minCredits}–${credits.maxCredits}`,
+      creditNote: credits.note,
+      concurrency,
+      delayMs,
     });
+
+    if (args.dryRun) {
+      console.log("[backfill:join-dates] dry-run complete (no API calls, no DB writes)");
+      return;
+    }
+
+    if (!pool) fatal("DATABASE_URL is required for live runs.");
+    if (!apiKey) fatal("TWITTERAPI_API_KEY is required (Render env var).");
+    const key = apiKey;
+
+    // Prefer batched id lookups when possible.
+    const idBatch = missing.filter((c) => c.lookupXUserId);
+    const handleOnly = missing.filter((c) => !c.lookupXUserId && c.handle);
+
+    const applyEnrichment = async (
+      candidate: JoinDateCandidate,
+      enrichment: ProfileEnrichment | null
+    ) => {
+      if (!enrichment) {
+        stats.permanentFailures += 1;
+        return;
+      }
+      if (enrichment.unavailable) {
+        stats.unavailable += 1;
+        if (String(enrichment.unavailableReason || "").toLowerCase().includes("suspend")) {
+          stats.suspended += 1;
+        }
+        return;
+      }
+      if (!enrichment.accountCreatedAt) {
+        stats.malformed += 1;
+        return;
+      }
+      if (
+        enrichment.id &&
+        candidate.lookupXUserId &&
+        enrichment.id !== candidate.lookupXUserId
+      ) {
+        stats.identityConflicts += 1;
+        console.warn("[backfill:join-dates] identity conflict", {
+          handle: candidate.handle,
+          expectedId: candidate.lookupXUserId,
+          returnedId: enrichment.id,
+        });
+        return;
+      }
+      if (
+        enrichment.username &&
+        candidate.handle &&
+        enrichment.username !== candidate.handle
+      ) {
+        // Handle rename: still accept if ids match or candidate had no id.
+        if (candidate.lookupXUserId && enrichment.id === candidate.lookupXUserId) {
+          // ok
+        } else if (!candidate.lookupXUserId) {
+          // ok — bind by returned id
+        } else {
+          stats.identityConflicts += 1;
+          console.warn("[backfill:join-dates] handle mismatch", {
+            expected: candidate.handle,
+            returned: enrichment.username,
+            id: enrichment.id,
+          });
+          return;
+        }
+      }
+
+      const result = await persistJoinDate(pool, {
+        dbXUserId: candidate.dbXUserId,
+        resolvedId: enrichment.id,
+        handle: enrichment.username || candidate.handle,
+        createdAt: enrichment.accountCreatedAt,
+        dryRun: false,
+      });
+      if (result === "updated") {
+        stats.successfullyUpdated += 1;
+        if (candidate.source === "seed" || candidate.source === "both") stats.seededUpdated += 1;
+        if (candidate.source === "community" || candidate.source === "both") {
+          stats.communityUpdated += 1;
+        }
+      }
+    };
+
+    // Batch numeric ids in chunks of 100.
+    for (let i = 0; i < idBatch.length; i += 100) {
+      const chunk = idBatch.slice(i, i + 100);
+      const ids = chunk.map((c) => c.lookupXUserId!).filter(Boolean);
+      try {
+        stats.apiCalls += 1;
+        const map = await fetchProfilesByIdsFromTwitterApiIo(ids, key, {
+          onRateLimited: () => {
+            stats.rateLimited += 1;
+          },
+        });
+        for (const c of chunk) {
+          const enr = c.lookupXUserId ? map.get(c.lookupXUserId) ?? null : null;
+          if (args.verbose) {
+            console.log("[backfill:join-dates][verbose]", {
+              handle: c.handle,
+              lookupXUserId: c.lookupXUserId,
+              id: enr?.id ?? null,
+              createdAt: enr?.accountCreatedAt ?? null,
+              unavailable: enr?.unavailable ?? false,
+            });
+          }
+          if (!enr && c.handle) {
+            // Fallback single lookup by handle when id batch missed the user.
+            stats.apiCalls += 1;
+            const single = await fetchProfileEnrichmentFromTwitterApiIo(
+              { xUserId: null, handle: c.handle },
+              key,
+              {
+                onRateLimited: () => {
+                  stats.rateLimited += 1;
+                },
+              }
+            );
+            if (args.verbose) {
+              console.log("[backfill:join-dates][verbose][fallback]", {
+                handle: c.handle,
+                id: single?.id ?? null,
+                createdAt: single?.accountCreatedAt ?? null,
+              });
+            }
+            await applyEnrichment(c, single);
+          } else {
+            await applyEnrichment(c, enr);
+          }
+        }
+      } catch (e) {
+        stats.transientFailures += chunk.length;
+        console.warn("[backfill:join-dates] id batch failed", String(e));
+      }
+      if (delayMs > 0) await sleep(delayMs);
+      console.log("[backfill:join-dates] id-batch progress", {
+        done: Math.min(i + 100, idBatch.length),
+        total: idBatch.length,
+        updated: stats.successfullyUpdated,
+      });
+    }
+
+    await runPool(handleOnly, concurrency, async (c) => {
+      try {
+        stats.apiCalls += 1;
+        const enr = await fetchProfileEnrichmentFromTwitterApiIo(
+          { xUserId: null, handle: c.handle },
+          key,
+          {
+            onRateLimited: () => {
+              stats.rateLimited += 1;
+            },
+          }
+        );
+        if (args.verbose) {
+          console.log("[backfill:join-dates][verbose]", {
+            handle: c.handle,
+            id: enr?.id ?? null,
+            createdAt: enr?.accountCreatedAt ?? null,
+            unavailable: enr?.unavailable ?? false,
+          });
+        }
+        await applyEnrichment(c, enr);
+      } catch (e) {
+        stats.transientFailures += 1;
+        console.warn("[backfill:join-dates] handle failed", c.handle, String(e));
+      }
+      if (delayMs > 0) await sleep(delayMs);
+    });
+
+    // Single-handle verbose path when only that filter was used and it was already in id batch.
+    if (args.verbose && args.handle && missing.length === 1 && missing[0]?.lookupXUserId) {
+      // already logged via apply; print final
+      console.log("[backfill:join-dates][verbose] completed handle filter", args.handle);
+    }
+
+    console.log("[backfill:join-dates] done", stats);
   } finally {
-    await pool.end();
+    await pool?.end();
   }
 }
 

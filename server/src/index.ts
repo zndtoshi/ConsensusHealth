@@ -8,7 +8,10 @@ import dotenv from "dotenv";
 import { Pool, type PoolClient } from "pg";
 import { v4 as uuidv4 } from "uuid";
 import { logConfig } from "./config/appUrl.js";
-import { fetchProfileEnrichmentFromTwitterApiIo } from "./profileEnrichment.js";
+import {
+  fetchProfileEnrichmentFromTwitterApiIo,
+  resolveTwitterApiKey,
+} from "./profileEnrichment.js";
 import {
   decodeStanceHistoryCursor,
   encodeStanceHistoryCursor,
@@ -37,7 +40,7 @@ const DATABASE_URL = (process.env.DATABASE_URL || "").trim();
 const TWITTER_CLIENT_ID = process.env.X_CLIENT_ID || process.env.TWITTER_CLIENT_ID || "";
 const TWITTER_CLIENT_SECRET = process.env.X_CLIENT_SECRET || process.env.TWITTER_CLIENT_SECRET || "";
 // Used as a fallback when X /users/me omits bio or created_at (also available in prod).
-const PROFILE_ENRICHMENT_KEY = (process.env.TWITTERAPI_IO_KEY || "").trim();
+const PROFILE_ENRICHMENT_KEY = resolveTwitterApiKey();
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 30);
 const SESSION_SECRET = process.env.SESSION_SECRET || "";
 const STATS_CACHE_TTL_MS = 45_000;

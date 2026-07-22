@@ -13,6 +13,7 @@
     "enrich:profiles": "tsx server/src/enrichProfilesFromUsersJson.ts",
     "backfill:avatars": "tsx server/src/scripts/backfillLocalAvatars.ts",
     "backfill:join-dates": "tsx server/src/scripts/backfillAccountCreatedAt.ts",
+    "backfill:join-dates:prod": "node server/dist/scripts/backfillAccountCreatedAt.js",
     "start": "node server/dist/index.js",
     "lint": "eslint .",
     "test": "tsx --test server/src/**/*.test.ts src/**/*.test.ts",
