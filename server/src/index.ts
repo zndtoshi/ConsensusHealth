@@ -27,6 +27,11 @@ import {
   resolveAvatarsDir,
 } from "./avatarStorage.js";
 import { clampNewStancesLimit, queryNewStanceEvents } from "./newStances.js";
+import {
+  coerceXUserIdToDigitString,
+  coerceXUserIdKey,
+  parseJsonPreservingSnowflakeIds,
+} from "./xUserId.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
@@ -411,7 +416,7 @@ async function loadSeededAccountsForCommunity(): Promise<Record<string, unknown>
   for (const p of candidates) {
     try {
       const raw = await fs.promises.readFile(p, "utf-8");
-      const data = JSON.parse(raw);
+      const data = parseJsonPreservingSnowflakeIds(raw);
       if (Array.isArray(data)) {
         seededAccountsCache = data as Record<string, unknown>[];
         return seededAccountsCache;
@@ -482,7 +487,9 @@ function mergeCommunityUsers(
 
   const upsert = (raw: Record<string, unknown>, source: "seeded" | "db"): void => {
     const incomingHandle = toNormalizedHandle(raw?.handle ?? raw?.username ?? raw?.screen_name);
-    const incomingXUserId = toNonEmptyString(raw?.x_user_id ?? raw?.xUserId);
+    const incomingXUserId =
+      coerceXUserIdToDigitString(raw?.x_user_id ?? raw?.xUserId) ??
+      coerceXUserIdKey(raw?.x_user_id ?? raw?.xUserId);
     if (!incomingHandle && !incomingXUserId) return;
 
     let rec =
@@ -503,7 +510,9 @@ function mergeCommunityUsers(
     }
 
     const existingHandle = toNormalizedHandle(rec.handle ?? rec.username ?? rec.screen_name);
-    const existingXUserId = toNonEmptyString(rec.x_user_id ?? rec.xUserId);
+    const existingXUserId =
+      coerceXUserIdToDigitString(rec.x_user_id ?? rec.xUserId) ??
+      coerceXUserIdKey(rec.x_user_id ?? rec.xUserId);
     const bestHandle = chooseString(existingHandle, incomingHandle, source);
     const bestXUserId = chooseString(existingXUserId, incomingXUserId, source);
     if (bestHandle) rec.handle = bestHandle;
@@ -545,7 +554,9 @@ function mergeCommunityUsers(
     }
 
     const finalHandle = toNormalizedHandle(rec.handle ?? rec.username ?? rec.screen_name);
-    const finalXUserId = toNonEmptyString(rec.x_user_id ?? rec.xUserId);
+    const finalXUserId =
+      coerceXUserIdToDigitString(rec.x_user_id ?? rec.xUserId) ??
+      coerceXUserIdKey(rec.x_user_id ?? rec.xUserId);
     if (finalXUserId) byXid.set(finalXUserId, rec);
     if (finalHandle) byHandle.set(finalHandle, rec);
   };
@@ -1022,7 +1033,14 @@ app.get("/auth/x/callback", async (req, res, next) => {
       return;
     }
 
-    const xUserId = String(data.id);
+    const xUserId =
+      coerceXUserIdToDigitString(data.id) ??
+      (typeof data.id === "string" ? data.id.trim() : "");
+    if (!xUserId) {
+      console.error("[OAuth] /users/me missing usable string id");
+      finishAuthResult(req, res, false, isPopup);
+      return;
+    }
     const handle = String(data.username).toLowerCase();
     const name = data.name ? String(data.name) : null;
     const rawProfileImageUrl = data.profile_image_url ? String(data.profile_image_url) : null;

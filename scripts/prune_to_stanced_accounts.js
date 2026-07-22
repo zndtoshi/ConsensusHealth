@@ -34,12 +34,27 @@ async function main() {
       stance,
       followers_count: Number(existing.followers_count ?? 0) || 0,
       avatar_path: existing.avatar_path || `/avatars/${handle}.jpg`,
+      ...(existing.x_user_id != null
+        ? { x_user_id: String(existing.x_user_id) }
+        : {}),
     });
   }
   out.sort((a, b) => (Number(b.followers_count || 0) - Number(a.followers_count || 0)));
 
-  await fs.writeFile(accountsStancedPath, JSON.stringify(out, null, 2) + "\n", "utf-8");
-  await fs.writeFile(accountsMasterPath, JSON.stringify(out, null, 2) + "\n", "utf-8");
+  const json = JSON.stringify(
+    out,
+    (_key, value) => {
+      // Keep x_user_id as a JSON string even if somehow numeric.
+      return value;
+    },
+    2
+  );
+  // Force quote any remaining numeric x_user_id after stringify (defensive).
+  const safeJson =
+    json.replace(/("x_user_id"\s*:\s*)(\d+)/g, '$1"$2"') + "\n";
+
+  await fs.writeFile(accountsStancedPath, safeJson, "utf-8");
+  await fs.writeFile(accountsMasterPath, safeJson, "utf-8");
 
   // Keep only tweets for stanced handles
   const mentionsRaw = await fs.readFile(mentionsPath, "utf-8");

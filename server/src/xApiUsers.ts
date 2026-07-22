@@ -69,8 +69,10 @@ type XUserPayload = {
 
 function mapUser(u: XUserPayload | null | undefined): XApiUserProfile | null {
   if (!u?.id) return null;
+  const id = typeof u.id === "string" ? u.id.trim() : "";
+  if (!/^\d+$/.test(id)) return null;
   return {
-    id: String(u.id),
+    id,
     username: String(u.username ?? "").trim().toLowerCase(),
     createdAt: normalizeDate(u.created_at),
     bio: String(u.description ?? "").trim() || null,
@@ -91,7 +93,13 @@ async function xGet(
     const txt = await res.text();
     throw new Error(`X API ${res.status}: ${txt.slice(0, 240)}`);
   }
-  return (await res.json()) as { data?: XUserPayload | XUserPayload[]; errors?: unknown };
+  const text = await res.text();
+  // Preserve long digit id fields if the API ever emits them as JSON numbers.
+  const quoted = text.replace(
+    /("(?:id|x_user_id|xUserId|userId|user_id)"\s*:\s*)(-?\d{15,})(\s*[,}\]])/g,
+    '$1"$2"$3'
+  );
+  return JSON.parse(quoted) as { data?: XUserPayload | XUserPayload[]; errors?: unknown };
 }
 
 /** Lookup up to 100 users by numeric id. */

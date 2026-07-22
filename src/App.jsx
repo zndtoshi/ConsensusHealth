@@ -30,6 +30,11 @@ import {
   normalizeJoinYearRange,
   summarizeJoinDateYears,
 } from "./utils/xJoinDateFilter";
+import {
+  coerceXUserIdKey,
+  coerceXUserIdToDigitString,
+  parseJsonPreservingSnowflakeIds,
+} from "./utils/xUserId";
 import { XJoinDateRangeSlider } from "./components/XJoinDateRangeSlider";
 import { StanceChoiceCard } from "./components/StanceChoiceCard";
 import { CuratedStanceInfo } from "./components/CuratedStanceInfo";
@@ -666,9 +671,16 @@ function upsertSelfAccountLocally(prev, row) {
 /** Load canonical seeded accounts + community accounts and merge by handle. */
 async function loadAccounts() {
   const base = getBase();
-  const seededPromise = fetch(`${base}/data/accounts_stanced.json?v=${DATA_REV}`).then((r) =>
-    r.ok ? r.json() : []
-  );
+  const seededPromise = fetch(`${base}/data/accounts_stanced.json?v=${DATA_REV}`).then(async (r) => {
+    if (!r.ok) return [];
+    const text = await r.text();
+    try {
+      const data = parseJsonPreservingSnowflakeIds(text);
+      return Array.isArray(data) ? data : [];
+    } catch {
+      return [];
+    }
+  });
   const communityPromise = fetchCommunityUsers().catch(() => []);
 
   // Wait for both sources before first paint so the graph does not briefly show
@@ -684,7 +696,10 @@ async function loadAccounts() {
 
   const upsert = (raw, source) => {
     const handleNorm = normalizeHandle(raw?.handle ?? raw?.username ?? raw?.screen_name);
-    const xId = String(raw?.x_user_id ?? raw?.xUserId ?? raw?.id ?? "").trim();
+    const xId =
+      coerceXUserIdToDigitString(raw?.x_user_id ?? raw?.xUserId ?? raw?.id) ??
+      coerceXUserIdKey(raw?.x_user_id ?? raw?.xUserId) ??
+      "";
     if (!handleNorm && !xId) return;
 
     const matchedBy = xId && byXid.get(xId) ? "x_user_id" : (handleNorm && byHandle.get(handleNorm) ? "handle" : "new");

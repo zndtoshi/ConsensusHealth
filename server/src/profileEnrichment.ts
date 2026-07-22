@@ -5,6 +5,11 @@
  * Legacy local alias still accepted: TWITTERAPI_IO_KEY
  */
 
+import {
+  coerceXUserIdToDigitString,
+  parseJsonPreservingSnowflakeIds,
+} from "./xUserId.js";
+
 export type EnrichmentInput = {
   xUserId?: string | null;
   handle?: string | null;
@@ -72,8 +77,7 @@ export function mapEnrichment(user: TwitterApiIoUser | null): ProfileEnrichment 
   if (!user) return null;
   const unavailable = Boolean(user.unavailable);
   const unavailableReason = String(user.unavailableReason ?? user.message ?? "").trim() || null;
-  const idRaw = String(user.id ?? "").trim();
-  const id = /^\d+$/.test(idRaw) ? idRaw : null;
+  const id = coerceXUserIdToDigitString(user.id);
   const username = normalizeHandle(user.userName ?? user.username ?? user.screen_name ?? null);
   const bio = normalizeBio(
     (user.profile_bio as { description?: unknown } | undefined)?.description ??
@@ -121,7 +125,8 @@ export async function requestTwitterApiIo(
   }
   let json: Record<string, unknown> | null = null;
   try {
-    json = (await res.json()) as Record<string, unknown>;
+    const text = await res.text();
+    json = parseJsonPreservingSnowflakeIds(text) as Record<string, unknown>;
   } catch {
     json = null;
   }

@@ -2,10 +2,31 @@
  * Shared join-date backfill logic (testable, no side effects until persist callbacks run).
  */
 
+import {
+  coerceXUserIdKey,
+  coerceXUserIdToDigitString,
+  isDigitOnlyXUserId,
+  isUnsafeOrRoundedXUserId,
+  knownRoundedRecordForHandle,
+  normalizeHandle,
+  KNOWN_ROUNDED_X_USER_IDS,
+} from "./xUserId.js";
+
+export {
+  normalizeHandle,
+  isDigitOnlyXUserId as isNumericXUserId,
+  coerceXUserIdToDigitString,
+  isUnsafeOrRoundedXUserId,
+  knownRoundedRecordForHandle,
+  KNOWN_ROUNDED_X_USER_IDS,
+  evaluateRoundedIdRepair,
+} from "./xUserId.js";
+export type { RoundedIdRepairDecision, RoundedIdRepairInput } from "./xUserId.js";
+
 export type JoinDateCandidate = {
-  /** Existing DB x_user_id (numeric or manual:handle). */
+  /** Existing DB x_user_id (digit string or manual:handle). */
   dbXUserId: string | null;
-  /** Preferred numeric X id for API lookup when known. */
+  /** Preferred digit X id for API lookup when known and safe. */
   lookupXUserId: string | null;
   handle: string | null;
   source: "seed" | "community" | "both";
@@ -26,6 +47,8 @@ export type JoinDateBackfillStats = {
   transientFailures: number;
   permanentFailures: number;
   identityConflicts: number;
+  repairedRoundedIds: number;
+  skippedAmbiguous: number;
   apiCalls: number;
 };
 
@@ -44,20 +67,10 @@ export function emptyJoinDateBackfillStats(): JoinDateBackfillStats {
     transientFailures: 0,
     permanentFailures: 0,
     identityConflicts: 0,
+    repairedRoundedIds: 0,
+    skippedAmbiguous: 0,
     apiCalls: 0,
   };
-}
-
-export function normalizeHandle(value: unknown): string | null {
-  const h = String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/^@+/, "");
-  return h || null;
-}
-
-export function isNumericXUserId(value: unknown): boolean {
-  return /^\d+$/.test(String(value ?? "").trim());
 }
 
 export type RawAccountRow = {
@@ -71,7 +84,8 @@ export type RawAccountRow = {
 };
 
 /**
- * Build a deduplicated candidate list. Prefer stable numeric X user ID, then handle.
+ * Build a deduplicated candidate list. Prefer stable digit X user ID, then handle.
+ * JS numbers are ignored (may be rounded); only string/bigint digit IDs are used.
  */
 export function buildJoinDateCandidates(rows: RawAccountRow[]): JoinDateCandidate[] {
   type Acc = {
@@ -93,24 +107,24 @@ export function buildJoinDateCandidates(rows: RawAccountRow[]): JoinDateCandidat
 
   for (const row of rows) {
     const handle = normalizeHandle(row.handle ?? row.username);
-    const rawId = String(row.x_user_id ?? row.xUserId ?? "").trim() || null;
-    const numericId = rawId && isNumericXUserId(rawId) ? rawId : null;
+    const digitId = coerceXUserIdToDigitString(row.x_user_id ?? row.xUserId);
+    const rawKey = coerceXUserIdKey(row.x_user_id ?? row.xUserId);
     const source = row.source === "community" ? "community" : "seed";
     const already = hasDate(row);
 
     let acc: Acc | undefined;
-    if (numericId) acc = byId.get(numericId);
+    if (digitId) acc = byId.get(digitId);
     if (!acc && handle) acc = byHandle.get(handle);
 
     if (!acc) {
       acc = {
-        dbXUserId: rawId,
-        lookupXUserId: numericId,
+        dbXUserId: rawKey,
+        lookupXUserId: digitId,
         handle,
         sources: new Set([source]),
         alreadyHasJoinDate: already,
       };
-      if (numericId) byId.set(numericId, acc);
+      if (digitId) byId.set(digitId, acc);
       if (handle) byHandle.set(handle, acc);
       continue;
     }
@@ -118,17 +132,17 @@ export function buildJoinDateCandidates(rows: RawAccountRow[]): JoinDateCandidat
     acc.sources.add(source);
     acc.alreadyHasJoinDate = acc.alreadyHasJoinDate || already;
     if (handle && !acc.handle) acc.handle = handle;
-    if (numericId) {
-      if (acc.lookupXUserId && acc.lookupXUserId !== numericId) {
+    if (digitId) {
+      if (acc.lookupXUserId && acc.lookupXUserId !== digitId) {
         // Conflict tracked by caller via separate pass; keep first.
       } else {
-        acc.lookupXUserId = numericId;
+        acc.lookupXUserId = digitId;
       }
-      if (!acc.dbXUserId || !isNumericXUserId(acc.dbXUserId)) acc.dbXUserId = numericId;
-      byId.set(numericId, acc);
+      if (!acc.dbXUserId || !isDigitOnlyXUserId(acc.dbXUserId)) acc.dbXUserId = digitId;
+      byId.set(digitId, acc);
       if (handle) byHandle.set(handle, acc);
-    } else if (rawId && !acc.dbXUserId) {
-      acc.dbXUserId = rawId;
+    } else if (rawKey && !acc.dbXUserId) {
+      acc.dbXUserId = rawKey;
     }
     if (handle) byHandle.set(handle, acc);
   }
@@ -156,19 +170,66 @@ export function buildJoinDateCandidates(rows: RawAccountRow[]): JoinDateCandidat
   return out;
 }
 
+/** Candidates that look like rounded-ID repair targets (for dry-run reporting). */
+export function listKnownRoundedRepairCandidates(candidates: JoinDateCandidate[]): Array<{
+  handle: string;
+  storedId: string | null;
+  expectedExactId: string | null;
+  alreadyHasJoinDate: boolean;
+}> {
+  const out: Array<{
+    handle: string;
+    storedId: string | null;
+    expectedExactId: string | null;
+    alreadyHasJoinDate: boolean;
+  }> = [];
+  const seen = new Set<string>();
+
+  for (const known of KNOWN_ROUNDED_X_USER_IDS) {
+    const hit = candidates.find((c) => c.handle === known.handle);
+    const stored = hit?.dbXUserId ?? hit?.lookupXUserId ?? known.roundedId;
+    const already = hit?.alreadyHasJoinDate ?? false;
+    if (already && stored === known.exactId) continue;
+    out.push({
+      handle: known.handle,
+      storedId: stored,
+      expectedExactId: known.exactId,
+      alreadyHasJoinDate: already,
+    });
+    seen.add(known.handle);
+  }
+
+  for (const c of candidates) {
+    if (!c.handle || seen.has(c.handle) || c.alreadyHasJoinDate) continue;
+    const stored = c.dbXUserId ?? c.lookupXUserId;
+    if (!stored || !isUnsafeOrRoundedXUserId(stored)) continue;
+    out.push({
+      handle: c.handle,
+      storedId: stored,
+      expectedExactId: null,
+      alreadyHasJoinDate: false,
+    });
+  }
+
+  return out.sort((a, b) => a.handle.localeCompare(b.handle));
+}
+
 export function parseBackfillArgs(argv: string[]): {
   dryRun: boolean;
   limit: number | null;
   handle: string | null;
   verbose: boolean;
+  repairRoundedIds: boolean;
 } {
   let dryRun = false;
   let limit: number | null = null;
   let handle: string | null = null;
   let verbose = false;
+  let repairRoundedIds = false;
   for (const arg of argv) {
     if (arg === "--dry-run") dryRun = true;
     else if (arg === "--verbose") verbose = true;
+    else if (arg === "--repair-rounded-ids") repairRoundedIds = true;
     else if (arg.startsWith("--limit=")) {
       const n = Number(arg.slice("--limit=".length));
       if (Number.isFinite(n) && n > 0) limit = Math.floor(n);
@@ -176,7 +237,7 @@ export function parseBackfillArgs(argv: string[]): {
       handle = normalizeHandle(arg.slice("--handle=".length));
     }
   }
-  return { dryRun, limit, handle, verbose };
+  return { dryRun, limit, handle, verbose, repairRoundedIds };
 }
 
 export function estimateCredits(toRequest: number, withNumericId: number): {
@@ -184,7 +245,6 @@ export function estimateCredits(toRequest: number, withNumericId: number): {
   maxCredits: number;
   note: string;
 } {
-  // Docs: single ~18 credits; bulk 100+ users ~10 credits/user.
   const byHandle = Math.max(0, toRequest - withNumericId);
   const byId = withNumericId;
   const minCredits = byId * 10 + byHandle * 10;

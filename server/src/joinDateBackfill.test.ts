@@ -234,6 +234,13 @@ test("parseBackfillArgs supports dry-run, limit, handle, verbose", () => {
   assert.equal(parsed.limit, 5);
   assert.equal(parsed.handle, "zndtoshi");
   assert.equal(parsed.verbose, true);
+  assert.equal(parsed.repairRoundedIds, false);
+});
+
+test("parseBackfillArgs supports --repair-rounded-ids", () => {
+  const parsed = parseBackfillArgs(["--repair-rounded-ids", "--handle=brian_trollz"]);
+  assert.equal(parsed.repairRoundedIds, true);
+  assert.equal(parsed.handle, "brian_trollz");
 });
 
 test("estimateCredits scales with request count", () => {

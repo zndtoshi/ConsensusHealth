@@ -11,11 +11,13 @@
  *   npm run backfill:join-dates -- --dry-run
  *   npm run backfill:join-dates -- --handle=zndtoshi --verbose
  *   npm run backfill:join-dates -- --limit=5
+ *   npm run backfill:join-dates -- --repair-rounded-ids --verbose
+ *   npm run backfill:join-dates -- --repair-rounded-ids --dry-run
  *   npm run backfill:join-dates
  *
  * Production (compiled):
  *   npm run build:server
- *   npm run backfill:join-dates:prod -- --dry-run
+ *   npm run backfill:join-dates:prod -- --repair-rounded-ids --verbose
  */
 
 import fs from "node:fs/promises";
@@ -26,7 +28,10 @@ import {
   buildJoinDateCandidates,
   emptyJoinDateBackfillStats,
   estimateCredits,
+  evaluateRoundedIdRepair,
   isNumericXUserId,
+  isUnsafeOrRoundedXUserId,
+  listKnownRoundedRepairCandidates,
   normalizeHandle,
   parseBackfillArgs,
   type JoinDateCandidate,
@@ -38,6 +43,7 @@ import {
   resolveTwitterApiKey,
   type ProfileEnrichment,
 } from "../profileEnrichment.js";
+import { parseJsonPreservingSnowflakeIds } from "../xUserId.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 dotenv.config();
@@ -59,9 +65,9 @@ async function loadSeedRows(): Promise<RawAccountRow[]> {
   for (const p of candidates) {
     try {
       const raw = await fs.readFile(p, "utf-8");
-      const data = JSON.parse(raw);
+      const data = parseJsonPreservingSnowflakeIds(raw);
       if (!Array.isArray(data)) continue;
-      return data.map((row) => ({ ...row, source: "seed" as const }));
+      return data.map((row) => ({ ...(row as object), source: "seed" as const }));
     } catch {
       // try next
     }
@@ -85,6 +91,138 @@ async function runPool(
   await Promise.all(Array.from({ length: n }, () => loop()));
 }
 
+async function exactIdOwnedByOtherRow(
+  pool: Pool,
+  exactId: string,
+  excludeIds: Array<string | null | undefined>
+): Promise<boolean> {
+  const excluded = [...new Set(excludeIds.map((x) => String(x || "").trim()).filter(Boolean))];
+  const res = await pool.query(
+    `
+    SELECT x_user_id
+    FROM community_users
+    WHERE x_user_id = $1
+      AND NOT (x_user_id = ANY($2::text[]))
+    LIMIT 1
+    `,
+    [exactId, excluded]
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+/**
+ * Remap a rounded x_user_id to the exact TwitterAPI.io id and set account_created_at.
+ * Does not touch stance, history content, avatar_path, followers, name, or provenance fields
+ * beyond rewriting FK x_user_id keys to the new primary key.
+ */
+async function repairRoundedIdAndJoinDate(
+  pool: Pool,
+  opts: {
+    oldId: string;
+    newId: string;
+    handle: string;
+    createdAt: string;
+    dryRun: boolean;
+  }
+): Promise<"updated" | "skipped"> {
+  const { oldId, newId, handle, createdAt, dryRun } = opts;
+  if (dryRun) return "updated";
+  if (!isNumericXUserId(oldId) || !isNumericXUserId(newId) || oldId === newId) return "skipped";
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const current = await client.query(
+      `
+      SELECT x_user_id, account_created_at
+      FROM community_users
+      WHERE x_user_id = $1
+         OR lower(handle) = lower($2)
+      LIMIT 1
+      `,
+      [oldId, handle]
+    );
+    const row = current.rows[0] as
+      | { x_user_id: string; account_created_at: string | null }
+      | undefined;
+    if (!row) {
+      await client.query("ROLLBACK");
+      return "skipped";
+    }
+    if (row.account_created_at != null) {
+      await client.query("ROLLBACK");
+      return "skipped";
+    }
+
+    const fromId = String(row.x_user_id);
+    if (fromId === newId) {
+      await client.query(
+        `
+        UPDATE community_users
+        SET account_created_at = COALESCE(account_created_at, $2::timestamptz),
+            updated_at = NOW()
+        WHERE x_user_id = $1 AND account_created_at IS NULL
+        `,
+        [newId, createdAt]
+      );
+      await client.query("COMMIT");
+      return "updated";
+    }
+
+    const clash = await client.query(
+      `SELECT 1 FROM community_users WHERE x_user_id = $1 LIMIT 1`,
+      [newId]
+    );
+    if ((clash.rowCount ?? 0) > 0) {
+      await client.query("ROLLBACK");
+      return "skipped";
+    }
+
+    // Child tables that key by x_user_id (stance_history has FK ON DELETE CASCADE).
+    await client.query(`UPDATE stance_history SET x_user_id = $2 WHERE x_user_id = $1`, [
+      fromId,
+      newId,
+    ]);
+    await client.query(`UPDATE stance_events SET x_user_id = $2 WHERE x_user_id = $1`, [
+      fromId,
+      newId,
+    ]);
+    await client.query(`UPDATE sessions SET x_user_id = $2 WHERE x_user_id = $1`, [fromId, newId]);
+
+    await client.query(
+      `
+      UPDATE community_users
+      SET
+        x_user_id = $2,
+        account_created_at = COALESCE(account_created_at, $3::timestamptz),
+        updated_at = NOW()
+      WHERE x_user_id = $1
+        AND account_created_at IS NULL
+      `,
+      [fromId, newId, createdAt]
+    );
+
+    await client.query("COMMIT");
+    console.log("[backfill:join-dates] repaired rounded x_user_id", {
+      handle,
+      oldId: fromId,
+      newId,
+      account_created_at: createdAt,
+    });
+    return "updated";
+  } catch (e) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // ignore
+    }
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 async function persistJoinDate(
   pool: Pool,
   opts: {
@@ -104,7 +242,6 @@ async function persistJoinDate(
     (handle ? `manual:${handle}` : null);
   if (!primaryId) return "skipped";
 
-  // Prefer filling existing rows by stable id or handle — never overwrite dates.
   const updated = await pool.query(
     `
     UPDATE community_users
@@ -123,7 +260,6 @@ async function persistJoinDate(
   );
 
   if ((updated.rowCount ?? 0) > 0) {
-    // If we resolved a numeric id and an older manual:handle row exists, keep its date filled too.
     if (handle && isNumericXUserId(primaryId)) {
       await pool.query(
         `
@@ -139,7 +275,6 @@ async function persistJoinDate(
     return "updated";
   }
 
-  // Seed-only accounts: store join date without inventing stance/bio/followers.
   await pool.query(
     `
     INSERT INTO community_users (x_user_id, handle, account_created_at, updated_at)
@@ -170,10 +305,7 @@ async function main(): Promise<void> {
     1,
     Math.min(8, Number(process.env.JOIN_DATE_BACKFILL_CONCURRENCY || 2) || 2)
   );
-  const delayMs = Math.max(
-    0,
-    Number(process.env.JOIN_DATE_BACKFILL_DELAY_MS || 500) || 500
-  );
+  const delayMs = Math.max(0, Number(process.env.JOIN_DATE_BACKFILL_DELAY_MS || 500) || 500);
 
   const stats = emptyJoinDateBackfillStats();
   const pool = connectionString ? new Pool({ connectionString }) : null;
@@ -232,12 +364,32 @@ async function main(): Promise<void> {
     if (args.limit != null) missing = missing.slice(0, args.limit);
     stats.toRequest = missing.length;
 
-    const withNumericId = missing.filter((c) => c.lookupXUserId).length;
+    if (args.repairRoundedIds) {
+      const repairReport = listKnownRoundedRepairCandidates(candidates).filter((r) =>
+        args.handle ? r.handle === args.handle : true
+      );
+      console.log("[backfill:join-dates] repair-rounded-ids candidates", repairReport);
+    }
+
+    // In repair mode, never look up by possibly-rounded IDs — handle only.
+    const idBatch = args.repairRoundedIds
+      ? []
+      : missing.filter((c) => c.lookupXUserId && !isUnsafeOrRoundedXUserId(c.lookupXUserId));
+    const handleOnly = args.repairRoundedIds
+      ? missing.filter((c) => Boolean(c.handle))
+      : missing.filter(
+          (c) =>
+            Boolean(c.handle) &&
+            (!c.lookupXUserId || isUnsafeOrRoundedXUserId(c.lookupXUserId))
+        );
+
+    const withNumericId = idBatch.length;
     const credits = estimateCredits(missing.length, withNumericId);
 
     console.log("[backfill:join-dates] summary", {
       keyEnv: "TWITTERAPI_API_KEY",
       dryRun: args.dryRun,
+      repairRoundedIds: args.repairRoundedIds,
       handleFilter: args.handle,
       limit: args.limit,
       seedAccounts: seedRows.length,
@@ -246,10 +398,12 @@ async function main(): Promise<void> {
       alreadyPopulated: stats.alreadyPopulated,
       toRequest: stats.toRequest,
       withNumericXUserId: withNumericId,
+      handleLookups: handleOnly.length,
       estimatedCredits: `${credits.minCredits}–${credits.maxCredits}`,
       creditNote: credits.note,
       concurrency,
       delayMs,
+      pgXUserIdType: "TEXT",
     });
 
     if (args.dryRun) {
@@ -261,52 +415,131 @@ async function main(): Promise<void> {
     if (!apiKey) fatal("TWITTERAPI_API_KEY is required (Render env var).");
     const key = apiKey;
 
-    // Prefer batched id lookups when possible.
-    const idBatch = missing.filter((c) => c.lookupXUserId);
-    const handleOnly = missing.filter((c) => !c.lookupXUserId && c.handle);
-
     const applyEnrichment = async (
       candidate: JoinDateCandidate,
-      enrichment: ProfileEnrichment | null
+      enrichment: ProfileEnrichment | null,
+      lookupWasByHandle: boolean
     ) => {
       if (!enrichment) {
         stats.permanentFailures += 1;
+        if (candidate.handle === "arberash") {
+          console.warn("[backfill:join-dates] arberash unresolved", {
+            reason: "not_returned_by_twitterapi_io",
+          });
+        }
         return;
       }
       if (enrichment.unavailable) {
         stats.unavailable += 1;
-        if (String(enrichment.unavailableReason || "").toLowerCase().includes("suspend")) {
-          stats.suspended += 1;
+        const reason = String(enrichment.unavailableReason || "").toLowerCase();
+        if (reason.includes("suspend")) stats.suspended += 1;
+        if (candidate.handle === "arberash") {
+          console.warn("[backfill:join-dates] arberash unresolved", {
+            unavailable: true,
+            unavailableReason: enrichment.unavailableReason,
+            suspended: reason.includes("suspend"),
+            deleted: reason.includes("delet") || reason.includes("not exist"),
+            renamed: false,
+          });
         }
         return;
       }
       if (!enrichment.accountCreatedAt) {
         stats.malformed += 1;
+        if (candidate.handle === "arberash") {
+          console.warn("[backfill:join-dates] arberash unresolved", {
+            reason: "returned_without_created_at",
+            id: enrichment.id,
+            username: enrichment.username,
+          });
+        }
         return;
       }
-      if (
-        enrichment.id &&
-        candidate.lookupXUserId &&
-        enrichment.id !== candidate.lookupXUserId
-      ) {
-        stats.identityConflicts += 1;
-        console.warn("[backfill:join-dates] identity conflict", {
-          handle: candidate.handle,
-          expectedId: candidate.lookupXUserId,
+
+      const storedId = candidate.dbXUserId ?? candidate.lookupXUserId;
+      const idsDiffer =
+        Boolean(enrichment.id) &&
+        Boolean(storedId) &&
+        isNumericXUserId(String(storedId)) &&
+        enrichment.id !== storedId;
+
+      if (idsDiffer) {
+        const owned =
+          enrichment.id && pool
+            ? await exactIdOwnedByOtherRow(pool, enrichment.id, [storedId, candidate.dbXUserId])
+            : false;
+        const decision = evaluateRoundedIdRepair({
+          repairRoundedIdsEnabled: args.repairRoundedIds,
+          lookupWasByHandle,
+          requestedHandle: candidate.handle,
+          returnedHandle: enrichment.username,
+          storedId: storedId && isNumericXUserId(storedId) ? storedId : null,
           returnedId: enrichment.id,
+          joinDateIsNull: !candidate.alreadyHasJoinDate,
+          accountCreatedAt: enrichment.accountCreatedAt,
+          exactIdOwnedByOtherRow: owned,
         });
-        return;
-      }
-      if (
+
+        if (decision.action === "repair") {
+          const result = await repairRoundedIdAndJoinDate(pool, {
+            oldId: decision.oldId,
+            newId: decision.newId,
+            handle: decision.handle,
+            createdAt: decision.createdAt,
+            dryRun: false,
+          });
+          if (result === "updated") {
+            stats.successfullyUpdated += 1;
+            stats.repairedRoundedIds += 1;
+            if (candidate.source === "seed" || candidate.source === "both") stats.seededUpdated += 1;
+            if (candidate.source === "community" || candidate.source === "both") {
+              stats.communityUpdated += 1;
+            }
+          } else {
+            stats.skippedAmbiguous += 1;
+            console.warn("[backfill:join-dates] repair skipped (ambiguous/race)", decision);
+          }
+          return;
+        }
+
+        if (decision.action === "reject_conflict") {
+          stats.identityConflicts += 1;
+          console.warn("[backfill:join-dates] identity conflict", {
+            handle: candidate.handle,
+            expectedId: storedId,
+            returnedId: enrichment.id,
+            reason: decision.reason,
+          });
+          return;
+        }
+
+        if (decision.action === "skip") {
+          stats.skippedAmbiguous += 1;
+          console.warn("[backfill:join-dates] skip ambiguous identity", {
+            handle: candidate.handle,
+            reason: decision.reason,
+          });
+          return;
+        }
+        // accept_without_id_change falls through to normal persist
+      } else if (
         enrichment.username &&
         candidate.handle &&
         enrichment.username !== candidate.handle
       ) {
-        // Handle rename: still accept if ids match or candidate had no id.
         if (candidate.lookupXUserId && enrichment.id === candidate.lookupXUserId) {
-          // ok
-        } else if (!candidate.lookupXUserId) {
-          // ok — bind by returned id
+          // ok — rename with matching id
+        } else if (!candidate.lookupXUserId || args.repairRoundedIds) {
+          // handle-only or repair path: require matching handle (already checked above for repair)
+          if (enrichment.username !== candidate.handle) {
+            stats.identityConflicts += 1;
+            console.warn("[backfill:join-dates] handle mismatch", {
+              expected: candidate.handle,
+              returned: enrichment.username,
+              id: enrichment.id,
+            });
+            return;
+          }
         } else {
           stats.identityConflicts += 1;
           console.warn("[backfill:join-dates] handle mismatch", {
@@ -334,7 +567,6 @@ async function main(): Promise<void> {
       }
     };
 
-    // Batch numeric ids in chunks of 100.
     for (let i = 0; i < idBatch.length; i += 100) {
       const chunk = idBatch.slice(i, i + 100);
       const ids = chunk.map((c) => c.lookupXUserId!).filter(Boolean);
@@ -357,7 +589,6 @@ async function main(): Promise<void> {
             });
           }
           if (!enr && c.handle) {
-            // Fallback single lookup by handle when id batch missed the user.
             stats.apiCalls += 1;
             const single = await fetchProfileEnrichmentFromTwitterApiIo(
               { xUserId: null, handle: c.handle },
@@ -375,9 +606,9 @@ async function main(): Promise<void> {
                 createdAt: single?.accountCreatedAt ?? null,
               });
             }
-            await applyEnrichment(c, single);
+            await applyEnrichment(c, single, true);
           } else {
-            await applyEnrichment(c, enr);
+            await applyEnrichment(c, enr, false);
           }
         }
       } catch (e) {
@@ -410,9 +641,10 @@ async function main(): Promise<void> {
             id: enr?.id ?? null,
             createdAt: enr?.accountCreatedAt ?? null,
             unavailable: enr?.unavailable ?? false,
+            unavailableReason: enr?.unavailableReason ?? null,
           });
         }
-        await applyEnrichment(c, enr);
+        await applyEnrichment(c, enr, true);
       } catch (e) {
         stats.transientFailures += 1;
         console.warn("[backfill:join-dates] handle failed", c.handle, String(e));
@@ -420,9 +652,7 @@ async function main(): Promise<void> {
       if (delayMs > 0) await sleep(delayMs);
     });
 
-    // Single-handle verbose path when only that filter was used and it was already in id batch.
-    if (args.verbose && args.handle && missing.length === 1 && missing[0]?.lookupXUserId) {
-      // already logged via apply; print final
+    if (args.verbose && args.handle && missing.length === 1) {
       console.log("[backfill:join-dates][verbose] completed handle filter", args.handle);
     }
 
