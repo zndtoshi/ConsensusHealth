@@ -1226,26 +1226,6 @@ export default function App() {
   }
 
   useEffect(() => {
-    function onKeyDown(e) {
-      if (e.key !== "Escape") return;
-      if (!hoverRef.current && !historyPanel) return;
-      forceClearHoverUi();
-      drawRef.current?.();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [historyPanel]);
-
-  useEffect(
-    () => () => {
-      clearHistoryDelayTimer();
-      clearHistoryHideTimer();
-      abortHistoryFetch();
-    },
-    []
-  );
-
-  useEffect(() => {
     statsDataRef.current = statsData;
   }, [statsData]);
 
@@ -2304,6 +2284,26 @@ export default function App() {
   const introBandLiftReleasePendingRef = useRef(false);
   labelsRef.current = labels;
   selectedHandleRef.current = selectedHandle;
+
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key !== "Escape") return;
+      if (!hoverRef.current && !historyPanel) return;
+      forceClearHoverUi();
+      drawRef.current?.();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [historyPanel]);
+
+  useEffect(
+    () => () => {
+      clearHistoryDelayTimer();
+      clearHistoryHideTimer();
+      abortHistoryFetch();
+    },
+    []
+  );
 
   // --- Selection highlight FX (enlarge selected + push neighbors into orbit) ---
   function restoreSelectionDisplacementImmediate() {
