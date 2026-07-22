@@ -1873,9 +1873,9 @@ export default function App() {
     };
   }, []);
 
-  // Load canonical accounts from public/data at mount (needed to render the graph).
-  // Seed JSON is applied as soon as it arrives so the graph shell can appear
-  // before /api/community finishes; community rows merge in afterward.
+  // Load canonical accounts from public/data + /api/community at mount.
+  // Both sources are awaited before the first paint so the graph does not
+  // briefly show seed-only accounts and then expand to the full live set.
   useEffect(() => {
     let dead = false;
     (async () => {
