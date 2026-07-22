@@ -18,6 +18,7 @@ import {
   updatePerfOverlay,
 } from "./utils/perfDebug";
 import { isChromium, isFirefox } from "./utils/browser";
+import { clearCanvasBitmap } from "./utils/canvasClear";
 import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./utils/glowRendering";
 import { fetchCommunityUsers } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
@@ -1898,13 +1899,14 @@ export default function App() {
   }, [pulseSelectedEnabled, selectedHandle]);
 
   // Gentle cluster-halo breathing repaint — skip while intro is frozen or the
-  // camera is being dragged (pan uses a static layer instead).
+  // camera is being dragged (pan uses a static layer instead). Coalesce through
+  // scheduleDraw so we never stack a second full paint beside other rAF drawers.
   useEffect(() => {
     if (!showClusterHalo || stanceListsViewEnabled) return;
     let raf = 0;
     const tick = () => {
       if (!newStancesIntroRef.current.graphFrozen && !cameraInteractingRef.current) {
-        drawRef.current();
+        cameraInteractApiRef.current.scheduleDraw();
       }
       raf = requestAnimationFrame(tick);
     };
@@ -1920,7 +1922,7 @@ export default function App() {
     let raf = 0;
     const tick = () => {
       if (!newStancesIntroRef.current.graphFrozen && !cameraInteractingRef.current) {
-        drawRef.current();
+        cameraInteractApiRef.current.scheduleDraw();
       }
       raf = requestAnimationFrame(tick);
     };
@@ -2305,6 +2307,7 @@ export default function App() {
     canceled: false,
     debug: false,
     allowDrawDuringSettle: false,
+    haloFrozen: false,
     prevCount: 0,
     nextCount: 0,
     enteringCount: 0,
@@ -3278,6 +3281,7 @@ export default function App() {
     stopFilterTransitionRaf();
     ft.active = false;
     ft.allowDrawDuringSettle = false;
+    ft.haloFrozen = false;
     ft.entersStartedAt = 0;
     ft.exiting = [];
     ft.entering = new Map();
@@ -3386,6 +3390,8 @@ export default function App() {
       ft.entering = new Map();
       ft.active = false;
       ft.allowDrawDuringSettle = false;
+      ft.haloFrozen = false;
+      clusterHaloResumeSnapRef.current = true;
       logFilterTransitionDebug({ exitingRemoved: true });
       scheduleDraw();
       return;
@@ -3529,6 +3535,7 @@ export default function App() {
     const ft = filterTransitionRef.current;
     ft.active = true;
     ft.allowDrawDuringSettle = true;
+    ft.haloFrozen = false;
     ft.startedAt = performance.now();
     ft.entersStartedAt = 0;
     ft.durationMs = durationMs;
@@ -4170,7 +4177,8 @@ export default function App() {
       ictx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
 
-    ictx.clearRect(0, 0, cw, ch);
+    clearCanvasBitmap(ictx, introCanvas);
+    ictx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     if (!intro.active || !intro.items.length) {
       syncIntroOverlayDom({ x: 0, y: 0, w: 0, h: 0 }, 0, intro, 0, "idle");
@@ -4412,6 +4420,8 @@ export default function App() {
       introEarly.active && introEarly.graphFrozen && snap.active && snap.canvas;
 
     if (useFrozenIntroGraph) {
+      clearCanvasBitmap(ctx, canvas);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.drawImage(snap.canvas, 0, 0, cw, ch);
       drawIntroLandedNodesOnly(ctx);
       drawNewStancesOverlay(cw, ch, dpr);
@@ -4431,8 +4441,8 @@ export default function App() {
       panLayer.ch === ch &&
       panLayer.scaleMul === camUser.scaleMul
     ) {
+      clearCanvasBitmap(ctx, canvas);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, cw, ch);
       const starfieldFast = getStarfieldCanvas(cw, ch, dpr);
       if (starfieldFast) ctx.drawImage(starfieldFast, 0, 0, cw, ch);
       const dx = camUser.panX - panLayer.panX;
@@ -4454,7 +4464,11 @@ export default function App() {
       return;
     }
 
-    ctx.clearRect(0, 0, cw, ch);
+    // Full-bitmap clear in device pixels (identity transform). Avoids Chrome
+    // HiDPI trails when the ambient transform is identity or a leftover world
+    // scale — CSS-pixel clearRect would only wipe a fraction of the canvas.
+    clearCanvasBitmap(ctx, canvas);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // Cached starfield (screen space) — skipped when capturing the pan layer.
     if (!suppressStarfieldRef.current) {
@@ -4502,10 +4516,17 @@ export default function App() {
     };
 
     const selectionFxActive = selectionFxRef.current.handle != null;
-    // Freeze fit during selection FX and during camera drag so O(n) bounds work
-    // and neighbor nudges do not rescale the whole graph mid-interaction.
+    const ftEarly = filterTransitionRef.current;
+    const filterMotionActive = Boolean(
+      ftEarly.active || ftEarly.exiting.length || ftEarly.entering.size
+    );
+    // Freeze fit during selection FX, camera drag, and filter enter/exit so
+    // translucent stance backgrounds do not reproject every frame mid-flight.
     const reuseFit =
-      (selectionFxActive || cameraInteractingRef.current || suppressStarfieldRef.current) &&
+      (selectionFxActive ||
+        cameraInteractingRef.current ||
+        suppressStarfieldRef.current ||
+        filterMotionActive) &&
       frozenFitRef.current;
 
     let fitScale;
@@ -4566,11 +4587,21 @@ export default function App() {
     ctx.scale(scale, scale);
 
     // Ambient cluster halos — world-space pass before avatars.
+    // During filter enter/exit, freeze halo geometry so translucent backgrounds
+    // stay in stable positions while avatars fly (avoids Chrome ring trails).
     if (showClusterHalo) {
       const resolveClusterStance = (n) => getNodeStance(n, labels);
       if (clusterHaloResumeSnapRef.current) {
         clusterHaloSmoothRef.current = snapClusterHaloState(nodes, resolveClusterStance);
         clusterHaloResumeSnapRef.current = false;
+      }
+      if (filterMotionActive && !ftEarly.haloFrozen) {
+        const retained = nodes.filter((n) => !ftEarly.entering.has(nodeStableKey(n)));
+        clusterHaloSmoothRef.current = snapClusterHaloState(
+          retained.length ? retained : nodes,
+          resolveClusterStance
+        );
+        ftEarly.haloFrozen = true;
       }
       const breathEpoch = clusterHaloBreathEpochRef.current;
       const haloNowMs = breathEpoch != null ? breathEpoch : performance.now();
@@ -4581,7 +4612,8 @@ export default function App() {
         resolveClusterStance,
         haloNowMs,
         clusterHaloCacheRef.current,
-        clusterHaloSmoothRef.current
+        clusterHaloSmoothRef.current,
+        filterMotionActive ? { freeze: true } : undefined
       );
     }
 
@@ -4628,7 +4660,7 @@ export default function App() {
 
     const radius = (side) => Math.min(14, side * 0.22);
     const ft = filterTransitionRef.current;
-    const filterMotionActive = Boolean(ft.active || ft.exiting.length || ft.entering.size);
+    // filterMotionActive already computed above for fit/halo freezing.
     const glowQuality =
       ft.simplifyGlow && filterMotionActive
         ? Math.min(glowProfile.quality, isFirefoxBrowser ? 0.4 : 0.55)
