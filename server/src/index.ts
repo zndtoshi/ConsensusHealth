@@ -400,7 +400,10 @@ function computeOAuthRedirectUri(req: Request): string {
   return `${computeOAuthBase(req)}/auth/x/callback`;
 }
 
+let seededAccountsCache: Record<string, unknown>[] | null = null;
+
 async function loadSeededAccountsForCommunity(): Promise<Record<string, unknown>[]> {
+  if (seededAccountsCache) return seededAccountsCache;
   const candidates = [
     path.resolve(process.cwd(), "public", "data", "accounts_stanced.json"),
     path.resolve(DIST_PATH, "data", "accounts_stanced.json"),
@@ -410,7 +413,8 @@ async function loadSeededAccountsForCommunity(): Promise<Record<string, unknown>
       const raw = await fs.promises.readFile(p, "utf-8");
       const data = JSON.parse(raw);
       if (Array.isArray(data)) {
-        return data as Record<string, unknown>[];
+        seededAccountsCache = data as Record<string, unknown>[];
+        return seededAccountsCache;
       }
     } catch {
       // try next candidate
@@ -557,13 +561,13 @@ async function loadMergedCommunityUsersWithStance(): Promise<Record<string, unkn
     SELECT
       cu.*,
       cu.account_created_at AS "accountCreatedAt",
-      EXISTS (
-        SELECT 1
-        FROM stance_history sh
-        WHERE sh.x_user_id = cu.x_user_id
-          AND sh.changed_by = 'user'
-      ) AS "hasUserStanceChange"
+      (user_changed.x_user_id IS NOT NULL) AS "hasUserStanceChange"
     FROM community_users cu
+    LEFT JOIN (
+      SELECT DISTINCT x_user_id
+      FROM stance_history
+      WHERE changed_by = 'user'
+    ) user_changed ON user_changed.x_user_id = cu.x_user_id
   `);
   const dbRows = rows as Record<string, unknown>[];
   const mergedRows = mergeCommunityUsers(seededRows, dbRows);

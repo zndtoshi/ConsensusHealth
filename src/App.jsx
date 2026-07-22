@@ -662,18 +662,17 @@ function upsertSelfAccountLocally(prev, row) {
   return [...next, { ...row, handle: handleNorm, x_user_id: xId, stance, position: stance }];
 }
 
-/** Load canonical seeded accounts + community accounts and merge by handle.
- *  Optional `onSeed` receives a seed-only merge as soon as the seed JSON is
- *  ready so the graph shell can paint before /api/community returns.
- */
-async function loadAccounts(onSeed) {
+/** Load canonical seeded accounts + community accounts and merge by handle. */
+async function loadAccounts() {
   const base = getBase();
   const seededPromise = fetch(`${base}/data/accounts_stanced.json?v=${DATA_REV}`).then((r) =>
     r.ok ? r.json() : []
   );
   const communityPromise = fetchCommunityUsers().catch(() => []);
 
-  const seeded = await seededPromise;
+  // Wait for both sources before first paint so the graph does not briefly show
+  // seed-only (~150) accounts and then jump to the full live community set.
+  const [seeded, community] = await Promise.all([seededPromise, communityPromise]);
   const isDevRuntime =
     (typeof process !== "undefined" && process.env && process.env.NODE_ENV !== "production") ||
     (typeof import.meta !== "undefined" && import.meta.env && !import.meta.env.PROD);
@@ -826,16 +825,6 @@ async function loadAccounts(onSeed) {
   };
 
   for (const a of Array.isArray(seeded) ? seeded : []) upsert(a, "seeded");
-  finalizeMerged();
-  if (typeof onSeed === "function") {
-    try {
-      onSeed(merged.map((r) => ({ ...r })));
-    } catch {
-      /* ignore progressive callback errors */
-    }
-  }
-
-  const community = await communityPromise;
   for (const c of Array.isArray(community) ? community : []) upsert(c, "community");
   finalizeMerged();
 
@@ -1905,14 +1894,7 @@ export default function App() {
         }
         const apiStarted = performance.now();
         perfMark("accounts-load-start");
-        const cleanedAccounts = await loadAccounts((seedOnly) => {
-          if (dead) return;
-          const seedFiltered = seedOnly.filter((r) => (r.handle ?? "").toString().trim().length > 0);
-          if (seedFiltered.length) {
-            setAccounts(seedFiltered);
-            setLoading(false);
-          }
-        });
+        const cleanedAccounts = await loadAccounts();
         if (dead) return;
         const accountsFiltered = cleanedAccounts.filter((r) => (r.handle ?? "").toString().trim().length > 0);
         perfSetMs("lastApiMs", performance.now() - apiStarted);
