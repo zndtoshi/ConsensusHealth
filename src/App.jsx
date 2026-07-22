@@ -4961,7 +4961,6 @@ export default function App() {
                     onChange={onJoinDateRangeChange}
                     showingCount={joinDateFilterStats.showingCount}
                     totalCount={joinDateFilterStats.totalCount}
-                    unknownHiddenCount={joinDateFilterStats.unknownHiddenCount}
                   />
                 ) : null}
               </div>
