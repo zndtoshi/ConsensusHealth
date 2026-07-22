@@ -76,7 +76,7 @@ test("disabling restores all accounts (filter is a pure pass-through)", () => {
   assert.equal(filterAccountsByJoinDate(accounts, false, 2020, 2020).length, 2);
 });
 
-test("default range starts at full bounds so enabling keeps all known dates", () => {
+test("default range starts left handle at 2007 with full track bounds", () => {
   const accounts = [
     { accountCreatedAt: "2006-07-01T00:00:00.000Z" },
     { accountCreatedAt: "2012-01-01T00:00:00.000Z" },
@@ -85,9 +85,9 @@ test("default range starts at full bounds so enabling keeps all known dates", ()
   ];
   const range = defaultJoinDateRange(accounts, 2026);
   assert.equal(range.boundMin, X_JOIN_YEAR_FLOOR);
-  assert.equal(range.minYear, X_JOIN_YEAR_FLOOR);
+  assert.equal(range.minYear, 2007);
   assert.equal(range.maxYear, 2026);
-  assert.equal(filterAccountsByJoinDate(accounts, true, range.minYear, range.maxYear).length, 3);
+  assert.equal(filterAccountsByJoinDate(accounts, true, range.minYear, range.maxYear).length, 2);
 });
 
 test("empty result when range has no known matches", () => {
