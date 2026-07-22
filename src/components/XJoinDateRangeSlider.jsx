@@ -10,7 +10,6 @@ export function XJoinDateRangeSlider({
   onChange,
   showingCount,
   totalCount,
-  unknownHiddenCount,
 }) {
   const span = Math.max(1, boundMax - boundMin);
 
@@ -73,21 +72,13 @@ export function XJoinDateRangeSlider({
         <span>{boundMin}</span>
         <span>{boundMax}</span>
       </div>
-      <div className="xJoinDateFilter__meta">
-        {typeof showingCount === "number" && typeof totalCount === "number" ? (
+      {typeof showingCount === "number" && typeof totalCount === "number" ? (
+        <div className="xJoinDateFilter__meta">
           <span>
             Showing {showingCount} of {totalCount} accounts
           </span>
-        ) : null}
-        {unknownHiddenCount > 0 ? (
-          <span className="xJoinDateFilter__note">
-            Accounts with unknown join dates are hidden
-            {unknownHiddenCount > 0 ? ` (${unknownHiddenCount})` : ""}
-          </span>
-        ) : (
-          <span className="xJoinDateFilter__note">Accounts with unknown join dates are hidden</span>
-        )}
-      </div>
+        </div>
+      ) : null}
     </div>
   );
 }
