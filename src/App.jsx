@@ -2576,23 +2576,8 @@ export default function App() {
       return;
     }
     if (!visibleAccounts.length) {
-      // Empty filter range: clear nodes and animate exits if we had a prior roster.
-      const prevNodesEmpty = nodesRef.current || [];
-      if (prevNodesEmpty.length) {
-        const prevKeys = prevNodesEmpty.map(nodeStableKey).filter(Boolean);
-        const diffEmpty = diffAccountKeySets(prevKeys, []);
-        const debugEmpty = parseDebugFilterTransitions(
-          typeof window !== "undefined" ? window.location.search : ""
-        ).enabled;
-        beginFilterMembershipTransition({
-          prevNodes: prevNodesEmpty,
-          nextNodes: [],
-          diff: diffEmpty,
-          labelsMap: labelsRef.current,
-          reducedMotion: prefersFilterReducedMotion(),
-          debug: debugEmpty,
-        });
-      }
+      // Empty filter range: drop nodes immediately (no Options filter exit animation).
+      interruptFilterTransition();
       if (simRef.current) {
         simRef.current.stop();
         simRef.current = null;
@@ -2663,24 +2648,15 @@ export default function App() {
 
     const prevKeys = prevNodes.map(nodeStableKey).filter(Boolean);
     const nextKeys = nodes.map(nodeStableKey).filter(Boolean);
-    const membershipDiff = diffAccountKeySets(prevKeys, nextKeys);
-    const runFilterTransition =
-      !isFirstMembership && membershipChanged && membershipDiff.changedCount > 0;
-    const debugFilterTransitions = parseDebugFilterTransitions(
-      typeof window !== "undefined" ? window.location.search : ""
-    ).enabled;
+    // Options filter changes (join-date / Plebs / Influencers) update membership
+    // instantly — no enter/exit flights. New Stances intro keeps its own animation.
+    const runFilterTransition = false;
+    if (membershipChanged && !isFirstMembership) {
+      interruptFilterTransition();
+    }
 
-    if (runFilterTransition) {
-      beginFilterMembershipTransition({
-        prevNodes,
-        nextNodes: nodes,
-        diff: membershipDiff,
-        labelsMap: labelsRef.current,
-        reducedMotion: prefersFilterReducedMotion(),
-        debug: debugFilterTransitions,
-      });
-    } else if (!membershipChanged && !isFirstMembership) {
-      // Same membership (e.g. resize / equal-size toggle): keep positions when possible.
+    if (!isFirstMembership) {
+      // Keep retained node positions when possible (resize, equal-size, or filter roster change).
       const prevByKey = new Map();
       for (const n of prevNodes) {
         const k = nodeStableKey(n);
@@ -2696,7 +2672,8 @@ export default function App() {
         }
       }
     }
-
+    // Retain key diffs for layout seeding below (retained roster stability).
+    const membershipDiff = diffAccountKeySets(prevKeys, nextKeys);
     prevFilterMembershipKeyRef.current = visibleMembershipKey;
     filterMembershipPrevNodesRef.current = nodes;
 
@@ -2928,7 +2905,8 @@ export default function App() {
     // stays enabled via filterTransitionRef.allowDrawDuringSettle.
     for (const n of nodes) {
       const key = nodeStableKey(n);
-      const retained = runFilterTransition && membershipDiff.retained.includes(key);
+      // Preserve settled positions for accounts that remain visible across filter changes.
+      const retained = membershipDiff.retained.includes(key);
       if (retained) {
         n.vx = 0;
         n.vy = 0;

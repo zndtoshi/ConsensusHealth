@@ -92,4 +92,6 @@ test("filter transitions freeze cluster halos while active", () => {
   assert.match(appSrc, /haloFrozen/);
   assert.match(appSrc, /freeze:\s*true/);
   assert.match(appSrc, /filterMotionActive/);
+  // Options filters must not animate; New Stances intro stays enabled.
+  assert.match(appSrc, /const runFilterTransition = false/);
 });
