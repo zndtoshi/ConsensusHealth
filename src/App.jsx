@@ -31,25 +31,6 @@ import {
   summarizeJoinDateYears,
 } from "./utils/xJoinDateFilter";
 import {
-  accountStableKey,
-  computeStanceClusterBounds,
-  diffAccountKeySets,
-  enterStagingPosition,
-  exitDriftDelta,
-  filterTransitionAnnouncement,
-  formatFilterTransitionDebug,
-  isEnterHoverable,
-  membershipSignatureFromKeys,
-  nodeStableKey,
-  parseDebugFilterTransitions,
-  prefersFilterReducedMotion,
-  sampleEnterMotion,
-  sampleExitMotion,
-  selectFilterTransitionTier,
-  staggerDelayMs,
-  transitionTotalDurationMs,
-} from "./utils/filterAvatarTransitions";
-import {
   coerceXUserIdKey,
   coerceXUserIdToDigitString,
   parseJsonPreservingSnowflakeIds,
@@ -981,16 +962,12 @@ export default function App() {
   const [plebsMode, setPlebsMode] = useState(false);
   const [influencersMode, setInfluencersMode] = useState(false);
   const [joinDateFilterEnabled, setJoinDateFilterEnabled] = useState(false);
-  // Draft years drive slider UI during drag; committed years drive graph membership.
   const [joinDateMinYear, setJoinDateMinYear] = useState(null);
   const [joinDateMaxYear, setJoinDateMaxYear] = useState(null);
-  const [joinDateCommittedMin, setJoinDateCommittedMin] = useState(null);
-  const [joinDateCommittedMax, setJoinDateCommittedMax] = useState(null);
   const [joinDateBoundMin, setJoinDateBoundMin] = useState(2006);
   const [joinDateBoundMax, setJoinDateBoundMax] = useState(() => new Date().getUTCFullYear());
   const joinDateRangeInitializedRef = useRef(false);
   const canvasWrapPulseRef = useRef(null);
-  const [filterAriaStatus, setFilterAriaStatus] = useState("");
   const [equalAvatarSizeEnabled, setEqualAvatarSizeEnabled] = useState(false);
   const [dimOthersEnabled, setDimOthersEnabled] = useState(false);
   const [historyPlaybackPlaying, setHistoryPlaybackPlaying] = useState(false);
@@ -1422,57 +1399,39 @@ export default function App() {
   }, [accounts, plebsMode, influencersMode]);
 
   const joinDateFilterActive =
-    joinDateFilterEnabled && joinDateCommittedMin != null && joinDateCommittedMax != null;
+    joinDateFilterEnabled && joinDateMinYear != null && joinDateMaxYear != null;
 
   const visibleAccounts = useMemo(() => {
     if (!joinDateFilterActive) return followerFilteredAccounts;
     return filterAccountsByJoinDate(
       followerFilteredAccounts,
       true,
-      joinDateCommittedMin,
-      joinDateCommittedMax
+      joinDateMinYear,
+      joinDateMaxYear
     );
   }, [
     followerFilteredAccounts,
     joinDateFilterActive,
-    joinDateCommittedMin,
-    joinDateCommittedMax,
+    joinDateMinYear,
+    joinDateMaxYear,
   ]);
 
   const joinDateFilterStats = useMemo(() => {
-    // Preview count follows draft slider years while dragging; graph uses committed.
-    if (!joinDateFilterEnabled || joinDateMinYear == null || joinDateMaxYear == null) {
+    if (!joinDateFilterActive) {
       return { unknownHiddenCount: 0, showingCount: visibleAccounts.length, totalCount: accounts.length };
     }
     const summary = summarizeJoinDateYears(followerFilteredAccounts);
-    const preview = filterAccountsByJoinDate(
-      followerFilteredAccounts,
-      true,
-      joinDateMinYear,
-      joinDateMaxYear
-    );
     return {
       unknownHiddenCount: summary.unknownCount,
-      showingCount: preview.length,
+      showingCount: visibleAccounts.length,
       totalCount: followerFilteredAccounts.length,
     };
   }, [
-    joinDateFilterEnabled,
-    joinDateMinYear,
-    joinDateMaxYear,
+    joinDateFilterActive,
     followerFilteredAccounts,
     visibleAccounts.length,
     accounts.length,
   ]);
-
-  const visibleMembershipKey = useMemo(() => {
-    const keys = [];
-    for (const a of visibleAccounts) {
-      const k = accountStableKey(a);
-      if (k) keys.push(k);
-    }
-    return membershipSignatureFromKeys(keys);
-  }, [visibleAccounts]);
 
   // A follower-filtered subset is active; dataset-wide change stats don't match it.
   const followerFilterActive = plebsMode || influencersMode || joinDateFilterActive;
@@ -1802,7 +1761,7 @@ export default function App() {
       el.classList.remove("is-fading");
     }, 180);
     return () => window.clearTimeout(t);
-  }, [joinDateFilterActive, joinDateCommittedMin, joinDateCommittedMax, visibleAccounts.length]);
+  }, [joinDateFilterActive, joinDateMinYear, joinDateMaxYear, visibleAccounts.length]);
 
   function enableJoinDateFilter(nextEnabled) {
     if (nextEnabled) {
@@ -1813,12 +1772,7 @@ export default function App() {
         setJoinDateBoundMax(range.boundMax);
         setJoinDateMinYear(range.minYear);
         setJoinDateMaxYear(range.maxYear);
-        setJoinDateCommittedMin(range.minYear);
-        setJoinDateCommittedMax(range.maxYear);
         joinDateRangeInitializedRef.current = true;
-      } else if (joinDateCommittedMin == null || joinDateCommittedMax == null) {
-        setJoinDateCommittedMin(joinDateMinYear);
-        setJoinDateCommittedMax(joinDateMaxYear);
       }
       setJoinDateFilterEnabled(true);
       return;
@@ -1835,20 +1789,6 @@ export default function App() {
     );
     setJoinDateMinYear(next.minYear);
     setJoinDateMaxYear(next.maxYear);
-  }
-
-  function onJoinDateRangeCommit({ minYear, maxYear }) {
-    const next = normalizeJoinYearRange(
-      minYear,
-      maxYear,
-      joinDateBoundMin,
-      joinDateBoundMax
-    );
-    setJoinDateMinYear(next.minYear);
-    setJoinDateMaxYear(next.maxYear);
-    if (next.minYear === joinDateCommittedMin && next.maxYear === joinDateCommittedMax) return;
-    setJoinDateCommittedMin(next.minYear);
-    setJoinDateCommittedMax(next.maxYear);
   }
 
   useEffect(() => {
@@ -2290,31 +2230,6 @@ export default function App() {
   // during this window so avatars do NOT visibly fly in — they appear once, settled.
   const layoutSettlingRef = useRef(false);
   const settleRafRef = useRef(0);
-  /** Filter enter/exit transition engine (imperative; no per-avatar React state). */
-  const filterTransitionRef = useRef({
-    active: false,
-    rafId: 0,
-    startedAt: 0,
-    entersStartedAt: 0,
-    durationMs: 0,
-    tierId: "full",
-    reducedMotion: false,
-    simplifyGlow: false,
-    frameCount: 0,
-    interrupted: false,
-    canceled: false,
-    debug: false,
-    allowDrawDuringSettle: false,
-    prevCount: 0,
-    nextCount: 0,
-    enteringCount: 0,
-    exitingCount: 0,
-    retainedCount: 0,
-    exiting: [],
-    entering: new Map(),
-  });
-  const prevFilterMembershipKeyRef = useRef(null);
-  const filterMembershipPrevNodesRef = useRef([]);
   const panStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
   // Touch gesture state (mobile). Integrates with the same camRef transform used
   // by desktop mouse/wheel — no separate camera system.
@@ -2568,48 +2483,15 @@ export default function App() {
         simRef.current = null;
       }
       nodesRef.current = [];
-      interruptFilterTransition();
-      prevFilterMembershipKeyRef.current = null;
       return;
     }
-    if (!visibleAccounts.length) {
-      // Empty filter range: clear nodes and animate exits if we had a prior roster.
-      const prevNodesEmpty = nodesRef.current || [];
-      if (prevNodesEmpty.length) {
-        const prevKeys = prevNodesEmpty.map(nodeStableKey).filter(Boolean);
-        const diffEmpty = diffAccountKeySets(prevKeys, []);
-        const debugEmpty = parseDebugFilterTransitions(
-          typeof window !== "undefined" ? window.location.search : ""
-        ).enabled;
-        beginFilterMembershipTransition({
-          prevNodes: prevNodesEmpty,
-          nextNodes: [],
-          diff: diffEmpty,
-          labelsMap: labelsRef.current,
-          reducedMotion: prefersFilterReducedMotion(),
-          debug: debugEmpty,
-        });
-      }
-      if (simRef.current) {
-        simRef.current.stop();
-        simRef.current = null;
-      }
-      nodesRef.current = [];
-      prevFilterMembershipKeyRef.current = visibleMembershipKey;
-      scheduleDraw();
-      return;
-    }
+    if (!visibleAccounts.length) return;
     if (w < 10 || h < 10) return;
 
     const base = getBase();
     const baseNoSlash = base.replace(/\/$/, "");
     const missingSrc = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
     const avatarSrc = (a) => resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc);
-
-    const prevNodes = nodesRef.current || [];
-    const prevMembership = prevFilterMembershipKeyRef.current;
-    const membershipChanged = prevMembership != null && prevMembership !== visibleMembershipKey;
-    const isFirstMembership = prevMembership == null;
 
     // Build nodes: accounts that tweeted about bip110, plus manually stance-labeled accounts
     const nodes = visibleAccounts
@@ -2657,45 +2539,6 @@ export default function App() {
           vy: 0,
         };
       });
-
-    const prevKeys = prevNodes.map(nodeStableKey).filter(Boolean);
-    const nextKeys = nodes.map(nodeStableKey).filter(Boolean);
-    const membershipDiff = diffAccountKeySets(prevKeys, nextKeys);
-    const runFilterTransition =
-      !isFirstMembership && membershipChanged && membershipDiff.changedCount > 0;
-    const debugFilterTransitions = parseDebugFilterTransitions(
-      typeof window !== "undefined" ? window.location.search : ""
-    ).enabled;
-
-    if (runFilterTransition) {
-      beginFilterMembershipTransition({
-        prevNodes,
-        nextNodes: nodes,
-        diff: membershipDiff,
-        labelsMap: labelsRef.current,
-        reducedMotion: prefersFilterReducedMotion(),
-        debug: debugFilterTransitions,
-      });
-    } else if (!membershipChanged && !isFirstMembership) {
-      // Same membership (e.g. resize / equal-size toggle): keep positions when possible.
-      const prevByKey = new Map();
-      for (const n of prevNodes) {
-        const k = nodeStableKey(n);
-        if (k) prevByKey.set(k, n);
-      }
-      for (const n of nodes) {
-        const prev = prevByKey.get(nodeStableKey(n));
-        if (prev) {
-          n.x = prev.x;
-          n.y = prev.y;
-          n.vx = 0;
-          n.vy = 0;
-        }
-      }
-    }
-
-    prevFilterMembershipKeyRef.current = visibleMembershipKey;
-    filterMembershipPrevNodesRef.current = nodes;
 
     if (useInfluenceLayout && !equalAvatarSizeEnabled) {
       const regionsPreview = computeStanceRegions(nodes, labelsRef.current, w);
@@ -2799,14 +2642,9 @@ export default function App() {
       simRef.current = null;
       regionRef.current = layoutEqualSizeGrid(nodes, labelsRef.current, w, h);
       invalidatePanLayer();
-      if (runFilterTransition) {
-        armFilterEnterAnimations(nodes, labelsRef.current);
-        scheduleDraw();
-      } else {
-        draw();
-        reapplySelectionFxAfterLayout();
-        tryStartNewStancesIntro();
-      }
+      draw();
+      reapplySelectionFxAfterLayout();
+      tryStartNewStancesIntro();
       return () => {};
     }
 
@@ -2902,14 +2740,9 @@ export default function App() {
       // immediately. No simulation, no delay.
       layoutSettlingRef.current = false;
       invalidatePanLayer();
-      if (runFilterTransition) {
-        armFilterEnterAnimations(nodes, labelsRef.current);
-        scheduleDraw();
-      } else {
-        draw();
-        reapplySelectionFxAfterLayout();
-        tryStartNewStancesIntro();
-      }
+      draw();
+      reapplySelectionFxAfterLayout();
+      tryStartNewStancesIntro();
       return () => {
         sim.stop();
       };
@@ -2921,16 +2754,7 @@ export default function App() {
     // layout has fully settled, so avatars appear ONCE in their final spots (no
     // fly-in). Because the work is time-sliced, the main thread stays responsive
     // and UI like the Stats button opens instantly instead of freezing.
-    // Filter transitions are an exception: exits animate immediately and drawing
-    // stays enabled via filterTransitionRef.allowDrawDuringSettle.
     for (const n of nodes) {
-      const key = nodeStableKey(n);
-      const retained = runFilterTransition && membershipDiff.retained.includes(key);
-      if (retained) {
-        n.vx = 0;
-        n.vy = 0;
-        continue;
-      }
       if (useInfluenceLayout) {
         seedInfluenceLayoutPosition(n, stanceCenterX(n), h);
       } else {
@@ -2941,9 +2765,9 @@ export default function App() {
       }
     }
     sim.alpha(1);
-    layoutSettlingRef.current = !runFilterTransition;
+    layoutSettlingRef.current = true;
 
-    const TOTAL_TICKS = runFilterTransition ? 90 : 180;
+    const TOTAL_TICKS = 180;
     let ticksDone = 0;
     const settleChunk = () => {
       const budgetEnd = performance.now() + 8; // ~8ms/frame keeps the UI responsive
@@ -2953,7 +2777,6 @@ export default function App() {
       }
       if (ticksDone < TOTAL_TICKS) {
         settleRafRef.current = requestAnimationFrame(settleChunk);
-        if (runFilterTransition) scheduleDraw();
         return;
       }
       if (!plebsMode) {
@@ -2964,14 +2787,9 @@ export default function App() {
       settleRafRef.current = 0;
       layoutSettlingRef.current = false;
       invalidatePanLayer();
-      if (runFilterTransition) {
-        armFilterEnterAnimations(nodes, labelsRef.current);
-        scheduleDraw();
-      } else {
-        draw(); // single paint of the fully-settled layout
-        reapplySelectionFxAfterLayout();
-        tryStartNewStancesIntro();
-      }
+      draw(); // single paint of the fully-settled layout
+      reapplySelectionFxAfterLayout();
+      tryStartNewStancesIntro();
     };
     settleRafRef.current = requestAnimationFrame(settleChunk);
 
@@ -2985,16 +2803,7 @@ export default function App() {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, err, visibleMembershipKey, w, h, plebsMode, equalAvatarSizeEnabled, stanceListsViewEnabled, useInfluenceLayout]);
-
-  // Filter transition RAF must not leak across unmount or get killed by layout rebuilds.
-  useEffect(() => {
-    return () => {
-      stopFilterTransitionRaf();
-      clearFilterTransitionState();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loading, err, visibleAccounts.length, w, h, plebsMode, equalAvatarSizeEnabled, stanceListsViewEnabled, useInfluenceLayout]);
 
   // On resize: recompute stance regions and update forces
   useEffect(() => {
@@ -3240,347 +3049,6 @@ export default function App() {
       drawRafRef.current = 0;
       drawRef.current();
     });
-  }
-
-  function stopFilterTransitionRaf() {
-    const ft = filterTransitionRef.current;
-    if (ft.rafId) {
-      cancelAnimationFrame(ft.rafId);
-      ft.rafId = 0;
-    }
-  }
-
-  function logFilterTransitionDebug(extra = {}) {
-    const ft = filterTransitionRef.current;
-    if (!ft.debug) return;
-    // eslint-disable-next-line no-console
-    console.info(
-      formatFilterTransitionDebug({
-        previousVisibleCount: ft.prevCount,
-        nextVisibleCount: ft.nextCount,
-        enteringCount: ft.enteringCount,
-        exitingCount: ft.exitingCount,
-        retainedCount: ft.retainedCount,
-        tier: ft.tierId,
-        transitionDurationMs: ft.durationMs,
-        animationFrames: ft.frameCount,
-        canceled: ft.canceled,
-        interrupted: ft.interrupted,
-        finalSimulationNodeCount: (nodesRef.current || []).length,
-        exitingRemoved: ft.exiting.length === 0 || !ft.active,
-        ...extra,
-      })
-    );
-  }
-
-  function clearFilterTransitionState() {
-    const ft = filterTransitionRef.current;
-    stopFilterTransitionRaf();
-    ft.active = false;
-    ft.allowDrawDuringSettle = false;
-    ft.entersStartedAt = 0;
-    ft.exiting = [];
-    ft.entering = new Map();
-  }
-
-  function interruptFilterTransition() {
-    const ft = filterTransitionRef.current;
-    if (!ft.active && ft.exiting.length === 0 && ft.entering.size === 0) return;
-    ft.interrupted = true;
-    ft.canceled = true;
-    logFilterTransitionDebug();
-    const now = performance.now();
-    if (ft.entersStartedAt > 0) {
-      const elapsed = now - ft.entersStartedAt;
-      for (const n of nodesRef.current || []) {
-        const key = nodeStableKey(n);
-        const ent = ft.entering.get(key);
-        if (!ent) continue;
-        const sample = sampleEnterMotion({
-          elapsedMs: elapsed,
-          delayMs: ent.delayMs,
-          durationMs: ent.durationMs,
-          startX: ent.startX,
-          startY: ent.startY,
-          targetX: n.x,
-          targetY: n.y,
-          startScale: ent.startScale,
-          reducedMotion: ft.reducedMotion,
-        });
-        n.x = sample.x;
-        n.y = sample.y;
-        n.vx = 0;
-        n.vy = 0;
-      }
-    }
-    clearFilterTransitionState();
-  }
-
-  function filterTransitionTick() {
-    const ft = filterTransitionRef.current;
-    if (!ft.active) return;
-    ft.rafId = 0;
-    ft.frameCount += 1;
-    const now = performance.now();
-    let exitsDone = true;
-    const nextExiting = [];
-    for (const item of ft.exiting) {
-      const sample = sampleExitMotion({
-        elapsedMs: now - ft.startedAt,
-        delayMs: item.delayMs,
-        durationMs: item.durationMs,
-        startX: item.startX,
-        startY: item.startY,
-        driftX: item.driftX,
-        driftY: item.driftY,
-        endScale: item.endScale,
-        reducedMotion: ft.reducedMotion,
-      });
-      item.opacity = sample.opacity;
-      item.scale = sample.scale;
-      item.x = sample.x;
-      item.y = sample.y;
-      item.progress = sample.t;
-      if (!sample.done) {
-        exitsDone = false;
-        nextExiting.push(item);
-      }
-    }
-    ft.exiting = nextExiting;
-
-    let entersDone = true;
-    if (ft.entersStartedAt > 0) {
-      const elapsed = now - ft.entersStartedAt;
-      for (const [, ent] of ft.entering) {
-        const sample = sampleEnterMotion({
-          elapsedMs: elapsed,
-          delayMs: ent.delayMs,
-          durationMs: ent.durationMs,
-          startX: ent.startX,
-          startY: ent.startY,
-          targetX: ent.targetX,
-          targetY: ent.targetY,
-          startScale: ent.startScale,
-          reducedMotion: ft.reducedMotion,
-        });
-        ent.progress = sample.t;
-        ent.opacity = sample.opacity;
-        ent.scale = sample.scale;
-        ent.x = sample.x;
-        ent.y = sample.y;
-        if (!sample.done) entersDone = false;
-        else {
-          ent.opacity = 1;
-          ent.scale = 1;
-          ent.progress = 1;
-        }
-      }
-    } else {
-      entersDone = ft.entering.size === 0;
-    }
-
-    const timedOut = now - ft.startedAt >= ft.durationMs + 48;
-    scheduleDraw();
-    if ((exitsDone && entersDone && ft.entersStartedAt > 0) || (exitsDone && ft.entering.size === 0) || timedOut) {
-      ft.exiting = [];
-      ft.entering = new Map();
-      ft.active = false;
-      ft.allowDrawDuringSettle = false;
-      logFilterTransitionDebug({ exitingRemoved: true });
-      scheduleDraw();
-      return;
-    }
-    ft.rafId = requestAnimationFrame(filterTransitionTick);
-  }
-
-  function armFilterEnterAnimations(nodes, labelsMap) {
-    const ft = filterTransitionRef.current;
-    if (!ft.active || ft.entering.size === 0) {
-      if (ft.active && ft.exiting.length === 0) {
-        ft.active = false;
-        ft.allowDrawDuringSettle = false;
-      }
-      return;
-    }
-    const retainedForBounds = nodes.filter((n) => !ft.entering.has(nodeStableKey(n)));
-    const bounds = computeStanceClusterBounds(retainedForBounds.length ? retainedForBounds : nodes, (n) =>
-      getNodeStance(n, labelsMap)
-    );
-    let idx = 0;
-    for (const n of nodes) {
-      const key = nodeStableKey(n);
-      const ent = ft.entering.get(key);
-      if (!ent) continue;
-      const stance = getNodeStance(n, labelsMap);
-      const staging = enterStagingPosition({
-        stance,
-        key,
-        targetX: n.x,
-        targetY: n.y,
-        bounds: bounds[String(stance || "neutral").toLowerCase()] || null,
-      });
-      ent.startX = staging.x;
-      ent.startY = staging.y;
-      ent.targetX = n.x;
-      ent.targetY = n.y;
-      ent.delayMs = staggerDelayMs(idx, {
-        staggerMs: ent.staggerMs,
-        maxStaggerMs: ent.maxStaggerMs,
-      });
-      idx += 1;
-    }
-    ft.entersStartedAt = performance.now();
-    if (!ft.rafId) ft.rafId = requestAnimationFrame(filterTransitionTick);
-  }
-
-  function beginFilterMembershipTransition(opts) {
-    const { prevNodes, nextNodes, diff, labelsMap, reducedMotion, debug } = opts;
-    if (!diff.changedCount) return false;
-
-    if (newStancesIntroRef.current?.active) {
-      finishNewStancesIntro();
-    }
-
-    interruptFilterTransition();
-
-    const tier = selectFilterTransitionTier(diff.changedCount, reducedMotion);
-    const durationMs = transitionTotalDurationMs(diff.entering.length, diff.exiting.length, tier);
-    const prevByKey = new Map();
-    for (const n of prevNodes || []) {
-      const k = nodeStableKey(n);
-      if (k) prevByKey.set(k, n);
-    }
-
-    if (hoverRef.current) {
-      const hoverNorm = normalizeHandle(hoverRef.current.handle);
-      const hoverGone = diff.exiting.some((k) => {
-        const n = prevByKey.get(k);
-        return n && normalizeHandle(n.handle) === hoverNorm;
-      });
-      if (hoverGone) {
-        hoverRef.current = null;
-        hoverDrawHandleRef.current = null;
-        updateHoverOverlay(null);
-      }
-    }
-    if (selectedHandleRef.current) {
-      const selNorm = normalizeHandle(selectedHandleRef.current);
-      const selGone = diff.exiting.some((k) => {
-        const n = prevByKey.get(k);
-        return n && normalizeHandle(n.handle) === selNorm;
-      });
-      if (selGone) setSelectedHandle(null);
-    }
-
-    const exiting = [];
-    diff.exiting.forEach((key, i) => {
-      const n = prevByKey.get(key);
-      if (!n) return;
-      const stance = getNodeStance(n, labelsMap);
-      const drift = exitDriftDelta(stance, key, tier.driftPx);
-      exiting.push({
-        key,
-        handle: n.handle,
-        x_user_id: n.x_user_id,
-        side: n.side,
-        half: n.half,
-        avatarUrl: n.avatarUrl,
-        tweetCount: n.tweetCount,
-        seedStance: n.seedStance,
-        followers: n.followers,
-        bio: n.bio,
-        accountCreatedAt: n.accountCreatedAt,
-        startX: n.x,
-        startY: n.y,
-        x: n.x,
-        y: n.y,
-        driftX: drift.x,
-        driftY: drift.y,
-        delayMs: staggerDelayMs(i, tier),
-        durationMs: tier.exitMs,
-        endScale: tier.exitEndScale,
-        opacity: 1,
-        scale: 1,
-        progress: 0,
-      });
-    });
-
-    const entering = new Map();
-    diff.entering.forEach((key, i) => {
-      entering.set(key, {
-        key,
-        delayMs: staggerDelayMs(i, tier),
-        durationMs: tier.enterMs,
-        staggerMs: tier.staggerMs,
-        maxStaggerMs: tier.maxStaggerMs,
-        startScale: tier.enterStartScale,
-        startX: 0,
-        startY: 0,
-        targetX: 0,
-        targetY: 0,
-        x: 0,
-        y: 0,
-        opacity: 0,
-        scale: tier.enterStartScale,
-        progress: 0,
-      });
-    });
-
-    const ft = filterTransitionRef.current;
-    ft.active = true;
-    ft.allowDrawDuringSettle = true;
-    ft.startedAt = performance.now();
-    ft.entersStartedAt = 0;
-    ft.durationMs = durationMs;
-    ft.tierId = tier.id;
-    ft.reducedMotion = reducedMotion;
-    ft.simplifyGlow = Boolean(reducedMotion || isFirefoxBrowser || diff.changedCount > 40);
-    ft.frameCount = 0;
-    ft.interrupted = false;
-    ft.canceled = false;
-    ft.debug = debug;
-    ft.prevCount = diff.previousCount;
-    ft.nextCount = diff.nextCount;
-    ft.enteringCount = diff.entering.length;
-    ft.exitingCount = diff.exiting.length;
-    ft.retainedCount = diff.retained.length;
-    ft.exiting = exiting;
-    ft.entering = entering;
-
-    const nextByKey = new Map();
-    for (const n of nextNodes || []) {
-      const k = nodeStableKey(n);
-      if (k) nextByKey.set(k, n);
-    }
-    for (const key of diff.retained) {
-      const prev = prevByKey.get(key);
-      const next = nextByKey.get(key);
-      if (prev && next) {
-        next.x = prev.x;
-        next.y = prev.y;
-        next.vx = 0;
-        next.vy = 0;
-      }
-    }
-
-    if (exiting.length || entering.size) {
-      if (!ft.rafId) ft.rafId = requestAnimationFrame(filterTransitionTick);
-    }
-    if (debug) {
-      // eslint-disable-next-line no-console
-      console.info(
-        `[filterTransitions] start tier=${tier.id} enter=${diff.entering.length} exit=${diff.exiting.length} retained=${diff.retained.length} durationMs=${durationMs}`
-      );
-    }
-    setFilterAriaStatus(
-      filterTransitionAnnouncement({
-        joinDateActive: joinDateFilterActive,
-        plebs: plebsMode,
-        influencers: influencersMode,
-        visibleCount: diff.nextCount,
-      })
-    );
-    return true;
   }
 
   function invalidatePanLayer() {
@@ -4383,9 +3851,7 @@ export default function App() {
     // showing nodes mid-flight; we paint exactly once when settling completes.
     // Avatar loads still schedule draws that no-op here, then paint progressively
     // after settle without waiting for the full image set.
-    // Filter transitions keep drawing enabled so exits remain visible mid-settle.
-    const ftDraw = filterTransitionRef.current;
-    if (layoutSettlingRef.current && !ftDraw.allowDrawDuringSettle && !ftDraw.active) return;
+    if (layoutSettlingRef.current) return;
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -4466,14 +3932,14 @@ export default function App() {
     }
     if (isPerfDebugEnabled()) perfInc("fullDrawCalls");
 
-    const nodes = nodesRef.current || [];
+    const nodes = nodesRef.current;
     const qset = filteredHandlesSet;
     const pb = historyPlaybackRef.current;
     const playbackActive = Boolean(pb.active);
     const intro = newStancesIntroRef.current;
     const introActive = Boolean(intro.active);
 
-    if (nodes.length === 0 && !filterTransitionRef.current.exiting.length) return;
+    if (!nodes || nodes.length === 0) return;
 
     const introShowsWorldNode = (n) => {
       if (!introActive) return true;
@@ -4516,8 +3982,7 @@ export default function App() {
     } else {
       const maxDrawScale = 2;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      const fitNodes = nodes;
-      for (const n of fitNodes) {
+      for (const n of nodes) {
         if (playbackActive && !contributesToPlaybackFit(n)) continue;
         const half = (n.side * maxDrawScale) / 2;
         const x0 = n.x - half, y0 = n.y - half, x1 = n.x + half, y1 = n.y + half;
@@ -4525,20 +3990,6 @@ export default function App() {
         if (y0 < minY) minY = y0;
         if (x1 > maxX) maxX = x1;
         if (y1 > maxY) maxY = y1;
-      }
-      for (const item of filterTransitionRef.current.exiting) {
-        const half = (item.side * maxDrawScale) / 2;
-        const x0 = item.x - half, y0 = item.y - half, x1 = item.x + half, y1 = item.y + half;
-        if (x0 < minX) minX = x0;
-        if (y0 < minY) minY = y0;
-        if (x1 > maxX) maxX = x1;
-        if (y1 > maxY) maxY = y1;
-      }
-      if (!Number.isFinite(minX)) {
-        minX = 0;
-        minY = 0;
-        maxX = w;
-        maxY = h;
       }
 
       const blobW = Math.max(1, maxX - minX);
@@ -4627,17 +4078,11 @@ export default function App() {
     ctx.scale(scale, scale);
 
     const radius = (side) => Math.min(14, side * 0.22);
-    const ft = filterTransitionRef.current;
-    const filterMotionActive = Boolean(ft.active || ft.exiting.length || ft.entering.size);
-    const glowQuality =
-      ft.simplifyGlow && filterMotionActive
-        ? Math.min(glowProfile.quality, isFirefoxBrowser ? 0.4 : 0.55)
-        : glowProfile.quality;
-    const nonEmphasizedGlowPasses =
-      ft.simplifyGlow && filterMotionActive ? 1 : glowProfile.nonEmphasizedPasses;
+    const glowQuality = glowProfile.quality;
+    const nonEmphasizedGlowPasses = glowProfile.nonEmphasizedPasses;
     const getGlow = (aura, drawSide, emphasize) => {
       const bucketSide = Math.max(6, Math.round(drawSide));
-      const key = `${aura}|${bucketSide}|${emphasize ? "1" : "0"}|${glowProfile.id}|${glowQuality}`;
+      const key = `${aura}|${bucketSide}|${emphasize ? "1" : "0"}|${glowProfile.id}`;
       const cacheKey = `${GLOW_CACHE_VERSION}|${key}`;
       const cache = glowCacheRef.current;
       if (cache.has(cacheKey)) return cache.get(cacheKey);
@@ -4649,7 +4094,7 @@ export default function App() {
       cache.set(cacheKey, sprite);
       return sprite;
     };
-    const drawNode = (n, scaleFactor, emphasize = false, motionOverride = null) => {
+    const drawNode = (n, scaleFactor, emphasize = false) => {
       const shouldDim =
         !playbackActive &&
         dimOthersEnabled &&
@@ -4659,39 +4104,10 @@ export default function App() {
       if (shouldDim) {
         ctx.globalAlpha *= 0.6;
       }
-      let nodeX = n.x;
-      let nodeY = n.y;
-      let motionScale = 1;
-      let motionOpacity = 1;
-      if (motionOverride) {
-        nodeX = motionOverride.x;
-        nodeY = motionOverride.y;
-        motionScale = motionOverride.scale ?? 1;
-        motionOpacity = motionOverride.opacity ?? 1;
-      } else if (filterMotionActive) {
-        const key = nodeStableKey(n);
-        const ent = ft.entering.get(key);
-        if (ent) {
-          if (ft.entersStartedAt <= 0) {
-            ctx.restore();
-            return;
-          }
-          if (ent.opacity <= 0.01 && ent.progress < 0.01) {
-            ctx.restore();
-            return;
-          }
-          nodeX = ent.x;
-          nodeY = ent.y;
-          motionScale = ent.scale ?? 1;
-          motionOpacity = ent.opacity ?? 1;
-        }
-      }
-      if (motionOpacity < 1) ctx.globalAlpha *= Math.max(0, motionOpacity);
-      const drawScale = scaleFactor * motionScale;
-      const drawHalf = (n.side * drawScale) / 2;
-      const drawX = nodeX - drawHalf;
-      const drawY = nodeY - drawHalf;
-      const drawSide = n.side * drawScale;
+      const drawHalf = (n.side * scaleFactor) / 2;
+      const drawX = n.x - drawHalf;
+      const drawY = n.y - drawHalf;
+      const drawSide = n.side * scaleFactor;
       const r = radius(drawSide);
       const isSelected = curSelected && n.handle === curSelected;
       const isHovered = curHover && n.handle === curHover.handle;
@@ -4708,7 +4124,7 @@ export default function App() {
       const baseStroke = aura
         ? aura.replace(/[\d.]+\)$/, `${0.72 * alpha})`)
         : "rgba(120,130,150," + alpha + ")";
-      if (aura && !(ft.simplifyGlow && filterMotionActive && !emphasize)) {
+      if (aura) {
         const hasBreathingHalo =
           useBreathingHalo &&
           breathingHaloHandlesRef.current.has(normalizeHandle(n.handle));
@@ -4841,32 +4257,6 @@ export default function App() {
     for (const n of selected) {
       const useFx = adminSelFxOn && normalizeHandle(n.handle) === normalizeHandle(selFx.handle);
       drawNode(n, useFx ? selFx.scale : selectedScale, true);
-    }
-
-    // Temporary exit layer: filtered-out avatars fade/drift here, then drop out.
-    if (ft.exiting.length) {
-      for (const item of ft.exiting) {
-        if (item.opacity <= 0.01) continue;
-        drawNode(
-          {
-            handle: item.handle,
-            x_user_id: item.x_user_id,
-            side: item.side,
-            half: item.half,
-            avatarUrl: item.avatarUrl,
-            tweetCount: item.tweetCount,
-            seedStance: item.seedStance,
-            followers: item.followers,
-            bio: item.bio,
-            accountCreatedAt: item.accountCreatedAt,
-            x: item.x,
-            y: item.y,
-          },
-          1,
-          false,
-          { x: item.x, y: item.y, scale: item.scale, opacity: item.opacity }
-        );
-      }
     }
 
     ctx.restore();
@@ -5105,19 +4495,8 @@ export default function App() {
     const wx = (mx - v.tx) / v.scale;
     const wy = (my - v.ty) / v.scale;
     const nodes = nodesRef.current;
-    const ft = filterTransitionRef.current;
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
-      const key = nodeStableKey(n);
-      const ent = ft.entering.get(key);
-      if (ent) {
-        if (ft.entersStartedAt <= 0 || !isEnterHoverable(ent.progress || 0)) continue;
-        const hx = ent.x;
-        const hy = ent.y;
-        const half = (n.side * (ent.scale || 1)) / 2;
-        if (wx >= hx - half && wx <= hx + half && wy >= hy - half && wy <= hy + half) return n;
-        continue;
-      }
       const x = n.x - n.half;
       const y = n.y - n.half;
       if (wx >= x && wx <= x + n.side && wy >= y && wy <= y + n.side) return n;
@@ -5609,7 +4988,6 @@ export default function App() {
                     minYear={joinDateMinYear}
                     maxYear={joinDateMaxYear}
                     onChange={onJoinDateRangeChange}
-                    onCommit={onJoinDateRangeCommit}
                     showingCount={joinDateFilterStats.showingCount}
                     totalCount={joinDateFilterStats.totalCount}
                   />
@@ -5766,9 +5144,6 @@ export default function App() {
                   No accounts joined X in this range.
                 </div>
               ) : null}
-              <div className="sr-only" aria-live="polite">
-                {filterAriaStatus}
-              </div>
               <div ref={introPanelRef} className="newStancesPanel" aria-hidden="true" />
               <canvas ref={introCanvasRef} style={styles.introCanvas} aria-hidden="true" />
               <div ref={introFlightLayerRef} className="newStancesFlightLayer" aria-hidden="true" />

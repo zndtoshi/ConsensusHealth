@@ -41,8 +41,3 @@ test("join date filter does not trigger New Stances intro APIs", () => {
   assert.match(enableFn, /stopHistoryPlayback/);
   assert.doesNotMatch(enableFn, /fetchNewStanceEvents|beginNewStances|startNewStances/);
 });
-
-test("join date commit is separate from draft onChange", () => {
-  assert.match(appSrc, /function onJoinDateRangeCommit/);
-  assert.match(appSrc, /onCommit=\{onJoinDateRangeCommit\}/);
-});
