@@ -23,6 +23,7 @@ import { fetchCommunityUsers } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
 import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
 import { followersForAvatarSize } from "./utils/avatarSize";
+import { formatXJoinDate } from "./utils/xJoinDate";
 import {
   AUTH_CHANNEL_NAME,
   LOGIN_RETURN_KEY,
@@ -2890,6 +2891,11 @@ export default function App() {
     if (tooltipHandleRef.current) tooltipHandleRef.current.textContent = `@${nextHover.handle}`;
     if (tooltipFollowersRef.current) {
       tooltipFollowersRef.current.textContent = `followers: ${formatNum(nextHover.followers)}`;
+    }
+    const joinDate = formatXJoinDate(nextHover.accountCreatedAt);
+    if (tooltipAgeRef.current) {
+      tooltipAgeRef.current.style.display = joinDate ? "block" : "none";
+      tooltipAgeRef.current.textContent = joinDate;
     }
     const bio = String(nextHover.bio ?? "").trim();
     if (tooltipBioRef.current) {

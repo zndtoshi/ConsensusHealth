@@ -36,7 +36,8 @@ const DIST_PATH = path.resolve(process.cwd(), "dist");
 const DATABASE_URL = (process.env.DATABASE_URL || "").trim();
 const TWITTER_CLIENT_ID = process.env.X_CLIENT_ID || process.env.TWITTER_CLIENT_ID || "";
 const TWITTER_CLIENT_SECRET = process.env.X_CLIENT_SECRET || process.env.TWITTER_CLIENT_SECRET || "";
-const LOCAL_PROFILE_ENRICHMENT_KEY = IS_PROD ? "" : (process.env.TWITTERAPI_IO_KEY || "").trim();
+// Used as a fallback when X /users/me omits bio or created_at (also available in prod).
+const PROFILE_ENRICHMENT_KEY = (process.env.TWITTERAPI_IO_KEY || "").trim();
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 30);
 const SESSION_SECRET = process.env.SESSION_SECRET || "";
 const STATS_CACHE_TTL_MS = 45_000;
@@ -1025,11 +1026,11 @@ app.get("/auth/x/callback", async (req, res, next) => {
       typeof data.public_metrics?.followers_count === "number" ? data.public_metrics.followers_count : null;
     let enrichedBio: string | null = null;
     let enrichedAccountCreatedAt: string | null = null;
-    if (LOCAL_PROFILE_ENRICHMENT_KEY) {
+    if (PROFILE_ENRICHMENT_KEY && (!xBio || !xAccountCreatedAt)) {
       try {
         const enrichment = await fetchProfileEnrichmentFromTwitterApiIo(
           { xUserId, handle },
-          LOCAL_PROFILE_ENRICHMENT_KEY
+          PROFILE_ENRICHMENT_KEY
         );
         if (enrichment) {
           enrichedBio = enrichment.bio;
@@ -1037,7 +1038,7 @@ app.get("/auth/x/callback", async (req, res, next) => {
         }
       } catch (e) {
         if (process.env.NODE_ENV !== "production") {
-          console.warn("[auth-callback] local profile enrichment failed:", e);
+          console.warn("[auth-callback] profile enrichment failed:", e);
         }
       }
     }
