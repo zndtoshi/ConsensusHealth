@@ -5469,7 +5469,22 @@ export default function App() {
         <div style={styles.headerLeft}>
           <div style={styles.brandWrap}>
             <div style={styles.title}>Consensus Health</div>
-            <span style={styles.bipTag}>bip110</span>
+            <a
+              className="bipTagLink"
+              href="https://github.com/bitcoin/bips/blob/master/bip-0110.mediawiki"
+              target="_blank"
+              rel="noopener noreferrer"
+              title="View the official BIP-110 proposal on GitHub"
+              aria-label="Open official BIP-110 proposal on GitHub"
+            >
+              <span>bip110</span>
+              <svg className="bipTagLink__icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path
+                  fill="currentColor"
+                  d="M6.75 2a.75.75 0 0 0 0 1.5h4.69L3.22 11.72a.75.75 0 1 0 1.06 1.06L12.5 4.56v4.69a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 13.25 2H6.75Z"
+                />
+              </svg>
+            </a>
           </div>
           <div style={styles.searchWrap}>
             <input
@@ -6118,17 +6133,6 @@ const styles = {
   },
   headerLeft: { display: "flex", alignItems: "center", gap: 16 },
   brandWrap: { display: "flex", alignItems: "center", gap: 8 },
-  bipTag: {
-    fontSize: 11,
-    fontWeight: 700,
-    letterSpacing: 0.2,
-    padding: "3px 8px",
-    borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.1)",
-    background: "rgba(17,24,39,0.72)",
-    color: "#cbd5e1",
-    textTransform: "lowercase",
-  },
   searchWrap: { position: "relative" },
   searchDropdown: {
     position: "absolute",
