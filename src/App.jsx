@@ -31,6 +31,16 @@ import {
   summarizeJoinDateYears,
 } from "./utils/xJoinDateFilter";
 import { XJoinDateRangeSlider } from "./components/XJoinDateRangeSlider";
+import { FOLLOWER_FILTER_THRESHOLD } from "./config/followerFilters";
+import {
+  STANCE_COUNT_ORDER,
+  STANCE_DISPLAY_LABELS,
+  appendStanceCountsToAria,
+  buildShareableFilterBadge,
+  countVisibleStances,
+  resolveClusterLabelOverlaps,
+  worldToScreen,
+} from "./utils/shareableFilterContext";
 import {
   AUTH_CHANNEL_NAME,
   LOGIN_RETURN_KEY,
@@ -44,6 +54,7 @@ import { NEW_STANCES_HEADING, NEW_STANCES_PUBLIC_ENABLED } from "./config/newSta
 import { ENABLE_CLUSTER_HALO } from "./config/clusterHalo";
 import { ENABLE_INFLUENCE_LAYOUT } from "./config/influenceLayout";
 import {
+  computeClusterBounds,
   drawClusterHalos,
   shouldShowClusterHalo,
   snapClusterHaloState,
@@ -1361,13 +1372,13 @@ export default function App() {
     if (plebsMode) {
       return accounts.filter((a) => {
         const info = getFollowersFromUser(a);
-        return info.source !== "none" && info.followers < 3000;
+        return info.source !== "none" && info.followers < FOLLOWER_FILTER_THRESHOLD;
       });
     }
     if (influencersMode) {
       return accounts.filter((a) => {
         const info = getFollowersFromUser(a);
-        return info.source !== "none" && info.followers >= 3000;
+        return info.source !== "none" && info.followers >= FOLLOWER_FILTER_THRESHOLD;
       });
     }
     return accounts;
@@ -1407,6 +1418,73 @@ export default function App() {
     visibleAccounts.length,
     accounts.length,
   ]);
+
+  const shareableFilterBadge = useMemo(
+    () =>
+      buildShareableFilterBadge(
+        {
+          plebsMode,
+          influencersMode,
+          joinDateFilterEnabled,
+          joinDateMinYear,
+          joinDateMaxYear,
+        },
+        visibleAccounts.length
+      ),
+    [
+      plebsMode,
+      influencersMode,
+      joinDateFilterEnabled,
+      joinDateMinYear,
+      joinDateMaxYear,
+      visibleAccounts.length,
+    ]
+  );
+
+  const visibleStanceCounts = useMemo(() => {
+    return countVisibleStances(visibleAccounts, (account) => {
+      const stance = getAccountStanceValue(account, labels);
+      if (stance === "against" || stance === "neutral" || stance === "approve") return stance;
+      return null;
+    });
+  }, [visibleAccounts, labels]);
+
+  const [shareFilterAriaText, setShareFilterAriaText] = useState("");
+  const shareFilterAriaTimerRef = useRef(0);
+
+  useEffect(() => {
+    if (!shareableFilterBadge.visible) {
+      setShareFilterAriaText("");
+      return undefined;
+    }
+    const next = appendStanceCountsToAria(
+      shareableFilterBadge.ariaSummary,
+      visibleStanceCounts.counts
+    );
+    const delayMs = joinDateFilterActive ? 450 : 80;
+    window.clearTimeout(shareFilterAriaTimerRef.current);
+    shareFilterAriaTimerRef.current = window.setTimeout(() => {
+      setShareFilterAriaText(next);
+    }, delayMs);
+    return () => window.clearTimeout(shareFilterAriaTimerRef.current);
+  }, [
+    shareableFilterBadge.visible,
+    shareableFilterBadge.ariaSummary,
+    visibleStanceCounts.counts,
+    joinDateFilterActive,
+  ]);
+
+  const newStancesOverlayActive =
+    newStancesUi.bandActive || newStancesUi.headingOpacity > 0.01;
+  const showShareFilterBadge = shareableFilterBadge.visible && !newStancesOverlayActive;
+
+  const clusterLabelRefs = useRef({
+    against: null,
+    neutral: null,
+    approve: null,
+  });
+  const clusterLabelsLayerRef = useRef(null);
+  const clusterLabelZoomTimerRef = useRef(0);
 
   // A follower-filtered subset is active; dataset-wide change stats don't match it.
   const followerFilterActive = plebsMode || influencersMode || joinDateFilterActive;
@@ -3093,6 +3171,9 @@ export default function App() {
     hoverRef.current = null;
     hoverDrawHandleRef.current = null;
     updateHoverOverlay(null);
+    if (clusterLabelsLayerRef.current) {
+      clusterLabelsLayerRef.current.classList.add("is-camera-interacting");
+    }
     buildPanLayer();
   }
 
@@ -3101,6 +3182,54 @@ export default function App() {
     cameraInteractingRef.current = false;
     invalidatePanLayer();
     scheduleDraw();
+    if (clusterLabelsLayerRef.current) {
+      clusterLabelsLayerRef.current.classList.remove("is-camera-interacting");
+    }
+    updateClusterLabelPositions();
+  }
+
+  function updateClusterLabelPositions() {
+    const layer = clusterLabelsLayerRef.current;
+    if (!layer || stanceListsViewEnabled) {
+      for (const stance of STANCE_COUNT_ORDER) {
+        const el = clusterLabelRefs.current[stance];
+        if (el) el.style.visibility = "hidden";
+      }
+      return;
+    }
+    const nodes = nodesRef.current || [];
+    const view = viewRef.current || { scale: 1, tx: 0, ty: 0 };
+    const labelsMap = labelsRef.current;
+    const counts = visibleStanceCounts.counts;
+    const minGap = w < 520 ? 24 : 30;
+    const labelOffset = w < 520 ? 18 : 22;
+    const raw = STANCE_COUNT_ORDER.map((stance) => {
+      const count = counts[stance] || 0;
+      if (count <= 0) {
+        return { stance, x: 0, y: 0, visible: false };
+      }
+      const bounds = computeClusterBounds(nodes, stance, (n) => getNodeStance(n, labelsMap));
+      if (!bounds) return { stance, x: 0, y: 0, visible: false };
+      const topWorldY = bounds.cy - bounds.height / 2;
+      const screen = worldToScreen(bounds.cx, topWorldY, view);
+      return {
+        stance,
+        x: screen.x,
+        y: Math.max(36, screen.y - labelOffset),
+        visible: true,
+      };
+    });
+    const resolved = resolveClusterLabelOverlaps(raw, minGap);
+    for (const pos of resolved) {
+      const el = clusterLabelRefs.current[pos.stance];
+      if (!el) continue;
+      if (!pos.visible) {
+        el.style.visibility = "hidden";
+        continue;
+      }
+      el.style.visibility = "visible";
+      el.style.transform = `translate(-50%, -100%) translate(${pos.x}px, ${pos.y}px)`;
+    }
   }
 
   cameraInteractApiRef.current = {
@@ -3109,6 +3238,30 @@ export default function App() {
     scheduleDraw,
     invalidatePanLayer,
   };
+
+  useEffect(() => {
+    const id = window.requestAnimationFrame(() => updateClusterLabelPositions());
+    const t = window.setTimeout(() => updateClusterLabelPositions(), 220);
+    return () => {
+      window.cancelAnimationFrame(id);
+      window.clearTimeout(t);
+    };
+  }, [
+    visibleAccounts.length,
+    visibleStanceCounts.counts.against,
+    visibleStanceCounts.counts.neutral,
+    visibleStanceCounts.counts.approve,
+    labels,
+    w,
+    h,
+    stanceListsViewEnabled,
+    equalAvatarSizeEnabled,
+    plebsMode,
+    influencersMode,
+    joinDateFilterActive,
+    joinDateMinYear,
+    joinDateMaxYear,
+  ]);
 
   function resolveDrawAvatarUrl(n) {
     const baseNoSlash = getBase().replace(/\/$/, "");
@@ -4515,6 +4668,16 @@ export default function App() {
     user.panY = my - fit.ty - wy * newScale;
     camRef.current = user;
     scheduleDraw();
+    if (clusterLabelsLayerRef.current) {
+      clusterLabelsLayerRef.current.classList.add("is-camera-interacting");
+    }
+    window.clearTimeout(clusterLabelZoomTimerRef.current);
+    clusterLabelZoomTimerRef.current = window.setTimeout(() => {
+      if (clusterLabelsLayerRef.current) {
+        clusterLabelsLayerRef.current.classList.remove("is-camera-interacting");
+      }
+      updateClusterLabelPositions();
+    }, 140);
   }
 
   function onMouseMove(e) {
@@ -5115,6 +5278,41 @@ export default function App() {
                   No accounts joined X in this range.
                 </div>
               ) : null}
+              {showShareFilterBadge ? (
+                <div className="shareFilterBadge" aria-hidden="true">
+                  <div className="shareFilterBadge__primary">{shareableFilterBadge.primaryLine}</div>
+                  {shareableFilterBadge.secondaryLine ? (
+                    <div className="shareFilterBadge__secondary">{shareableFilterBadge.secondaryLine}</div>
+                  ) : null}
+                  <div className="shareFilterBadge__total">{shareableFilterBadge.totalLine}</div>
+                </div>
+              ) : null}
+              <div
+                ref={clusterLabelsLayerRef}
+                className="shareClusterLabels"
+                aria-hidden="true"
+              >
+                {STANCE_COUNT_ORDER.map((stance) => {
+                  const count = visibleStanceCounts.counts[stance] || 0;
+                  if (count <= 0) return null;
+                  return (
+                    <div
+                      key={stance}
+                      ref={(el) => {
+                        clusterLabelRefs.current[stance] = el;
+                      }}
+                      className={`shareClusterLabel shareClusterLabel--${stance}`}
+                      style={{ visibility: "hidden" }}
+                    >
+                      <span className="shareClusterLabel__name">{STANCE_DISPLAY_LABELS[stance]}</span>
+                      <span className="shareClusterLabel__count">{count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="sr-only" aria-live="polite">
+                {shareFilterAriaText}
+              </div>
               <div ref={introPanelRef} className="newStancesPanel" aria-hidden="true" />
               <canvas ref={introCanvasRef} style={styles.introCanvas} aria-hidden="true" />
               <div ref={introFlightLayerRef} className="newStancesFlightLayer" aria-hidden="true" />
