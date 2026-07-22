@@ -3246,6 +3246,9 @@ export default function App() {
       window.cancelAnimationFrame(id);
       window.clearTimeout(t);
     };
+    // Position updates intentionally use latest DOM/view refs; listing the update fn
+    // would recreate the effect every render without changing outcomes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     visibleAccounts.length,
     visibleStanceCounts.counts.against,
