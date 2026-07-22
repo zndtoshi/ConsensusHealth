@@ -366,6 +366,83 @@ export function StatisticsCards({
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <Card title="Stance distribution" subtitle="Counts + %">
+          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", alignItems: "center", gap: 14 }}>
+            <Donut size={150} thickness={16} centerTop={formatInt(total)} centerBottom="users" segments={stanceSegments} />
+            <Legend
+              items={(["against", "neutral", "approve"] as const).map((k) => ({
+                color: STANCE_TEXT_COLOR[k],
+                label: STANCE[k].label,
+                right: (
+                  <span>
+                    {formatInt(data.counts[k])}{" "}
+                    <span style={{ opacity: 0.55, fontWeight: 700 }}>({formatPct(data.percentages[k])})</span>
+                  </span>
+                ),
+              }))}
+            />
+          </div>
+        </Card>
+
+        <Card title="Followers impact" subtitle="Total followers by stance">
+          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", alignItems: "center", gap: 14 }}>
+            <Donut
+              size={150}
+              thickness={16}
+              centerTop={formatInt(followerTotal)}
+              centerBottom="followers"
+              segments={followerSegments}
+            />
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
+              {(["against", "neutral", "approve"] as const).map((k) => (
+                <div
+                  key={k}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    width: "100%",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 800,
+                        color: STANCE_TEXT_COLOR[k],
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {STANCE[k].label}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      width: "100%",
+                      maxWidth: 132,
+                      color: "rgba(255,255,255,0.96)",
+                      fontSize: 12,
+                      fontWeight: 800,
+                    }}
+                  >
+                    <span style={{ marginLeft: "auto" }}>
+                      {formatInt(data.totalFollowersByStance[k])}{" "}
+                      <span style={{ opacity: 0.55, fontWeight: 700 }}>
+                        ({formatPct(((followerTotal ? data.totalFollowersByStance[k] / followerTotal : 0) * 100))})
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 14 }}>
         <Card title="Overview" subtitle="Snapshot summary">
           <Panel>
@@ -429,83 +506,6 @@ export function StatisticsCards({
               );
             })}
           </Panel>
-        </Card>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        <Card title="Followers impact" subtitle="Total followers by stance">
-          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", alignItems: "center", gap: 14 }}>
-            <Donut
-              size={150}
-              thickness={16}
-              centerTop={formatInt(followerTotal)}
-              centerBottom="followers"
-              segments={followerSegments}
-            />
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
-              {(["against", "neutral", "approve"] as const).map((k) => (
-                <div
-                  key={k}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 12,
-                    width: "100%",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 800,
-                        color: STANCE_TEXT_COLOR[k],
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {STANCE[k].label}
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      width: "100%",
-                      maxWidth: 132,
-                      color: "rgba(255,255,255,0.96)",
-                      fontSize: 12,
-                      fontWeight: 800,
-                    }}
-                  >
-                    <span style={{ marginLeft: "auto" }}>
-                      {formatInt(data.totalFollowersByStance[k])}{" "}
-                      <span style={{ opacity: 0.55, fontWeight: 700 }}>
-                        ({formatPct(((followerTotal ? data.totalFollowersByStance[k] / followerTotal : 0) * 100))})
-                      </span>
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </Card>
-
-        <Card title="Stance distribution" subtitle="Counts + %">
-          <div style={{ display: "grid", gridTemplateColumns: "160px 1fr", alignItems: "center", gap: 14 }}>
-            <Donut size={150} thickness={16} centerTop={formatInt(total)} centerBottom="users" segments={stanceSegments} />
-            <Legend
-              items={(["against", "neutral", "approve"] as const).map((k) => ({
-                color: STANCE_TEXT_COLOR[k],
-                label: STANCE[k].label,
-                right: (
-                  <span>
-                    {formatInt(data.counts[k])}{" "}
-                    <span style={{ opacity: 0.55, fontWeight: 700 }}>({formatPct(data.percentages[k])})</span>
-                  </span>
-                ),
-              }))}
-            />
-          </div>
         </Card>
       </div>
 
