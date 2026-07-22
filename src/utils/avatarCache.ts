@@ -105,8 +105,13 @@ function pump(): void {
 
     job.img.addEventListener("load", () => finish(true), { once: true });
     job.img.addEventListener("error", () => finish(false), { once: true });
-    if (job.img.complete && job.img.src) {
-      // Already loaded (e.g. browser memory cache assigned elsewhere).
+    // New Image() is complete with empty src / naturalWidth 0 — only short-circuit
+    // when a real src was already assigned (e.g. browser memory cache).
+    const currentSrc = String(job.img.src || "");
+    const pageHref =
+      typeof window !== "undefined" && window.location?.href ? window.location.href : "";
+    const alreadyHasSrc = Boolean(currentSrc) && currentSrc !== pageHref;
+    if (alreadyHasSrc && job.img.complete) {
       finish(job.img.naturalWidth > 0);
       continue;
     }

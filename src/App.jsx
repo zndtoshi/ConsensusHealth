@@ -2509,7 +2509,10 @@ export default function App() {
           scheduleDraw();
         });
         img.addEventListener("error", () => handleError(true));
-        if (img.complete) {
+        // A brand-new Image() is `complete` with naturalWidth 0 before `src` is
+        // assigned by the load queue — do not treat that as a failed load.
+        const srcStarted = Boolean(img.getAttribute("data-ch-src") === "1" || img.src);
+        if (srcStarted && img.complete) {
           if (img.naturalWidth > 0) {
             invalidatePanLayer();
             scheduleDraw();

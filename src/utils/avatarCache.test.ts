@@ -98,6 +98,28 @@ test("preloadAvatarUrls respects concurrency bound", () => {
   }
 });
 
+test("new Image complete-before-src is not treated as a loaded failure", () => {
+  __resetAvatarCacheForTests();
+  FakeImage.instances = [];
+  const PrevImage = globalThis.Image;
+  globalThis.Image = FakeImage as unknown as typeof Image;
+  try {
+    setAvatarLoadConcurrency(4);
+    const img = getAvatarPrioritized("/avatars/pending.jpg", 5) as unknown as FakeImage;
+    // Browser semantics: brand-new Image is complete with naturalWidth 0.
+    assert.equal(img.complete, false); // our FakeImage starts incomplete until trigger
+    img.complete = true;
+    img.naturalWidth = 0;
+    // Re-getting must still be the same queued image, not the empty failure placeholder.
+    const again = getAvatarPrioritized("/avatars/pending.jpg", 5);
+    assert.equal(again, img);
+    assert.equal(img.getAttribute("data-ch-src"), "1");
+  } finally {
+    globalThis.Image = PrevImage;
+    __resetAvatarCacheForTests();
+  }
+});
+
 test("failed avatar is not retried within failure TTL", () => {
   __resetAvatarCacheForTests();
   FakeImage.instances = [];
