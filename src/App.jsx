@@ -1,6 +1,22 @@
 import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { forceCollide, forceManyBody, forceCenter, forceSimulation, forceX, forceY } from "d3-force";
-import { canonicalAvatarSrc, getAvatar, preloadAvatarUrls } from "./utils/avatarCache";
+import {
+  canonicalAvatarSrc,
+  getAvatar,
+  getAvatarPrioritized,
+  preloadAvatarUrls,
+  setAvatarLoadConcurrency,
+} from "./utils/avatarCache";
+import {
+  initPerfDebug,
+  isPerfDebugEnabled,
+  perfInc,
+  perfMark,
+  perfNowSinceNav,
+  perfRecordDragFrame,
+  perfSetMs,
+  updatePerfOverlay,
+} from "./utils/perfDebug";
 import { isChromium, isFirefox } from "./utils/browser";
 import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./utils/glowRendering";
 import { fetchCommunityUsers } from "./api/community";
@@ -631,14 +647,18 @@ function upsertSelfAccountLocally(prev, row) {
   return [...next, { ...row, handle: handleNorm, x_user_id: xId, stance, position: stance }];
 }
 
-/** Load canonical seeded accounts + community accounts and merge by handle. */
-async function loadAccounts() {
+/** Load canonical seeded accounts + community accounts and merge by handle.
+ *  Optional `onSeed` receives a seed-only merge as soon as the seed JSON is
+ *  ready so the graph shell can paint before /api/community returns.
+ */
+async function loadAccounts(onSeed) {
   const base = getBase();
-  const [seededRes, community] = await Promise.all([
-    fetch(`${base}/data/accounts_stanced.json?v=${DATA_REV}`),
-    fetchCommunityUsers(),
-  ]);
-  const seeded = seededRes.ok ? await seededRes.json() : [];
+  const seededPromise = fetch(`${base}/data/accounts_stanced.json?v=${DATA_REV}`).then((r) =>
+    r.ok ? r.json() : []
+  );
+  const communityPromise = fetchCommunityUsers().catch(() => []);
+
+  const seeded = await seededPromise;
   const isDevRuntime =
     (typeof process !== "undefined" && process.env && process.env.NODE_ENV !== "production") ||
     (typeof import.meta !== "undefined" && import.meta.env && !import.meta.env.PROD);
@@ -748,50 +768,70 @@ async function loadAccounts() {
     if (handleNorm) byHandle.set(handleNorm, rec);
   };
 
-  for (const a of Array.isArray(seeded) ? seeded : []) upsert(a, "seeded");
-  for (const c of Array.isArray(community) ? community : []) upsert(c, "community");
-
-  for (const rec of merged) {
-    if (!rec.handle) continue;
-    const handleNorm = normalizeHandle(rec.handle);
-    const rich = richestByHandle.get(handleNorm);
-    const currentFollowers = toFiniteNumber(rec.followers_count);
-    if ((currentFollowers == null || currentFollowers <= 0) && rich?.followers_count > 0) {
-      rec.followers_count = rich.followers_count;
-      if (!rec.avatar_url && rich.avatar_url) rec.avatar_url = rich.avatar_url;
-      if (!rec.name && rich.name) rec.name = rich.name;
-      if (isDevRuntime && rec.stance) {
-        console.log("[auth-merge][repair-backfill]", {
-          handle: handleNorm,
-          restoredFollowers: rich.followers_count,
-          restoredAvatar: Boolean(rich.avatar_url),
-          restoredName: Boolean(rich.name),
-          reason: "Community stance row had missing/zero profile fields",
+  const finalizeMerged = () => {
+    for (const rec of merged) {
+      if (!rec.handle) continue;
+      const handleNorm = normalizeHandle(rec.handle);
+      const rich = richestByHandle.get(handleNorm);
+      const currentFollowers = toFiniteNumber(rec.followers_count);
+      if ((currentFollowers == null || currentFollowers <= 0) && rich?.followers_count > 0) {
+        rec.followers_count = rich.followers_count;
+        if (!rec.avatar_url && rich.avatar_url) rec.avatar_url = rich.avatar_url;
+        if (!rec.name && rich.name) rec.name = rich.name;
+        if (isDevRuntime && rec.stance) {
+          console.log("[auth-merge][repair-backfill]", {
+            handle: handleNorm,
+            restoredFollowers: rich.followers_count,
+            restoredAvatar: Boolean(rich.avatar_url),
+            restoredName: Boolean(rich.name),
+            reason: "Community stance row had missing/zero profile fields",
+          });
+        }
+      }
+      if (rec.followers_count == null || !Number.isFinite(Number(rec.followers_count))) {
+        rec.followers_count = 0;
+      } else {
+        rec.followers_count = Math.max(0, toInt(rec.followers_count));
+      }
+      rec.avatar_url = firstNonEmptyAvatarField(rec) || rec.avatar_url || null;
+      rec.bio = String(rec.bio ?? "").trim() || null;
+      rec.accountCreatedAt = normalizeAccountCreatedAt(
+        rec.accountCreatedAt ?? rec.account_created_at
+      );
+      rec.hasUserStanceChange = Boolean(rec.hasUserStanceChange);
+      if (isDevRuntime && rec.stance && !rec.avatar_path && !rec.avatar_url) {
+        console.log("[auth-merge][missing-avatar-after-merge]", {
+          handle: normalizeHandle(rec.handle),
+          x_user_id: String(rec.x_user_id ?? ""),
+          stance: rec.stance,
+          reason: "No avatar field available after merge",
         });
       }
     }
-    if (rec.followers_count == null || !Number.isFinite(Number(rec.followers_count))) {
-      rec.followers_count = 0;
-    } else {
-      rec.followers_count = Math.max(0, toInt(rec.followers_count));
-    }
-    rec.avatar_url = firstNonEmptyAvatarField(rec) || rec.avatar_url || null;
-    rec.bio = String(rec.bio ?? "").trim() || null;
-    rec.accountCreatedAt = normalizeAccountCreatedAt(
-      rec.accountCreatedAt ?? rec.account_created_at
-    );
-    rec.hasUserStanceChange = Boolean(rec.hasUserStanceChange);
-    if (isDevRuntime && rec.stance && !rec.avatar_path && !rec.avatar_url) {
-      console.log("[auth-merge][missing-avatar-after-merge]", {
-        handle: normalizeHandle(rec.handle),
-        x_user_id: String(rec.x_user_id ?? ""),
-        stance: rec.stance,
-        reason: "No avatar field available after merge",
-      });
+  };
+
+  for (const a of Array.isArray(seeded) ? seeded : []) upsert(a, "seeded");
+  finalizeMerged();
+  if (typeof onSeed === "function") {
+    try {
+      onSeed(merged.map((r) => ({ ...r })));
+    } catch {
+      /* ignore progressive callback errors */
     }
   }
 
-  console.log("[ConsensusHealth] loaded seeded:", Array.isArray(seeded) ? seeded.length : 0, "community:", community.length, "merged:", merged.length);
+  const community = await communityPromise;
+  for (const c of Array.isArray(community) ? community : []) upsert(c, "community");
+  finalizeMerged();
+
+  console.log(
+    "[ConsensusHealth] loaded seeded:",
+    Array.isArray(seeded) ? seeded.length : 0,
+    "community:",
+    Array.isArray(community) ? community.length : 0,
+    "merged:",
+    merged.length
+  );
   return merged;
 }
 
@@ -1683,12 +1723,13 @@ export default function App() {
     };
   }, [pulseSelectedEnabled, selectedHandle]);
 
-  // Gentle cluster-halo breathing repaint — skip while intro graph is frozen.
+  // Gentle cluster-halo breathing repaint — skip while intro is frozen or the
+  // camera is being dragged (pan uses a static layer instead).
   useEffect(() => {
     if (!showClusterHalo || stanceListsViewEnabled) return;
     let raf = 0;
     const tick = () => {
-      if (!newStancesIntroRef.current.graphFrozen) {
+      if (!newStancesIntroRef.current.graphFrozen && !cameraInteractingRef.current) {
         drawRef.current();
       }
       raf = requestAnimationFrame(tick);
@@ -1699,12 +1740,12 @@ export default function App() {
     };
   }, [showClusterHalo, stanceListsViewEnabled]);
 
-  // Top-account breathing halo repaint — admin influence preview only.
+  // Top-account breathing halo repaint — skip while dragging.
   useEffect(() => {
     if (!useBreathingHalo || stanceListsViewEnabled || readReducedMotionPreference()) return;
     let raf = 0;
     const tick = () => {
-      if (!newStancesIntroRef.current.graphFrozen) {
+      if (!newStancesIntroRef.current.graphFrozen && !cameraInteractingRef.current) {
         drawRef.current();
       }
       raf = requestAnimationFrame(tick);
@@ -1715,7 +1756,28 @@ export default function App() {
     };
   }, [useBreathingHalo, stanceListsViewEnabled]);
 
+  // Opt-in performance overlay (?debugPerformance=1).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!initPerfDebug(window.location.search)) return;
+    setAvatarLoadConcurrency(12);
+    let raf = 0;
+    const tick = () => {
+      updatePerfOverlay([
+        `settling=${layoutSettlingRef.current ? 1 : 0} camDrag=${cameraInteractingRef.current ? 1 : 0}`,
+        `panLayer=${panLayerRef.current.valid ? 1 : 0} dpr=${window.devicePixelRatio || 1}`,
+      ]);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
+
   // Load canonical accounts from public/data at mount (needed to render the graph).
+  // Seed JSON is applied as soon as it arrives so the graph shell can appear
+  // before /api/community finishes; community rows merge in afterward.
   useEffect(() => {
     let dead = false;
     (async () => {
@@ -1732,9 +1794,19 @@ export default function App() {
           if (restored.selectedHandle) setSelectedHandle(restored.selectedHandle);
           return;
         }
-        const cleanedAccounts = await loadAccounts();
+        const apiStarted = performance.now();
+        perfMark("accounts-load-start");
+        const cleanedAccounts = await loadAccounts((seedOnly) => {
+          if (dead) return;
+          const seedFiltered = seedOnly.filter((r) => (r.handle ?? "").toString().trim().length > 0);
+          if (seedFiltered.length) {
+            setAccounts(seedFiltered);
+            setLoading(false);
+          }
+        });
         if (dead) return;
         const accountsFiltered = cleanedAccounts.filter((r) => (r.handle ?? "").toString().trim().length > 0);
+        perfSetMs("lastApiMs", performance.now() - apiStarted);
         setAccounts(accountsFiltered);
       } catch (e) {
         if (!dead) setErr(String(e?.message || e));
@@ -1985,13 +2057,21 @@ export default function App() {
     ).length;
   }, [visibleAccounts, tweetCountByHandle, labels]);
 
-  // Preload avatars once accounts are available (deduped URLs; browser HTTP cache + session Image cache).
+  // Preload avatars once accounts are available. Priority 1: missing placeholder +
+  // largest accounts (likely initially visible). Priority 2: the rest. Bounded
+  // concurrency lives in avatarCache — never await the full set before painting.
   useEffect(() => {
     if (!visibleAccounts.length) return;
     const baseNoSlash = getBase().replace(/\/$/, "");
     const missingSrc = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
-    const urls = visibleAccounts.map((a) => resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc));
-    preloadAvatarUrls([missingSrc, ...urls], { eager: true });
+    preloadAvatarUrls([missingSrc], { priority: 0 });
+    const ranked = [...visibleAccounts].sort(
+      (a, b) => (Number(b.followers_count) || 0) - (Number(a.followers_count) || 0)
+    );
+    const priority1 = ranked.slice(0, 24).map((a) => resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc));
+    const priority2 = ranked.slice(24).map((a) => resolveAvatarUrlForAccount(a, baseNoSlash, missingSrc));
+    preloadAvatarUrls(priority1, { priority: 10 });
+    preloadAvatarUrls(priority2, { priority: 60 });
   }, [visibleAccounts]);
 
   // Build nodes for simulation
@@ -2004,6 +2084,29 @@ export default function App() {
   // Coalesces bursty redraws (e.g. hundreds of cached avatar `load` events firing
   // in the same frame) into a single repaint per animation frame.
   const drawRafRef = useRef(0);
+  // True while the user is actively panning/pinching — skips continuous halo RAF,
+  // freezes fit, and enables the fast pan-layer blit path.
+  const cameraInteractingRef = useRef(false);
+  // Screen-space snapshot of the graph (no starfield) captured at interaction start.
+  const panLayerRef = useRef({
+    canvas: null,
+    valid: false,
+    panX: 0,
+    panY: 0,
+    scaleMul: 1,
+    dpr: 1,
+    cw: 0,
+    ch: 0,
+  });
+  const suppressStarfieldRef = useRef(false);
+  const canvasRectRef = useRef(null);
+  const worldLayerVersionRef = useRef(0);
+  const cameraInteractApiRef = useRef({
+    begin: () => {},
+    end: () => {},
+    scheduleDraw: () => {},
+    invalidatePanLayer: () => {},
+  });
 
   const camRef = useRef({ scaleMul: 1, panX: 0, panY: 0 });
   const fitRef = useRef({ scale: 1, tx: 0, ty: 0 });
@@ -2349,7 +2452,7 @@ export default function App() {
       breathingHaloHandlesRef.current = new Set();
     }
 
-    // Preload avatar images for visible nodes
+    // Preload avatar images for visible nodes (priority by followers; progressive paint).
     const cache = avatarCacheRef.current;
     const warnedHandles = avatarWarnedHandlesRef.current;
     const hooked = avatarHookedRef.current;
@@ -2361,21 +2464,23 @@ export default function App() {
       if (!urlToHandles.has(key)) urlToHandles.set(key, []);
       urlToHandles.get(key).push(n.handle);
     }
-    const missingImg = getAvatar(missingSrc);
-    if ("loading" in missingImg) missingImg.loading = "eager";
-    if ("decoding" in missingImg) missingImg.decoding = "async";
-    if ("referrerPolicy" in missingImg) missingImg.referrerPolicy = "no-referrer";
+    const missingImg = getAvatarPrioritized(missingSrc, 0);
     if (!hooked.has(missingImg)) {
       hooked.add(missingImg);
-      missingImg.addEventListener("load", () => scheduleDraw());
+      missingImg.addEventListener("load", () => {
+        invalidatePanLayer();
+        scheduleDraw();
+      });
     }
-    const urls = [...new Set(nodes.map((n) => n.avatarUrl).filter(Boolean))];
-    urls.forEach((url) => {
-      const key = canonicalAvatarSrc(url);
-      const img = getAvatar(key);
-      if ("decoding" in img) img.decoding = "async";
-      if ("loading" in img) img.loading = "eager";
-      if ("referrerPolicy" in img) img.referrerPolicy = "no-referrer";
+    const rankedNodes = [...nodes].sort((a, b) => (b.followers || 0) - (a.followers || 0));
+    const seenUrl = new Set();
+    rankedNodes.forEach((n, idx) => {
+      if (!n.avatarUrl) return;
+      const key = canonicalAvatarSrc(n.avatarUrl);
+      if (seenUrl.has(key)) return;
+      seenUrl.add(key);
+      const priority = idx < 24 ? 10 : 60;
+      const img = getAvatarPrioritized(key, priority);
       cache.set(key, img);
       if (!hooked.has(img)) {
         hooked.add(img);
@@ -2395,16 +2500,20 @@ export default function App() {
               });
             }
           }
-          if (canonicalAvatarSrc(img.src) !== missingSrc) img.src = missingSrc;
           cache.set(key, missingImg);
+          invalidatePanLayer();
           scheduleDraw();
         };
-        img.addEventListener("load", () => scheduleDraw());
+        img.addEventListener("load", () => {
+          invalidatePanLayer();
+          scheduleDraw();
+        });
         img.addEventListener("error", () => handleError(true));
-        // If preload finished before listeners were attached, recover immediately.
         if (img.complete) {
-          if (img.naturalWidth > 0) scheduleDraw();
-          else handleError(false);
+          if (img.naturalWidth > 0) {
+            invalidatePanLayer();
+            scheduleDraw();
+          } else handleError(false);
         }
       }
     });
@@ -2423,6 +2532,7 @@ export default function App() {
       layoutSettlingRef.current = false;
       simRef.current = null;
       regionRef.current = layoutEqualSizeGrid(nodes, labelsRef.current, w, h);
+      invalidatePanLayer();
       draw();
       reapplySelectionFxAfterLayout();
       tryStartNewStancesIntro();
@@ -2520,6 +2630,7 @@ export default function App() {
       // Previously settled positions restored from cache: paint the final layout
       // immediately. No simulation, no delay.
       layoutSettlingRef.current = false;
+      invalidatePanLayer();
       draw();
       reapplySelectionFxAfterLayout();
       tryStartNewStancesIntro();
@@ -2566,6 +2677,7 @@ export default function App() {
       saveLayoutPositions(layoutSig, nodes);
       settleRafRef.current = 0;
       layoutSettlingRef.current = false;
+      invalidatePanLayer();
       draw(); // single paint of the fully-settled layout
       reapplySelectionFxAfterLayout();
       tryStartNewStancesIntro();
@@ -2815,7 +2927,8 @@ export default function App() {
 
   // Batches redraw requests to at most one per frame. Use this (instead of
   // calling draw() directly) for events that can fire in large bursts, such as
-  // cached avatar images all resolving their `load` handlers at once.
+  // cached avatar images all resolving their `load` handlers at once — and for
+  // pointermove pan/pinch so we never draw more than once per animation frame.
   function scheduleDraw() {
     if (drawRafRef.current) return;
     drawRafRef.current = requestAnimationFrame(() => {
@@ -2823,6 +2936,82 @@ export default function App() {
       drawRef.current();
     });
   }
+
+  function invalidatePanLayer() {
+    panLayerRef.current.valid = false;
+    worldLayerVersionRef.current += 1;
+  }
+
+  function refreshCanvasRect() {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    canvasRectRef.current = canvas.getBoundingClientRect();
+    return canvasRectRef.current;
+  }
+
+  function buildPanLayer() {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const layer = panLayerRef.current;
+    layer.valid = false;
+    if (!layer.canvas) layer.canvas = document.createElement("canvas");
+    const rawDpr = window.devicePixelRatio || 1;
+    const dpr = isFirefoxBrowser ? Math.min(rawDpr, 1.5) : rawDpr;
+    const cw = Math.max(1, w);
+    const ch = Math.max(1, h);
+    const bw = Math.floor(cw * dpr);
+    const bh = Math.floor(ch * dpr);
+    if (layer.canvas.width !== bw || layer.canvas.height !== bh) {
+      layer.canvas.width = bw;
+      layer.canvas.height = bh;
+    }
+    // Paint graph content (no starfield) onto the main canvas, copy into the
+    // pan layer, then restore a full frame with starfield.
+    suppressStarfieldRef.current = true;
+    cameraInteractingRef.current = false; // force full content path
+    draw();
+    const lctx = layer.canvas.getContext("2d");
+    if (lctx) {
+      lctx.setTransform(1, 0, 0, 1, 0, 0);
+      lctx.clearRect(0, 0, bw, bh);
+      lctx.drawImage(canvas, 0, 0);
+    }
+    suppressStarfieldRef.current = false;
+    layer.panX = camRef.current.panX;
+    layer.panY = camRef.current.panY;
+    layer.scaleMul = camRef.current.scaleMul;
+    layer.dpr = dpr;
+    layer.cw = cw;
+    layer.ch = ch;
+    layer.valid = true;
+    if (isPerfDebugEnabled()) perfInc("worldLayerBuilds");
+    cameraInteractingRef.current = true;
+    draw(); // restore starfield under the current view
+  }
+
+  function beginCameraInteraction() {
+    if (cameraInteractingRef.current) return;
+    refreshCanvasRect();
+    cameraInteractingRef.current = true;
+    hoverRef.current = null;
+    hoverDrawHandleRef.current = null;
+    updateHoverOverlay(null);
+    buildPanLayer();
+  }
+
+  function endCameraInteraction() {
+    if (!cameraInteractingRef.current) return;
+    cameraInteractingRef.current = false;
+    invalidatePanLayer();
+    scheduleDraw();
+  }
+
+  cameraInteractApiRef.current = {
+    begin: beginCameraInteraction,
+    end: endCameraInteraction,
+    scheduleDraw,
+    invalidatePanLayer,
+  };
 
   function resolveDrawAvatarUrl(n) {
     const baseNoSlash = getBase().replace(/\/$/, "");
@@ -3526,10 +3715,14 @@ export default function App() {
 
   function draw() {
     drawRef.current = draw;
+    const dragFrameStart = cameraInteractingRef.current ? performance.now() : 0;
+    if (isPerfDebugEnabled()) perfInc("drawCalls");
 
     // Suppress intermediate paints while the layout is settling off the main
     // thread. This prevents avatar `load` events and simulation ticks from
     // showing nodes mid-flight; we paint exactly once when settling completes.
+    // Avatar loads still schedule draws that no-op here, then paint progressively
+    // after settle without waiting for the full image set.
     if (layoutSettlingRef.current) return;
 
     const canvas = canvasRef.current;
@@ -3548,6 +3741,7 @@ export default function App() {
       canvas.style.width = `${cw}px`;
       canvas.style.height = `${ch}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      invalidatePanLayer();
     }
 
     const introEarly = newStancesIntroRef.current;
@@ -3562,11 +3756,53 @@ export default function App() {
       return;
     }
 
+    // Fast pan/pinch path: blit a screen-space content snapshot with the pan
+    // delta and redraw only the fixed starfield. No node/halo recompute.
+    const panLayer = panLayerRef.current;
+    const camUser = camRef.current;
+    if (
+      cameraInteractingRef.current &&
+      panLayer.valid &&
+      !suppressStarfieldRef.current &&
+      panLayer.dpr === dpr &&
+      panLayer.cw === cw &&
+      panLayer.ch === ch &&
+      panLayer.scaleMul === camUser.scaleMul
+    ) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, cw, ch);
+      const starfieldFast = getStarfieldCanvas(cw, ch, dpr);
+      if (starfieldFast) ctx.drawImage(starfieldFast, 0, 0, cw, ch);
+      const dx = camUser.panX - panLayer.panX;
+      const dy = camUser.panY - panLayer.panY;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(panLayer.canvas, dx * dpr, dy * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // Keep viewRef in sync for hit-testing after drag ends.
+      const fit = fitRef.current;
+      viewRef.current = {
+        scale: fit.scale * camUser.scaleMul,
+        tx: fit.tx + camUser.panX,
+        ty: fit.ty + camUser.panY,
+      };
+      if (isPerfDebugEnabled()) {
+        perfInc("fastPanDrawCalls");
+        if (dragFrameStart) perfRecordDragFrame(performance.now() - dragFrameStart);
+      }
+      return;
+    }
+
     ctx.clearRect(0, 0, cw, ch);
 
-    // Cached starfield (screen space)
-    const starfield = getStarfieldCanvas(cw, ch, dpr);
-    if (starfield) ctx.drawImage(starfield, 0, 0, cw, ch);
+    // Cached starfield (screen space) — skipped when capturing the pan layer.
+    if (!suppressStarfieldRef.current) {
+      const starfield = getStarfieldCanvas(cw, ch, dpr);
+      if (starfield) ctx.drawImage(starfield, 0, 0, cw, ch);
+      if (isPerfDebugEnabled()) {
+        perfSetMs("firstBackgroundPaintMs", perfNowSinceNav());
+      }
+    }
+    if (isPerfDebugEnabled()) perfInc("fullDrawCalls");
 
     const nodes = nodesRef.current;
     const qset = filteredHandlesSet;
@@ -3604,13 +3840,16 @@ export default function App() {
     };
 
     const selectionFxActive = selectionFxRef.current.handle != null;
+    // Freeze fit during selection FX and during camera drag so O(n) bounds work
+    // and neighbor nudges do not rescale the whole graph mid-interaction.
+    const reuseFit =
+      (selectionFxActive || cameraInteractingRef.current || suppressStarfieldRef.current) &&
+      frozenFitRef.current;
 
     let fitScale;
     let fitTx;
     let fitTy;
-    if (selectionFxActive && frozenFitRef.current) {
-      // Keep the camera stable while the selected avatar enlarges and pushes its
-      // neighbors, so the whole graph does not visibly rescale.
+    if (reuseFit) {
       ({ scale: fitScale, tx: fitTx, ty: fitTy } = frozenFitRef.current);
     } else {
       const maxDrawScale = 2;
@@ -3781,6 +4020,9 @@ export default function App() {
 
       const img = getGraphAvatar(resolveDrawAvatarUrl(n));
       if (img && img.complete && img.naturalWidth > 0) {
+        if (isPerfDebugEnabled()) {
+          perfSetMs("firstAvatarPaintMs", perfNowSinceNav());
+        }
         ctx.save();
         ctx.beginPath();
         if (typeof ctx.roundRect === "function") {
@@ -4143,15 +4385,24 @@ export default function App() {
       panX: camRef.current.panX,
       panY: camRef.current.panY,
     };
+    refreshCanvasRect();
+    try {
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    } catch {
+      /* pointer capture optional for mouse events */
+    }
   }
 
   function onMouseUp() {
     isPanningRef.current = false;
+    endCameraInteraction();
   }
 
   function onWheel(e) {
     e.preventDefault();
-    const rect = e.currentTarget.getBoundingClientRect();
+    // Zoom invalidates the pan-layer blit (scaleMul changes).
+    invalidatePanLayer();
+    const rect = canvasRectRef.current || e.currentTarget.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
     const v = viewRef.current || { scale: 1, tx: 0, ty: 0 };
@@ -4166,25 +4417,26 @@ export default function App() {
     user.panX = mx - fit.tx - wx * newScale;
     user.panY = my - fit.ty - wy * newScale;
     camRef.current = user;
-    draw();
+    scheduleDraw();
   }
 
   function onMouseMove(e) {
     if (isPanningRef.current) {
       const dx = e.clientX - panStartRef.current.x;
       const dy = e.clientY - panStartRef.current.y;
+      if (!cameraInteractingRef.current && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
+        beginCameraInteraction();
+      }
       camRef.current = {
         ...camRef.current,
         panX: panStartRef.current.panX + dx,
         panY: panStartRef.current.panY + dy,
       };
-      draw();
-      hoverRef.current = null;
-      hoverDrawHandleRef.current = null;
-      updateHoverOverlay(null);
+      // One draw per animation frame; no React state; no hover hit-test while dragging.
+      scheduleDraw();
       return;
     }
-    const rect = e.currentTarget.getBoundingClientRect();
+    const rect = canvasRectRef.current || e.currentTarget.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
     const n = hitTest(mx, my);
@@ -4281,7 +4533,8 @@ export default function App() {
     const TAP_MOVE_TOLERANCE_PX = 8;
 
     function beginGesture(touches) {
-      const rect = canvas.getBoundingClientRect();
+      const rect = canvasRectRef.current || canvas.getBoundingClientRect();
+      canvasRectRef.current = rect;
       if (touches.length >= 2) {
         const t0 = touches[0];
         const t1 = touches[1];
@@ -4294,6 +4547,8 @@ export default function App() {
         st.startScaleMul = camRef.current.scaleMul;
         st.midWorldX = (midX - v.tx) / v.scale;
         st.midWorldY = (midY - v.ty) / v.scale;
+        // Pinch changes scaleMul — use full draws, not the pan-layer blit.
+        cameraInteractApiRef.current.invalidatePanLayer();
       } else if (touches.length === 1) {
         const t = touches[0];
         st.mode = "pan";
@@ -4310,12 +4565,17 @@ export default function App() {
       e.preventDefault();
       st.moved = false;
       beginGesture(e.touches);
+      if (e.touches.length >= 2) {
+        // Pinch uses full redraws (scale changes); mark interacting to pause halo RAF.
+        cameraInteractingRef.current = true;
+        cameraInteractApiRef.current.invalidatePanLayer();
+      }
     }
 
     function onTouchMove(e) {
       e.preventDefault();
       if (st.mode === "pinch" && e.touches.length >= 2) {
-        const rect = canvas.getBoundingClientRect();
+        const rect = canvasRectRef.current || canvas.getBoundingClientRect();
         const t0 = e.touches[0];
         const t1 = e.touches[1];
         const midX = (t0.clientX + t1.clientX) / 2 - rect.left;
@@ -4333,13 +4593,17 @@ export default function App() {
           panY: midY - fit.ty - st.midWorldY * newScale,
         };
         st.moved = true;
-        drawRef.current();
+        cameraInteractApiRef.current.invalidatePanLayer();
+        cameraInteractApiRef.current.scheduleDraw();
       } else if (st.mode === "pan" && e.touches.length === 1) {
         const t = e.touches[0];
         const dx = t.clientX - st.startX;
         const dy = t.clientY - st.startY;
         if (Math.abs(dx) > TAP_MOVE_TOLERANCE_PX || Math.abs(dy) > TAP_MOVE_TOLERANCE_PX) {
           st.moved = true;
+          if (!cameraInteractingRef.current) {
+            cameraInteractApiRef.current.begin();
+          }
         }
         // Panning preserves the current zoom level (scaleMul untouched).
         camRef.current = {
@@ -4349,7 +4613,7 @@ export default function App() {
         };
         hoverRef.current = null;
         hoverDrawHandleRef.current = null;
-        drawRef.current();
+        cameraInteractApiRef.current.scheduleDraw();
       }
     }
 
@@ -4357,7 +4621,7 @@ export default function App() {
       if (st.mode === "pan" && !st.moved && e.touches.length === 0) {
         const t = e.changedTouches[0];
         if (t) {
-          const rect = canvas.getBoundingClientRect();
+          const rect = canvasRectRef.current || canvas.getBoundingClientRect();
           const mx = t.clientX - rect.left;
           const my = t.clientY - rect.top;
           if (selectAtPointRef.current) selectAtPointRef.current(mx, my);
@@ -4370,6 +4634,7 @@ export default function App() {
         st.moved = true;
       } else {
         st.mode = "none";
+        cameraInteractApiRef.current.end();
       }
     }
 
