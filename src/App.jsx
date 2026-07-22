@@ -25,6 +25,13 @@ import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
 import { followersForAvatarSize } from "./utils/avatarSize";
 import { formatXJoinDate } from "./utils/xJoinDate";
 import {
+  defaultJoinDateRange,
+  filterAccountsByJoinDate,
+  normalizeJoinYearRange,
+  summarizeJoinDateYears,
+} from "./utils/xJoinDateFilter";
+import { XJoinDateRangeSlider } from "./components/XJoinDateRangeSlider";
+import {
   AUTH_CHANNEL_NAME,
   LOGIN_RETURN_KEY,
   LOGIN_RETURN_MAX_AGE_MS,
@@ -941,6 +948,13 @@ export default function App() {
   const [stanceListsViewEnabled, setStanceListsViewEnabled] = useState(false);
   const [plebsMode, setPlebsMode] = useState(false);
   const [influencersMode, setInfluencersMode] = useState(false);
+  const [joinDateFilterEnabled, setJoinDateFilterEnabled] = useState(false);
+  const [joinDateMinYear, setJoinDateMinYear] = useState(null);
+  const [joinDateMaxYear, setJoinDateMaxYear] = useState(null);
+  const [joinDateBoundMin, setJoinDateBoundMin] = useState(2006);
+  const [joinDateBoundMax, setJoinDateBoundMax] = useState(() => new Date().getUTCFullYear());
+  const joinDateRangeInitializedRef = useRef(false);
+  const canvasWrapPulseRef = useRef(null);
   const [equalAvatarSizeEnabled, setEqualAvatarSizeEnabled] = useState(false);
   const [dimOthersEnabled, setDimOthersEnabled] = useState(false);
   const [historyPlaybackPlaying, setHistoryPlaybackPlaying] = useState(false);
@@ -1343,7 +1357,7 @@ export default function App() {
     []
   );
 
-  const visibleAccounts = useMemo(() => {
+  const followerFilteredAccounts = useMemo(() => {
     if (plebsMode) {
       return accounts.filter((a) => {
         const info = getFollowersFromUser(a);
@@ -1359,8 +1373,43 @@ export default function App() {
     return accounts;
   }, [accounts, plebsMode, influencersMode]);
 
+  const joinDateFilterActive =
+    joinDateFilterEnabled && joinDateMinYear != null && joinDateMaxYear != null;
+
+  const visibleAccounts = useMemo(() => {
+    if (!joinDateFilterActive) return followerFilteredAccounts;
+    return filterAccountsByJoinDate(
+      followerFilteredAccounts,
+      true,
+      joinDateMinYear,
+      joinDateMaxYear
+    );
+  }, [
+    followerFilteredAccounts,
+    joinDateFilterActive,
+    joinDateMinYear,
+    joinDateMaxYear,
+  ]);
+
+  const joinDateFilterStats = useMemo(() => {
+    if (!joinDateFilterActive) {
+      return { unknownHiddenCount: 0, showingCount: visibleAccounts.length, totalCount: accounts.length };
+    }
+    const summary = summarizeJoinDateYears(followerFilteredAccounts);
+    return {
+      unknownHiddenCount: summary.unknownCount,
+      showingCount: visibleAccounts.length,
+      totalCount: followerFilteredAccounts.length,
+    };
+  }, [
+    joinDateFilterActive,
+    followerFilteredAccounts,
+    visibleAccounts.length,
+    accounts.length,
+  ]);
+
   // A follower-filtered subset is active; dataset-wide change stats don't match it.
-  const followerFilterActive = plebsMode || influencersMode;
+  const followerFilterActive = plebsMode || influencersMode || joinDateFilterActive;
 
   const accountByHandle = useMemo(() => {
     const m = new Map();
@@ -1677,6 +1726,45 @@ export default function App() {
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [adminOptionsOpen]);
+
+  useEffect(() => {
+    if (!joinDateFilterActive) return;
+    const el = canvasWrapPulseRef.current;
+    if (!el) return;
+    el.classList.add("canvasWrap--joinDatePulse", "is-fading");
+    const t = window.setTimeout(() => {
+      el.classList.remove("is-fading");
+    }, 180);
+    return () => window.clearTimeout(t);
+  }, [joinDateFilterActive, joinDateMinYear, joinDateMaxYear, visibleAccounts.length]);
+
+  function enableJoinDateFilter(nextEnabled) {
+    if (nextEnabled) {
+      stopHistoryPlayback();
+      if (!joinDateRangeInitializedRef.current || joinDateMinYear == null || joinDateMaxYear == null) {
+        const range = defaultJoinDateRange(accounts);
+        setJoinDateBoundMin(range.boundMin);
+        setJoinDateBoundMax(range.boundMax);
+        setJoinDateMinYear(range.minYear);
+        setJoinDateMaxYear(range.maxYear);
+        joinDateRangeInitializedRef.current = true;
+      }
+      setJoinDateFilterEnabled(true);
+      return;
+    }
+    setJoinDateFilterEnabled(false);
+  }
+
+  function onJoinDateRangeChange({ minYear, maxYear }) {
+    const next = normalizeJoinYearRange(
+      minYear,
+      maxYear,
+      joinDateBoundMin,
+      joinDateBoundMax
+    );
+    setJoinDateMinYear(next.minYear);
+    setJoinDateMaxYear(next.maxYear);
+  }
 
   useEffect(() => {
     if (!profileMenuOpen) return;
@@ -4853,6 +4941,27 @@ export default function App() {
                   <span>Influencers (&gt;3k followers)</span>
                   <span style={styles.optionsState}>{influencersMode ? "ON" : "OFF"}</span>
                 </label>
+                <label style={styles.optionsItem}>
+                  <input
+                    type="checkbox"
+                    checked={joinDateFilterEnabled}
+                    onChange={(e) => enableJoinDateFilter(e.target.checked)}
+                  />
+                  <span>X join date</span>
+                  <span style={styles.optionsState}>{joinDateFilterEnabled ? "ON" : "OFF"}</span>
+                </label>
+                {joinDateFilterEnabled && joinDateMinYear != null && joinDateMaxYear != null ? (
+                  <XJoinDateRangeSlider
+                    boundMin={joinDateBoundMin}
+                    boundMax={joinDateBoundMax}
+                    minYear={joinDateMinYear}
+                    maxYear={joinDateMaxYear}
+                    onChange={onJoinDateRangeChange}
+                    showingCount={joinDateFilterStats.showingCount}
+                    totalCount={joinDateFilterStats.totalCount}
+                    unknownHiddenCount={joinDateFilterStats.unknownHiddenCount}
+                  />
+                ) : null}
               </div>
             )}
           </div>
@@ -4977,7 +5086,7 @@ export default function App() {
       </div>
 
       <div style={styles.main}>
-        <div ref={containerRef} style={styles.canvasWrap}>
+        <div ref={(el) => { containerRef.current = el; canvasWrapPulseRef.current = el; }} style={styles.canvasWrap}>
           {!stanceListsViewEnabled ? (
             <>
               <canvas
@@ -5001,6 +5110,11 @@ export default function App() {
                   pointerEvents: historyPlaybackPlaying ? "none" : "auto",
                 }}
               />
+              {joinDateFilterActive && visibleAccounts.length === 0 ? (
+                <div className="joinDateEmptyMsg" role="status">
+                  No accounts joined X in this range.
+                </div>
+              ) : null}
               <div ref={introPanelRef} className="newStancesPanel" aria-hidden="true" />
               <canvas ref={introCanvasRef} style={styles.introCanvas} aria-hidden="true" />
               <div ref={introFlightLayerRef} className="newStancesFlightLayer" aria-hidden="true" />
@@ -5529,6 +5643,7 @@ const styles = {
     top: "calc(100% + 6px)",
     right: 0,
     minWidth: 240,
+    maxWidth: "min(320px, calc(100vw - 16px))",
     padding: 8,
     borderRadius: 10,
     border: "1px solid rgba(255,255,255,0.18)",
@@ -5538,6 +5653,7 @@ const styles = {
     flexDirection: "column",
     gap: 6,
     zIndex: 120,
+    boxSizing: "border-box",
   },
   optionsItem: {
     display: "grid",
