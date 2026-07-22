@@ -281,8 +281,9 @@ test("filter transitions reuse avatar cache and scheduleDraw coalescing", () => 
   assert.match(appSrc, /getGraphAvatar|getAvatarPrioritized/);
   assert.match(appSrc, /scheduleDraw\(\)/);
   assert.match(appSrc, /filterTransitionRef/);
-  assert.match(appSrc, /beginFilterMembershipTransition/);
-  // Filter transition helper module must not touch New Stances storage markers.
+  // Options filter enter/exit flights are disabled; New Stances intro remains.
+  assert.match(appSrc, /const runFilterTransition = false/);
+  assert.match(appSrc, /tryStartNewStancesIntro/);
   const utilSrc = readFileSync(join(root, "src", "utils", "filterAvatarTransitions.ts"), "utf8");
   assert.doesNotMatch(utilSrc, /writeLastSeenMarker|LAST_SEEN_MARKER|sessionStorage/);
   assert.doesNotMatch(utilSrc, /newStancesIntro/);

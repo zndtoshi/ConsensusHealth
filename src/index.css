@@ -71,6 +71,64 @@ button:focus-visible {
    Account toolbar (logged-in top control bar)
    ================================ */
 
+/* Compact BIP-110 badge beside the brand — interactive link affordance. */
+.bipTagLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  max-height: 22px;
+  padding: 3px 7px 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(17, 24, 39, 0.72);
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  line-height: 1;
+  text-transform: lowercase;
+  text-decoration: none;
+  cursor: pointer;
+  box-shadow: 0 0 0 0 rgba(148, 163, 184, 0);
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+.bipTagLink:hover {
+  background: rgba(51, 65, 85, 0.88);
+  border-color: rgba(226, 232, 240, 0.28);
+  color: #f1f5f9;
+  box-shadow: 0 0 12px rgba(148, 163, 184, 0.28);
+  transform: translateY(-1px);
+}
+.bipTagLink:focus-visible {
+  outline: 2px solid rgba(147, 197, 253, 0.95);
+  outline-offset: 2px;
+  color: #f8fafc;
+}
+.bipTagLink__icon {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  opacity: 0.78;
+}
+.bipTagLink:hover .bipTagLink__icon,
+.bipTagLink:focus-visible .bipTagLink__icon {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bipTagLink {
+    transition: none;
+  }
+  .bipTagLink:hover {
+    transform: none;
+  }
+}
+
 /* Low-emphasis ghost button used by Options / Login / menu actions. */
 .toolbarBtn {
   appearance: none;
