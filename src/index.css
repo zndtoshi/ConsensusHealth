@@ -894,3 +894,121 @@ html[data-browser="firefox"] .stanceGlow {
     height: 22px;
   }
 }
+
+/* ================================
+   Footer curated-stances info tooltip
+   ================================ */
+
+.curatedInfo {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  pointer-events: auto;
+  vertical-align: middle;
+}
+
+.curatedInfo__btn {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  background: rgba(148, 163, 184, 0.12);
+  color: rgba(148, 163, 184, 0.9);
+  cursor: pointer;
+  line-height: 1;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease,
+    color 150ms ease;
+}
+
+.curatedInfo__btn:hover,
+.curatedInfo__btn:focus-visible {
+  background: rgba(148, 163, 184, 0.22);
+  border-color: rgba(203, 213, 225, 0.55);
+  color: rgba(226, 232, 240, 0.95);
+}
+
+.curatedInfo__btn:focus-visible {
+  outline: 2px solid rgba(147, 197, 253, 0.85);
+  outline-offset: 2px;
+}
+
+.curatedInfo__glyph {
+  font-size: 9px;
+  font-weight: 700;
+  font-style: italic;
+  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  transform: translateY(-0.5px);
+}
+
+.curatedInfo__tip {
+  position: fixed;
+  z-index: 80;
+  width: min(340px, calc(100vw - 20px));
+  max-width: 340px;
+  padding: 12px 13px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  color: rgba(226, 232, 240, 0.92);
+  text-align: left;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px);
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+  box-sizing: border-box;
+}
+
+.curatedInfo__tip.is-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.curatedInfo__tipTitle {
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.01em;
+  color: rgba(241, 245, 249, 0.95);
+  margin-bottom: 6px;
+}
+
+.curatedInfo__tipBody {
+  font-size: 11px;
+  line-height: 1.45;
+  font-weight: 500;
+  color: rgba(203, 213, 225, 0.9);
+}
+
+.curatedInfo__tipBody p {
+  margin: 0 0 8px;
+}
+
+.curatedInfo__tipBody p:last-child {
+  margin-bottom: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .curatedInfo__tip {
+    transition: none;
+  }
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .curatedInfo__tip {
+    background: rgba(15, 23, 42, 0.96);
+  }
+}

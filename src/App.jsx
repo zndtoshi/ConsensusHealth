@@ -32,6 +32,7 @@ import {
 } from "./utils/xJoinDateFilter";
 import { XJoinDateRangeSlider } from "./components/XJoinDateRangeSlider";
 import { StanceChoiceCard } from "./components/StanceChoiceCard";
+import { CuratedStanceInfo } from "./components/CuratedStanceInfo";
 import {
   shouldAutoOpenStanceChoice,
   stanceChoiceMode,
@@ -5253,7 +5254,10 @@ export default function App() {
         </div>
       </div>
       <div style={styles.footerNote}>
-        <div>Stances are self-reported or curated.</div>
+        <div style={styles.footerNoteLine}>
+          <span>Stances are self-reported or curated.</span>
+          <CuratedStanceInfo />
+        </div>
         {stanceListsViewEnabled ? (
           <div>Within each stance: avatar + @username, multi-column grid, followers (highest first).</div>
         ) : equalAvatarSizeEnabled ? (
@@ -5920,6 +5924,11 @@ const styles = {
     opacity: 0.65,
     pointerEvents: "none",
     zIndex: 20,
+  },
+  footerNoteLine: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 5,
   },
   bottomControls: {
     position: "fixed",
