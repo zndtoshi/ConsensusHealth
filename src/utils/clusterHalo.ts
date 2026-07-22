@@ -181,21 +181,27 @@ export function drawClusterHalos(
   resolveStance: (node: { x: number; y: number; side: number }) => string,
   nowMs: number,
   spriteCache: Map<string, HTMLCanvasElement>,
-  smoothState: ClusterHaloSmoothState
+  smoothState: ClusterHaloSmoothState,
+  opts?: { freeze?: boolean }
 ): ClusterHaloSmoothState {
   const nextSmooth: ClusterHaloSmoothState = { ...smoothState };
 
   for (const stance of CLUSTER_HALO_STANCES) {
-    const bounds = computeClusterBounds(nodes, stance, resolveStance);
-    if (!bounds) continue;
+    let smoothed = nextSmooth[stance];
+    if (!opts?.freeze) {
+      const bounds = computeClusterBounds(nodes, stance, resolveStance);
+      if (!bounds) continue;
 
-    const targetRadius = computeClusterHaloRadius(bounds);
-    const smoothed = smoothClusterHaloState(nextSmooth, stance, {
-      cx: bounds.cx,
-      cy: bounds.cy,
-      radius: targetRadius,
-    });
-    nextSmooth[stance] = smoothed;
+      const targetRadius = computeClusterHaloRadius(bounds);
+      smoothed = smoothClusterHaloState(nextSmooth, stance, {
+        cx: bounds.cx,
+        cy: bounds.cy,
+        radius: targetRadius,
+      });
+      nextSmooth[stance] = smoothed;
+    } else if (!smoothed) {
+      continue;
+    }
 
     const bucketRadius = bucketClusterHaloRadius(smoothed.radius);
     const cacheKey = `${stance}|${bucketRadius}`;
@@ -206,7 +212,7 @@ export function drawClusterHalos(
       spriteCache.set(cacheKey, sprite);
     }
 
-    const breath = clusterHaloBreathAlpha(stance, nowMs);
+    const breath = opts?.freeze ? 0.96 : clusterHaloBreathAlpha(stance, nowMs);
     const drawSize = smoothed.radius * 2;
 
     ctx.save();
@@ -219,5 +225,5 @@ export function drawClusterHalos(
     ctx.restore();
   }
 
-  return nextSmooth;
+  return opts?.freeze ? smoothState : nextSmooth;
 }
