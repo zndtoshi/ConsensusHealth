@@ -12,6 +12,7 @@
     "build": "npm run build:web && npm run build:server",
     "enrich:profiles": "tsx server/src/enrichProfilesFromUsersJson.ts",
     "backfill:avatars": "tsx server/src/scripts/backfillLocalAvatars.ts",
+    "recover:avatars": "tsx server/src/scripts/recoverAvatars.ts",
     "backfill:join-dates": "tsx server/src/scripts/backfillAccountCreatedAt.ts",
     "backfill:join-dates:prod": "node server/dist/scripts/backfillAccountCreatedAt.js",
     "start": "node server/dist/index.js",

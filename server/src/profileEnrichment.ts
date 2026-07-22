@@ -9,6 +9,7 @@ import {
   coerceXUserIdToDigitString,
   parseJsonPreservingSnowflakeIds,
 } from "./xUserId.js";
+import { extractProfileImageUrlFromUser } from "./avatarRecovery.js";
 
 export type EnrichmentInput = {
   xUserId?: string | null;
@@ -20,6 +21,7 @@ export type ProfileEnrichment = {
   username: string | null;
   bio: string | null;
   accountCreatedAt: string | null;
+  profileImageUrl: string | null;
   unavailable: boolean;
   unavailableReason: string | null;
 };
@@ -88,7 +90,8 @@ export function mapEnrichment(user: TwitterApiIoUser | null): ProfileEnrichment 
   const accountCreatedAt = normalizeTwitterApiDate(
     user.createdAt ?? user.created_at ?? user.account_created_at ?? user.accountCreatedAt ?? null
   );
-  return { id, username, bio, accountCreatedAt, unavailable, unavailableReason };
+  const profileImageUrl = extractProfileImageUrlFromUser(user);
+  return { id, username, bio, accountCreatedAt, profileImageUrl, unavailable, unavailableReason };
 }
 
 export type TwitterApiIoRequestResult = {
