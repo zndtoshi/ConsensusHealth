@@ -33,6 +33,11 @@ import {
 import { XJoinDateRangeSlider } from "./components/XJoinDateRangeSlider";
 import { StanceChoiceCard } from "./components/StanceChoiceCard";
 import { CuratedStanceInfo } from "./components/CuratedStanceInfo";
+import { fetchAvatarStanceHistory } from "./api/avatarStanceHistory";
+import {
+  buildHistoryPanelView,
+  historyCacheKey,
+} from "./utils/avatarStanceHistoryPanel";
 import {
   shouldAutoOpenStanceChoice,
   stanceChoiceMode,
@@ -1221,6 +1226,26 @@ export default function App() {
   }
 
   useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key !== "Escape") return;
+      if (!hoverRef.current && !historyPanel) return;
+      forceClearHoverUi();
+      drawRef.current?.();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [historyPanel]);
+
+  useEffect(
+    () => () => {
+      clearHistoryDelayTimer();
+      clearHistoryHideTimer();
+      abortHistoryFetch();
+    },
+    []
+  );
+
+  useEffect(() => {
     statsDataRef.current = statsData;
   }, [statsData]);
 
@@ -2259,6 +2284,13 @@ export default function App() {
   const tooltipAgeRef = useRef(null);
   const tooltipBioRef = useRef(null);
   const tooltipSelfRef = useRef(null);
+  const historyCacheRef = useRef(new Map());
+  const historyDelayTimerRef = useRef(0);
+  const historyHideTimerRef = useRef(0);
+  const historyAbortRef = useRef(null);
+  const historyTargetKeyRef = useRef(null);
+  const historyPanelHoveredRef = useRef(false);
+  const [historyPanel, setHistoryPanel] = useState(null);
   const avatarWarnedHandlesRef = useRef(new Set());
   const avatarHookedRef = useRef(new WeakSet());
   const starfieldCanvasRef = useRef(null);
@@ -2966,13 +2998,151 @@ export default function App() {
     };
   }, [loading, err, visibleAccounts.length, w, h, stanceListsViewEnabled]);
 
+  function clearHistoryDelayTimer() {
+    if (historyDelayTimerRef.current) {
+      window.clearTimeout(historyDelayTimerRef.current);
+      historyDelayTimerRef.current = 0;
+    }
+  }
+
+  function clearHistoryHideTimer() {
+    if (historyHideTimerRef.current) {
+      window.clearTimeout(historyHideTimerRef.current);
+      historyHideTimerRef.current = 0;
+    }
+  }
+
+  function abortHistoryFetch() {
+    if (historyAbortRef.current) {
+      historyAbortRef.current.abort();
+      historyAbortRef.current = null;
+    }
+  }
+
+  function forceClearHoverUi() {
+    clearHistoryDelayTimer();
+    clearHistoryHideTimer();
+    abortHistoryFetch();
+    historyTargetKeyRef.current = null;
+    historyPanelHoveredRef.current = false;
+    setHistoryPanel(null);
+    const tip = tooltipRef.current;
+    if (tip) tip.style.display = "none";
+    hoverRef.current = null;
+    hoverDrawHandleRef.current = null;
+  }
+
+  function scheduleHideHoverAndHistory() {
+    clearHistoryHideTimer();
+    historyHideTimerRef.current = window.setTimeout(() => {
+      if (historyPanelHoveredRef.current) return;
+      forceClearHoverUi();
+      drawRef.current?.();
+    }, 120);
+  }
+
+  function positionHistoryPanelUnderTooltip(handle) {
+    const tip = tooltipRef.current;
+    const wrap = tip?.parentElement;
+    if (!tip || !wrap || tip.style.display === "none") return null;
+    const tipRect = tip.getBoundingClientRect();
+    const wrapRect = wrap.getBoundingClientRect();
+    const width = tip.offsetWidth || 220;
+    let left = tipRect.left - wrapRect.left;
+    let top = tipRect.bottom - wrapRect.top + 7;
+    left = clamp(left, 8, Math.max(8, wrapRect.width - width - 8));
+    top = clamp(top, 8, Math.max(8, wrapRect.height - 40));
+    return { handle, left, top, width };
+  }
+
+  async function openHistoryPanelForHover(hover) {
+    if (!hover?.handle) return;
+    const key = historyCacheKey({ xUserId: hover.xUserId, handle: hover.handle });
+    if (!key) return;
+    if (normalizeHandle(hoverRef.current?.handle) !== normalizeHandle(hover.handle)) return;
+
+    const placed = positionHistoryPanelUnderTooltip(hover.handle);
+    if (!placed) return;
+
+    const cached = historyCacheRef.current.get(key);
+    if (cached) {
+      setHistoryPanel({
+        ...placed,
+        loading: false,
+        view: buildHistoryPanelView(cached, hover.stance),
+      });
+      return;
+    }
+
+    setHistoryPanel({ ...placed, loading: true, view: null });
+    abortHistoryFetch();
+    const controller = new AbortController();
+    historyAbortRef.current = controller;
+    try {
+      const events = await fetchAvatarStanceHistory({
+        apiBase: API_BASE,
+        handle: hover.handle,
+        xUserId: hover.xUserId,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      if (normalizeHandle(hoverRef.current?.handle) !== normalizeHandle(hover.handle)) return;
+      historyCacheRef.current.set(key, events);
+      const again = positionHistoryPanelUnderTooltip(hover.handle);
+      if (!again) return;
+      setHistoryPanel({
+        ...again,
+        loading: false,
+        view: buildHistoryPanelView(events, hover.stance),
+      });
+    } catch {
+      if (controller.signal.aborted) return;
+      if (normalizeHandle(hoverRef.current?.handle) !== normalizeHandle(hover.handle)) return;
+      const again = positionHistoryPanelUnderTooltip(hover.handle);
+      if (!again) return;
+      setHistoryPanel({
+        ...again,
+        loading: false,
+        view: buildHistoryPanelView([], hover.stance),
+      });
+    } finally {
+      if (historyAbortRef.current === controller) historyAbortRef.current = null;
+    }
+  }
+
+  function syncHistoryHoverDelay(nextHover) {
+    const key = historyCacheKey({ xUserId: nextHover.xUserId, handle: nextHover.handle });
+    if (!key) {
+      clearHistoryDelayTimer();
+      abortHistoryFetch();
+      setHistoryPanel(null);
+      historyTargetKeyRef.current = null;
+      return;
+    }
+
+    if (historyTargetKeyRef.current === key) return;
+
+    clearHistoryDelayTimer();
+    abortHistoryFetch();
+    historyTargetKeyRef.current = key;
+    setHistoryPanel(null);
+    historyDelayTimerRef.current = window.setTimeout(() => {
+      historyDelayTimerRef.current = 0;
+      const current = hoverRef.current;
+      if (!current?.handle) return;
+      if (historyCacheKey({ xUserId: current.xUserId, handle: current.handle }) !== key) return;
+      openHistoryPanelForHover(current);
+    }, 700);
+  }
+
   function updateHoverOverlay(nextHover) {
     const tip = tooltipRef.current;
     if (!tip) return;
     if (!nextHover) {
-      tip.style.display = "none";
+      scheduleHideHoverAndHistory();
       return;
     }
+    clearHistoryHideTimer();
     const left = clamp(nextHover.x + 12, 8, Math.max(8, w - 260));
     const top = clamp(nextHover.y + 12, 8, Math.max(8, h - 160));
     tip.style.display = "block";
@@ -2996,6 +3166,7 @@ export default function App() {
     if (tooltipSelfRef.current) {
       tooltipSelfRef.current.style.display = isSelfHover ? "inline-block" : "none";
     }
+    syncHistoryHoverDelay(nextHover);
   }
 
   // Drawing
@@ -3095,7 +3266,7 @@ export default function App() {
     cameraInteractingRef.current = true;
     hoverRef.current = null;
     hoverDrawHandleRef.current = null;
-    updateHoverOverlay(null);
+    forceClearHoverUi();
     buildPanLayer();
   }
 
@@ -4545,6 +4716,8 @@ export default function App() {
           x: mx,
           y: my,
           handle: n.handle,
+          xUserId: n.x_user_id || null,
+          stance: getNodeStance(n, labelsRef.current),
           followers: n.followers,
           tweetCount: n.tweetCount,
           bio: n.bio,
@@ -5097,10 +5270,7 @@ export default function App() {
                 onMouseUp={onMouseUp}
                 onMouseLeave={() => {
                   onMouseUp();
-                  hoverRef.current = null;
-                  hoverDrawHandleRef.current = null;
-                  updateHoverOverlay(null);
-                  drawRef.current();
+                  scheduleHideHoverAndHistory();
                 }}
                 onMouseMove={onMouseMove}
                 onClick={onClick}
@@ -5152,6 +5322,48 @@ export default function App() {
                 <div ref={tooltipAgeRef} style={styles.tooltipAge} />
                 <div ref={tooltipBioRef} style={styles.tooltipBio} />
               </div>
+              {historyPanel ? (
+                <div
+                  className={`avatarHistoryCard${historyPanel.loading || historyPanel.view ? " is-open" : ""}`}
+                  style={{ left: historyPanel.left, top: historyPanel.top, width: historyPanel.width }}
+                  onMouseEnter={() => {
+                    historyPanelHoveredRef.current = true;
+                    clearHistoryHideTimer();
+                  }}
+                  onMouseLeave={() => {
+                    historyPanelHoveredRef.current = false;
+                    scheduleHideHoverAndHistory();
+                  }}
+                >
+                  <div className="avatarHistoryCard__title">Stance history</div>
+                  {historyPanel.loading ? (
+                    <div className="avatarHistoryCard__loading">Loading...</div>
+                  ) : historyPanel.view?.kind === "initial" ? (
+                    <>
+                      <div className="avatarHistoryCard__initialRow">
+                        <span className="avatarHistoryCard__label">Current</span>
+                        <span className="avatarHistoryCard__value">{historyPanel.view.currentLabel}</span>
+                      </div>
+                      <div className="avatarHistoryCard__initialRow">
+                        <span className="avatarHistoryCard__label">Initial stance</span>
+                        <span className="avatarHistoryCard__muted">Curated</span>
+                      </div>
+                    </>
+                  ) : historyPanel.view?.kind === "timeline" ? (
+                    historyPanel.view.rows.map((row, idx) => (
+                      <div className="avatarHistoryCard__row" key={`${row.label}-${row.dateLabel}-${idx}`}>
+                        <span className={`avatarHistoryCard__stance avatarHistoryCard__stance--${row.stance}`}>
+                          {row.label}
+                        </span>
+                        <span className="avatarHistoryCard__date">{row.dateLabel}</span>
+                        <span className="avatarHistoryCard__prov">{row.provenance}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="avatarHistoryCard__muted">Current stance</div>
+                  )}
+                </div>
+              ) : null}
             </>
           ) : stanceListLayout ? (
             <div
