@@ -158,10 +158,7 @@ export function HaloAvatarModal({
             <img
               src={previewUrl}
               alt="Halo avatar preview"
-              style={{
-                ...styles.previewImg,
-                boxShadow: `0 0 0 2px ${haloColor}66, 0 0 28px ${haloColor}44`,
-              }}
+              style={styles.previewImg}
             />
           ) : (
             <div style={styles.previewPlaceholder}>
@@ -241,9 +238,10 @@ const styles = {
   previewImg: {
     width: 220,
     height: 220,
-    borderRadius: "50%",
-    objectFit: "cover",
-    background: "rgba(0,0,0,0.35)",
+    // Square PNG already includes the circular crop + halo; do not add a
+    // second CSS ring outside the avatar.
+    objectFit: "contain",
+    background: "transparent",
   },
   previewPlaceholder: {
     width: 220,

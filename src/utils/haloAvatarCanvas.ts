@@ -9,7 +9,7 @@ export const HALO_AVATAR_OUTPUT_SIZE = 1024;
 export const HALO_AVATAR_EDGE_PAD = 56;
 
 /** Inward glow depth at 1024×1024 (within 25–45 px guidance). */
-export const HALO_AVATAR_GLOW_PX = 36;
+export const HALO_AVATAR_GLOW_PX = 42;
 
 export const HALO_AVATAR_RING_WIDTH = 12;
 
@@ -126,9 +126,9 @@ export function drawHaloAvatar(
   const inner = Math.max(0, radius - glowPx);
   const glow = ctx.createRadialGradient(cx, cy, inner, cx, cy, radius);
   glow.addColorStop(0, `rgba(${r},${g},${b},0)`);
-  glow.addColorStop(0.45, `rgba(${r},${g},${b},0.08)`);
-  glow.addColorStop(0.78, `rgba(${r},${g},${b},0.28)`);
-  glow.addColorStop(1, `rgba(${r},${g},${b},0.52)`);
+  glow.addColorStop(0.4, `rgba(${r},${g},${b},0.1)`);
+  glow.addColorStop(0.72, `rgba(${r},${g},${b},0.34)`);
+  glow.addColorStop(1, `rgba(${r},${g},${b},0.62)`);
   ctx.fillStyle = glow;
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -147,8 +147,8 @@ export function drawHaloAvatar(
   // Soft inner edge on the ring so it sits on the photo cleanly.
   ctx.beginPath();
   ctx.arc(cx, cy, radius - ringWidth - 1, 0, Math.PI * 2);
-  ctx.strokeStyle = `rgba(${r},${g},${b},0.35)`;
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = `rgba(${r},${g},${b},0.4)`;
+  ctx.lineWidth = 2.5;
   ctx.stroke();
 
   ctx.restore();
