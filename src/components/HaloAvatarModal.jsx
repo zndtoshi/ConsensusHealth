@@ -238,9 +238,9 @@ const styles = {
   previewImg: {
     width: 220,
     height: 220,
-    // Square PNG already includes the circular crop + halo; do not add a
-    // second CSS ring outside the avatar.
-    objectFit: "contain",
+    // Full-bleed square export; circular crop mirrors how X displays it.
+    borderRadius: "50%",
+    objectFit: "cover",
     background: "transparent",
   },
   previewPlaceholder: {

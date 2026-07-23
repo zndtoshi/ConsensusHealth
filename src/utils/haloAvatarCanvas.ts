@@ -1,25 +1,40 @@
 /**
  * Browser Canvas renderer for the admin halo avatar PNG.
- * Glow is drawn inward over the circular avatar; crisp ring near the crop edge.
+ * Avatar fills the square edge-to-edge; stance ring sits against X's circular crop.
  */
 
 export const HALO_AVATAR_OUTPUT_SIZE = 1024;
 
-/** Margin from square edge so X's circular crop keeps the ring visible. */
-export const HALO_AVATAR_EDGE_PAD = 56;
+/** Ring stroke width at 1024×1024 (kept inside the circular X crop). */
+export const HALO_AVATAR_RING_WIDTH = 20;
 
-/** Inward glow depth at 1024×1024 (within 25–45 px guidance). */
-export const HALO_AVATAR_GLOW_PX = 45;
+/**
+ * Tiny inset so the full stroke stays inside the square / X circular crop.
+ * Not padding around the avatar — the photo still fills the canvas.
+ */
+export const HALO_AVATAR_RING_SAFETY_INSET = 3;
 
-export const HALO_AVATAR_RING_WIDTH = 12;
+/** Inward glow depth at 1024×1024; kept modest so the face stays clear. */
+export const HALO_AVATAR_GLOW_PX = 36;
 
 export type RenderHaloAvatarOptions = {
   image: CanvasImageSource;
   stanceColor: string;
   size?: number;
-  edgePad?: number;
   glowPx?: number;
   ringWidth?: number;
+  ringSafetyInset?: number;
+};
+
+export type HaloRingLayout = {
+  size: number;
+  cx: number;
+  cy: number;
+  /** Circular crop radius used for glow clip (canvas half-size). */
+  cropRadius: number;
+  ringWidth: number;
+  /** Centerline radius of the stroke; stroke stays fully inside the canvas. */
+  ringCenterRadius: number;
 };
 
 function parseHexRgb(color: string): { r: number; g: number; b: number } {
@@ -43,14 +58,22 @@ function sourceSize(image: CanvasImageSource): { w: number; h: number } {
   if (typeof HTMLCanvasElement !== "undefined" && image instanceof HTMLCanvasElement) {
     return { w: image.width || 1, h: image.height || 1 };
   }
-  const anyImg = image as { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number };
+  const anyImg = image as {
+    width?: number;
+    height?: number;
+    naturalWidth?: number;
+    naturalHeight?: number;
+  };
   return {
     w: Math.max(1, Number(anyImg.naturalWidth || anyImg.width) || 1),
     h: Math.max(1, Number(anyImg.naturalHeight || anyImg.height) || 1),
   };
 }
 
-/** Center-crop / cover draw of the source into a destination square. */
+/**
+ * Center-crop / cover into a destination square.
+ * scale = max(dest/srcW, dest/srcH); overflow is cropped, never letterboxed.
+ */
 export function coverDrawRect(
   srcW: number,
   srcH: number,
@@ -73,14 +96,35 @@ export function coverDrawRect(
   };
 }
 
+/** Geometry for the stance ring flush with X's circular crop edge. */
+export function haloRingLayout(opts?: {
+  size?: number;
+  ringWidth?: number;
+  ringSafetyInset?: number;
+}): HaloRingLayout {
+  const size = opts?.size ?? HALO_AVATAR_OUTPUT_SIZE;
+  const ringWidth = opts?.ringWidth ?? HALO_AVATAR_RING_WIDTH;
+  const ringSafetyInset = opts?.ringSafetyInset ?? HALO_AVATAR_RING_SAFETY_INSET;
+  const cx = size / 2;
+  const cy = size / 2;
+  const cropRadius = size / 2;
+  // radius = halfSize - lineWidth/2 - safety inset
+  const ringCenterRadius = Math.max(1, cropRadius - ringWidth / 2 - ringSafetyInset);
+  return { size, cx, cy, cropRadius, ringWidth, ringCenterRadius };
+}
+
 export function drawHaloAvatar(
   ctx: CanvasRenderingContext2D,
   opts: RenderHaloAvatarOptions
 ): void {
   const size = opts.size ?? HALO_AVATAR_OUTPUT_SIZE;
-  const edgePad = opts.edgePad ?? HALO_AVATAR_EDGE_PAD;
   const glowPx = opts.glowPx ?? HALO_AVATAR_GLOW_PX;
-  const ringWidth = opts.ringWidth ?? HALO_AVATAR_RING_WIDTH;
+  const layout = haloRingLayout({
+    size,
+    ringWidth: opts.ringWidth,
+    ringSafetyInset: opts.ringSafetyInset,
+  });
+  const { cx, cy, cropRadius, ringWidth, ringCenterRadius } = layout;
   const { r, g, b } = parseHexRgb(opts.stanceColor);
 
   ctx.save();
@@ -94,70 +138,60 @@ export function drawHaloAvatar(
       "high";
   }
 
-  const cx = size / 2;
-  const cy = size / 2;
-  const radius = Math.max(8, size / 2 - edgePad);
-
-  // Circular avatar with center-crop cover.
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-  ctx.closePath();
-  ctx.clip();
-
+  // Fill the entire square edge-to-edge (cover crop). No outer padding.
   const { w: srcW, h: srcH } = sourceSize(opts.image);
-  const cover = coverDrawRect(srcW, srcH, radius * 2);
-  // Map cover square onto the circle's bounding box.
-  const boxX = cx - radius;
-  const boxY = cy - radius;
+  const cover = coverDrawRect(srcW, srcH, size);
   ctx.drawImage(
     opts.image,
     cover.sx,
     cover.sy,
     cover.sw,
     cover.sh,
-    boxX + cover.dx,
-    boxY + cover.dy,
+    cover.dx,
+    cover.dy,
     cover.dw,
     cover.dh
   );
 
-  // Inward glow over the avatar (strong near rim, clear face center).
-  const inner = Math.max(0, radius - glowPx);
-  const glow = ctx.createRadialGradient(cx, cy, inner, cx, cy, radius);
+  // Inward glow only, clipped to the circular X crop area.
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, cropRadius, 0, Math.PI * 2);
+  ctx.closePath();
+  ctx.clip();
+
+  const inner = Math.max(0, cropRadius - glowPx);
+  const glow = ctx.createRadialGradient(cx, cy, inner, cx, cy, cropRadius);
   glow.addColorStop(0, `rgba(${r},${g},${b},0)`);
-  glow.addColorStop(0.35, `rgba(${r},${g},${b},0.05)`);
-  glow.addColorStop(0.62, `rgba(${r},${g},${b},0.22)`);
-  glow.addColorStop(0.82, `rgba(${r},${g},${b},0.48)`);
-  glow.addColorStop(1, `rgba(${r},${g},${b},0.78)`);
+  glow.addColorStop(0.45, `rgba(${r},${g},${b},0.04)`);
+  glow.addColorStop(0.75, `rgba(${r},${g},${b},0.16)`);
+  glow.addColorStop(0.9, `rgba(${r},${g},${b},0.32)`);
+  glow.addColorStop(1, `rgba(${r},${g},${b},0.48)`);
   ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.arc(cx, cy, cropRadius, 0, Math.PI * 2);
   ctx.fill();
 
-  // Layered translucent strokes pull the halo glow inward over the photo.
-  const ringCenter = radius - ringWidth / 2;
-  const glowSteps = 14;
+  // Soft layered strokes feather glow inward from the ring (face stays clear).
+  const glowSteps = 10;
   for (let i = glowSteps; i >= 1; i -= 1) {
     const t = i / glowSteps;
-    const inset = glowPx * t;
-    const strokeR = Math.max(2, ringCenter - inset);
-    // Fall off quickly toward the center so the face stays readable.
-    const alpha = 0.42 * (1 - t) * (1 - t);
-    if (alpha < 0.02) continue;
+    const strokeR = Math.max(2, ringCenterRadius - glowPx * t);
+    const alpha = 0.28 * (1 - t) * (1 - t);
+    if (alpha < 0.015) continue;
     ctx.beginPath();
     ctx.arc(cx, cy, strokeR, 0, Math.PI * 2);
     ctx.strokeStyle = `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
-    ctx.lineWidth = Math.max(2, 10 * (1 - t) + 2);
+    ctx.lineWidth = Math.max(2, 8 * (1 - t) + 2);
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.stroke();
   }
   ctx.restore();
 
-  // Crisp stance ring just inside the circular crop boundary.
+  // Crisp stance ring flush with the circular crop (fully inside canvas bounds).
   ctx.beginPath();
-  ctx.arc(cx, cy, ringCenter, 0, Math.PI * 2);
+  ctx.arc(cx, cy, ringCenterRadius, 0, Math.PI * 2);
   ctx.strokeStyle = `rgb(${r},${g},${b})`;
   ctx.lineWidth = ringWidth;
   ctx.lineCap = "round";
