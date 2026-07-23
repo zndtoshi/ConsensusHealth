@@ -22,6 +22,8 @@ import { clearCanvasBitmap } from "./utils/canvasClear";
 import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./utils/glowRendering";
 import { fetchCommunityUsers } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
+import { assertHaloAvatarAdmin, isHaloAvatarAdmin } from "./utils/haloAvatarAdmin";
+import { HaloAvatarModal } from "./components/HaloAvatarModal";
 import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
 import { followersForAvatarSize } from "./utils/avatarSize";
 import { formatXJoinDate } from "./utils/xJoinDate";
@@ -972,6 +974,7 @@ export default function App() {
   const [adminOptionsOpen, setAdminOptionsOpen] = useState(false);
   // Avatar profile dropdown (holds Log out), toggled by clicking the avatar.
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [haloAvatarOpen, setHaloAvatarOpen] = useState(false);
   // Transient "just selected" marker (ui stance key) that drives the stance
   // segmented control's brief pop animation; cleared shortly after selection.
   const [stancePop, setStancePop] = useState(null);
@@ -1529,6 +1532,15 @@ export default function App() {
     if (!raw) return missing;
     return canonicalAvatarSrc(maybeProxyAvatarUrl(normalizeTwitterAvatarUrl(raw))) || missing;
   }, [me?.avatar_url]);
+  const meHaloAvatarSrc = useMemo(() => {
+    if (!me?.authenticated) return "";
+    const baseNoSlash = getBase().replace(/\/$/, "");
+    const missing = canonicalAvatarSrc(`${baseNoSlash}/avatars/_missing.svg?v=${AVATAR_REV}`);
+    const key = normalizeHandle(me.handle);
+    const account = (key && accountByHandle.get(key)) || me;
+    return resolveAvatarUrlForAccount(account, baseNoSlash, missing);
+  }, [me, accountByHandle]);
+  const canDownloadHaloAvatar = useMemo(() => isHaloAvatarAdmin(me), [me]);
   const selectedHeaderAvatarSrc = useMemo(() => {
     if (!selectedHandle) return "";
     const key = normalizeHandle(selectedHandle);
@@ -5729,6 +5741,35 @@ export default function App() {
                   <div style={styles.profileMenu} role="menu" aria-label="Account">
                     <div style={styles.profileMenuHandle}>@{me.handle}</div>
                     <div style={styles.optionsDivider} role="separator" />
+                    {canDownloadHaloAvatar ? (
+                      <button
+                        type="button"
+                        className="optionsMenuAction"
+                        role="menuitem"
+                        onClick={() => {
+                          try {
+                            assertHaloAvatarAdmin(me);
+                          } catch {
+                            return;
+                          }
+                          setProfileMenuOpen(false);
+                          setHaloAvatarOpen(true);
+                        }}
+                        title="Download Halo Avatar"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true" style={styles.logoutIcon}>
+                          <path
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14"
+                          />
+                        </svg>
+                        <span>Download Halo Avatar</span>
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className="optionsMenuAction"
@@ -6080,6 +6121,15 @@ export default function App() {
           </div>
         </div>
       )}
+      {haloAvatarOpen && canDownloadHaloAvatar ? (
+        <HaloAvatarModal
+          open={haloAvatarOpen}
+          onClose={() => setHaloAvatarOpen(false)}
+          user={me}
+          avatarSrc={meHaloAvatarSrc || meChipAvatarSrc}
+          stance={meStance || labels[normalizeHandle(me?.handle)] || "neutral"}
+        />
+      ) : null}
     </div>
   );
 }
