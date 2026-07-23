@@ -14,8 +14,8 @@ export const HALO_AVATAR_RING_WIDTH = 20;
  */
 export const HALO_AVATAR_RING_SAFETY_INSET = 3;
 
-/** Inward glow depth at 1024×1024; kept modest so the face stays clear. */
-export const HALO_AVATAR_GLOW_PX = 36;
+/** Inward glow depth at 1024×1024 (visible rim wash; face stays clear). */
+export const HALO_AVATAR_GLOW_PX = 44;
 
 export type RenderHaloAvatarOptions = {
   image: CanvasImageSource;
@@ -163,26 +163,27 @@ export function drawHaloAvatar(
   const inner = Math.max(0, cropRadius - glowPx);
   const glow = ctx.createRadialGradient(cx, cy, inner, cx, cy, cropRadius);
   glow.addColorStop(0, `rgba(${r},${g},${b},0)`);
-  glow.addColorStop(0.45, `rgba(${r},${g},${b},0.04)`);
-  glow.addColorStop(0.75, `rgba(${r},${g},${b},0.16)`);
-  glow.addColorStop(0.9, `rgba(${r},${g},${b},0.32)`);
-  glow.addColorStop(1, `rgba(${r},${g},${b},0.48)`);
+  glow.addColorStop(0.35, `rgba(${r},${g},${b},0.06)`);
+  glow.addColorStop(0.62, `rgba(${r},${g},${b},0.22)`);
+  glow.addColorStop(0.82, `rgba(${r},${g},${b},0.45)`);
+  glow.addColorStop(1, `rgba(${r},${g},${b},0.7)`);
   ctx.fillStyle = glow;
   ctx.beginPath();
   ctx.arc(cx, cy, cropRadius, 0, Math.PI * 2);
   ctx.fill();
 
-  // Soft layered strokes feather glow inward from the ring (face stays clear).
-  const glowSteps = 10;
+  // Layered translucent strokes pull the halo glow inward over the photo.
+  const glowSteps = 14;
   for (let i = glowSteps; i >= 1; i -= 1) {
     const t = i / glowSteps;
     const strokeR = Math.max(2, ringCenterRadius - glowPx * t);
-    const alpha = 0.28 * (1 - t) * (1 - t);
-    if (alpha < 0.015) continue;
+    // Fall off quickly toward the center so the face stays readable.
+    const alpha = 0.4 * (1 - t) * (1 - t);
+    if (alpha < 0.02) continue;
     ctx.beginPath();
     ctx.arc(cx, cy, strokeR, 0, Math.PI * 2);
     ctx.strokeStyle = `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
-    ctx.lineWidth = Math.max(2, 8 * (1 - t) + 2);
+    ctx.lineWidth = Math.max(2, 10 * (1 - t) + 2);
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
     ctx.stroke();
@@ -245,12 +246,30 @@ export function loadHaloAvatarImage(url: string): Promise<HTMLImageElement> {
   });
 }
 
+/**
+ * Build a named PNG File so browsers don't save the blob as "unknown".
+ * Plain Blob object URLs often lose the download filename on Save / download.
+ */
+export function haloAvatarPngFile(blob: Blob, filename: string): File | Blob {
+  const safeName = String(filename || "").trim() || "zndtoshi-consensus-halo-neutral.png";
+  const pngBlob =
+    blob.type === "image/png" ? blob : new Blob([blob], { type: "image/png" });
+  if (typeof File !== "undefined") {
+    return new File([pngBlob], safeName, { type: "image/png" });
+  }
+  return pngBlob;
+}
+
 export function triggerHaloAvatarDownload(blob: Blob, filename: string): () => void {
-  const objectUrl = URL.createObjectURL(blob);
+  const safeName = String(filename || "").trim() || "zndtoshi-consensus-halo-neutral.png";
+  const file = haloAvatarPngFile(blob, safeName);
+  const objectUrl = URL.createObjectURL(file);
   const a = document.createElement("a");
   a.href = objectUrl;
-  a.download = filename;
+  a.download = safeName;
+  a.setAttribute("download", safeName);
   a.rel = "noopener";
+  a.style.display = "none";
   document.body.appendChild(a);
   a.click();
   a.remove();

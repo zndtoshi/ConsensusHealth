@@ -9,6 +9,7 @@ import {
 } from "../utils/haloAvatarAdmin";
 import {
   HALO_AVATAR_OUTPUT_SIZE,
+  haloAvatarPngFile,
   loadHaloAvatarImage,
   renderHaloAvatarPngBlob,
   triggerHaloAvatarDownload,
@@ -53,7 +54,9 @@ export function HaloAvatarModal({
         });
         if (cancelled) return;
         if (revokePreviewRef.current) revokePreviewRef.current();
-        const url = URL.createObjectURL(blob);
+        // Named File so Save-as / downloads are not titled "unknown".
+        const file = haloAvatarPngFile(blob, haloAvatarFilename(stanceKey));
+        const url = URL.createObjectURL(file);
         revokePreviewRef.current = () => URL.revokeObjectURL(url);
         setPreviewUrl(url);
       } catch (err) {
@@ -70,7 +73,7 @@ export function HaloAvatarModal({
     return () => {
       cancelled = true;
     };
-  }, [open, user, avatarSrc, haloColor]);
+  }, [open, user, avatarSrc, haloColor, stanceKey]);
 
   useEffect(() => {
     if (open) return undefined;
@@ -157,7 +160,7 @@ export function HaloAvatarModal({
           {previewUrl ? (
             <img
               src={previewUrl}
-              alt="Halo avatar preview"
+              alt={`Halo avatar preview (${haloAvatarFilename(stanceKey)})`}
               style={styles.previewImg}
             />
           ) : (

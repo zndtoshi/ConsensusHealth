@@ -62,6 +62,16 @@ test("filename contains normalized stance", () => {
   assert.equal(haloAvatarFilename("neutral"), "zndtoshi-consensus-halo-neutral.png");
 });
 
+test("haloAvatarPngFile attaches download name so browsers avoid unknown", async () => {
+  const { haloAvatarPngFile } = await import("./haloAvatarCanvas.ts");
+  const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "application/octet-stream" });
+  const named = haloAvatarPngFile(blob, "zndtoshi-consensus-halo-against.png");
+  assert.equal(named.type, "image/png");
+  if (typeof File !== "undefined" && named instanceof File) {
+    assert.equal(named.name, "zndtoshi-consensus-halo-against.png");
+  }
+});
+
 test("coverDrawRect preserves aspect with center cover (not contain)", () => {
   const wide = coverDrawRect(200, 100, 100);
   // Cover scales by the larger axis: height fills, width overflows.
