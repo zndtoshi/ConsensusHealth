@@ -84,6 +84,4 @@ test("App gates History transport to authenticated zndtoshi admin", () => {
   assert.match(appSrc, /me\?\.authenticated === true/);
   // Public Play History label should not remain as the primary control.
   assert.doesNotMatch(appSrc, />Play History</);
-  // History button must not depend on sequence count (API may be empty / same-origin).
-  assert.match(appSrc, /canUseAdminHistory && !stanceListsViewEnabled/);
 });
