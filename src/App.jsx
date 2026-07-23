@@ -6219,16 +6219,24 @@ export default function App() {
         )}
       </div>
       <div style={styles.bottomControls}>
-        <button type="button" className="toolbarBtn toolbarBtn--primary toolbarBtn--lg" onClick={openStatsModal}>Stats</button>
-        <button type="button" className="toolbarBtn toolbarBtn--primary toolbarBtn--lg" onClick={() => setShowDonateModal(true)}>Donate</button>
+        <button type="button" className="toolbarBtn" onClick={openStatsModal}>
+          Stats
+        </button>
+        <div style={styles.barDivider} aria-hidden="true" />
+        <button type="button" className="toolbarBtn" onClick={() => setShowDonateModal(true)}>
+          Donate
+        </button>
         {stancePlaybackSequenceCount > 0 && !stanceListsViewEnabled ? (
-          <button
-            type="button"
-            className="toolbarBtn toolbarBtn--primary toolbarBtn--lg"
-            onClick={() => (historyPlaybackPlaying ? stopHistoryPlayback() : beginHistoryPlayback())}
-          >
-            {historyPlaybackPlaying ? "Stop" : historyPlaybackHasFinishedOnce ? "Replay History" : "Play History"}
-          </button>
+          <>
+            <div style={styles.barDivider} aria-hidden="true" />
+            <button
+              type="button"
+              className="toolbarBtn"
+              onClick={() => (historyPlaybackPlaying ? stopHistoryPlayback() : beginHistoryPlayback())}
+            >
+              {historyPlaybackPlaying ? "Stop" : historyPlaybackHasFinishedOnce ? "Replay History" : "Play History"}
+            </button>
+          </>
         ) : null}
       </div>
       {showStatsModal && (
