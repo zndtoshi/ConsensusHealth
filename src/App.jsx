@@ -24,6 +24,18 @@ import { fetchCommunityUsers } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
 import { assertHaloAvatarAdmin, isHaloAvatarAdmin } from "./utils/haloAvatarAdmin";
 import { HaloAvatarModal } from "./components/HaloAvatarModal";
+import { AdminHistoryTransport } from "./components/AdminHistoryTransport";
+import {
+  computeHistoryStagingSlots,
+  easeHistoryFlight,
+  fillHistorySlots,
+  HISTORY_FLIGHT_MS,
+  HISTORY_HOLD_MS,
+  HISTORY_LAUNCH_STAGGER_MS,
+  HISTORY_STAGE_COUNT,
+  historyPlaybackComplete,
+  launchNextStagedAvatar,
+} from "./utils/adminHistoryPlayback";
 import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
 import { followersForAvatarSize } from "./utils/avatarSize";
 import { formatXJoinDate } from "./utils/xJoinDate";
@@ -1003,8 +1015,10 @@ export default function App() {
   const [equalAvatarSizeEnabled, setEqualAvatarSizeEnabled] = useState(false);
   const [dimOthersEnabled, setDimOthersEnabled] = useState(false);
   const [historyPlaybackPlaying, setHistoryPlaybackPlaying] = useState(false);
+  const [historyPlaybackPaused, setHistoryPlaybackPaused] = useState(false);
+  const [historyTransportOpen, setHistoryTransportOpen] = useState(false);
   const [historyPlaybackHasFinishedOnce, setHistoryPlaybackHasFinishedOnce] = useState(false);
-  /** Server-reported stance playback rows; null = not loaded (non-admin or not fetched). */
+  /** Server-reported stance playback rows; null = not loaded. */
   const [stancePlaybackSequenceCount, setStancePlaybackSequenceCount] = useState(null);
   const [pulseSelectedEnabled, setPulseSelectedEnabled] = useState(false);
   const [manualEditMode, setManualEditMode] = useState(false);
@@ -1020,16 +1034,18 @@ export default function App() {
   const mentionsRequestedRef = useRef(false);
   const historyPlaybackRef = useRef({
     active: false,
+    paused: false,
+    pauseAt: 0,
     sequence: [],
-    played: new Set(),
-    index: 0,
-    phase: "idle",
-    phaseStart: 0,
-    holdMs: 100,
-    moveMs: 280,
-    gapMs: 20,
+    slots: Array.from({ length: HISTORY_STAGE_COUNT }, () => null),
+    queueIndex: 0,
+    flying: [],
+    landed: new Set(),
+    holdUntil: 0,
+    nextLaunchAt: 0,
+    launching: false,
     rafId: 0,
-    currentHandle: null,
+    stagingSlots: [],
   });
   const newStancesIntroRef = useRef({
     active: false,
@@ -1379,9 +1395,16 @@ export default function App() {
   );
   const canViewAvatarStanceHistoryRef = useRef(false);
   canViewAvatarStanceHistoryRef.current = canViewAvatarStanceHistory;
+  // Admin-only staged history playback (bottom History control).
+  const canUseAdminHistory = useMemo(
+    () => me?.authenticated === true && isPrivilegedManualEditor(me?.handle),
+    [me?.authenticated, me?.handle]
+  );
+  const canUseAdminHistoryRef = useRef(false);
+  canUseAdminHistoryRef.current = canUseAdminHistory;
 
   useEffect(() => {
-    if (!API_BASE) {
+    if (!API_BASE || !canUseAdminHistory) {
       stancePlaybackItemsRef.current = [];
       setStancePlaybackSequenceCount(0);
       return;
@@ -1410,7 +1433,23 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canUseAdminHistory]);
+
+  useEffect(() => {
+    if (canUseAdminHistory) return;
+    setHistoryTransportOpen(false);
+    const pb = historyPlaybackRef.current;
+    if (pb.rafId) cancelAnimationFrame(pb.rafId);
+    pb.rafId = 0;
+    pb.active = false;
+    pb.paused = false;
+    pb.flying = [];
+    pb.slots = Array.from({ length: HISTORY_STAGE_COUNT }, () => null);
+    pb.landed = new Set();
+    pb.sequence = [];
+    setHistoryPlaybackPlaying(false);
+    setHistoryPlaybackPaused(false);
+  }, [canUseAdminHistory]);
 
   useEffect(
     () => () => {
@@ -4679,19 +4718,14 @@ export default function App() {
 
     const contributesToPlaybackFit = (n) => {
       if (!playbackActive) return true;
-      if (!n.hasUserStanceChange) return true;
       const h = normalizeHandle(n.handle);
-      return pb.played.has(h);
+      return pb.landed.has(h);
     };
 
     const playbackShowsWorldNode = (n) => {
       if (!playbackActive) return true;
-      if (!n.hasUserStanceChange) return true;
       const h = normalizeHandle(n.handle);
-      if (pb.played.has(h)) return true;
-      const cur = pb.currentHandle ? normalizeHandle(pb.currentHandle) : "";
-      if (cur === h && (pb.phase === "hold" || pb.phase === "move")) return false;
-      return false;
+      return pb.landed.has(h);
     };
 
     const selectionFxActive = selectionFxRef.current.handle != null;
@@ -5082,30 +5116,17 @@ export default function App() {
 
     ctx.restore();
 
-    if (playbackActive && pb.currentHandle && (pb.phase === "hold" || pb.phase === "move")) {
+    if (playbackActive) {
       const nowOv = performance.now();
-      const nh = normalizeHandle(pb.currentHandle);
-      const nin = nodes.find((nn) => normalizeHandle(nn.handle) === nh);
-      if (nin) {
+      const layout =
+        pb.stagingSlots?.length === HISTORY_STAGE_COUNT
+          ? pb.stagingSlots
+          : computeHistoryStagingSlots(HISTORY_STAGE_COUNT, cw, ch, headerHeightPx);
+
+      const drawOverlayAvatar = (nin, cx, cy, sidePx) => {
+        if (!nin || !Number.isFinite(cx) || !Number.isFinite(cy) || sidePx <= 1) return;
         const stanceOv = getNodeStance(nin, labels);
         const auraOv = stanceColor(stanceOv);
-        const finalCx = nin.x * scale + tx;
-        const finalCy = nin.y * scale + ty;
-        const finalSide = nin.side * scale;
-        const bigMult = 2.45;
-        const centerCx = cw / 2;
-        const centerCy = ch / 2;
-        const bigSide = Math.max(finalSide * bigMult, Math.min(cw, ch) * 0.2);
-        let cx = centerCx;
-        let cy = centerCy;
-        let sidePx = bigSide;
-        if (pb.phase === "move") {
-          const tm = pb.moveMs > 0 ? clamp((nowOv - pb.phaseStart) / pb.moveMs, 0, 1) : 1;
-          const e = tm < 0.5 ? 2 * tm * tm : 1 - (-2 * tm + 2) ** 2 / 2;
-          cx = centerCx + (finalCx - centerCx) * e;
-          cy = centerCy + (finalCy - centerCy) * e;
-          sidePx = bigSide + (finalSide - bigSide) * e;
-        }
         const drawX = cx - sidePx / 2;
         const drawY = cy - sidePx / 2;
         const rOv = Math.min(14, sidePx * 0.22);
@@ -5149,6 +5170,34 @@ export default function App() {
           ctx.rect(drawX, drawY, sidePx, sidePx);
         }
         ctx.stroke();
+      };
+
+      // Staged row (no background card).
+      for (let i = 0; i < pb.slots.length; i += 1) {
+        const occ = pb.slots[i];
+        const slot = layout[i];
+        if (!occ || !slot) continue;
+        const nin = nodes.find((nn) => normalizeHandle(nn.handle) === normalizeHandle(occ.handle));
+        if (!nin) continue;
+        drawOverlayAvatar(nin, slot.cx, slot.cy, slot.side);
+      }
+
+      // In-flight avatars toward final stance positions.
+      for (const flight of pb.flying || []) {
+        const nin = nodes.find((nn) => normalizeHandle(nn.handle) === normalizeHandle(flight.handle));
+        if (!nin) continue;
+        const finalCx = nin.x * scale + tx;
+        const finalCy = nin.y * scale + ty;
+        const finalSide = nin.side * scale;
+        const dur = Math.max(1, flight.endMs - flight.startMs);
+        const t = pb.paused
+          ? clamp((pb.pauseAt - flight.startMs) / dur, 0, 1)
+          : clamp((nowOv - flight.startMs) / dur, 0, 1);
+        const e = easeHistoryFlight(t);
+        const cx = flight.fromCx + (finalCx - flight.fromCx) * e;
+        const cy = flight.fromCy + (finalCy - flight.fromCy) * e;
+        const sidePx = flight.fromSide + (finalSide - flight.fromSide) * e;
+        drawOverlayAvatar(nin, cx, cy, sidePx);
       }
     }
 
@@ -5178,7 +5227,7 @@ export default function App() {
       const h = normalizeHandle(it.handle);
       if (!h || seen.has(h)) continue;
       const n = nodeList.find((nn) => normalizeHandle(nn.handle) === h);
-      if (!n || !n.hasUserStanceChange) continue;
+      if (!n) continue;
       const stance = getNodeStance(n, labelsRef.current);
       if (!stance) continue;
       if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
@@ -5188,57 +5237,93 @@ export default function App() {
     return out;
   }
 
-  function historyPlaybackAdvance(pb, now) {
-    while (pb.index < pb.sequence.length) {
-      const item = pb.sequence[pb.index];
-      const h = normalizeHandle(item?.handle);
-      const n = nodesRef.current.find((nn) => normalizeHandle(nn.handle) === h);
-      pb.index += 1;
-      if (!n || !n.hasUserStanceChange) continue;
-      const stance = getNodeStance(n, labelsRef.current);
-      if (!stance || !Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
-      pb.currentHandle = n.handle;
-      pb.phase = "hold";
-      pb.phaseStart = now;
-      return true;
-    }
-    return false;
+  function historyPlaybackFinish() {
+    const pb = historyPlaybackRef.current;
+    if (pb.rafId) cancelAnimationFrame(pb.rafId);
+    pb.rafId = 0;
+    pb.active = false;
+    pb.paused = false;
+    pb.pauseAt = 0;
+    pb.flying = [];
+    pb.slots = Array.from({ length: HISTORY_STAGE_COUNT }, () => null);
+    pb.queueIndex = 0;
+    pb.landed = new Set();
+    pb.sequence = [];
+    pb.launching = false;
+    setHistoryPlaybackPlaying(false);
+    setHistoryPlaybackPaused(false);
+    setHistoryPlaybackHasFinishedOnce(true);
+    drawRef.current();
   }
 
   function historyPlaybackTick() {
     const pb = historyPlaybackRef.current;
     if (!pb.active) return;
+    if (pb.paused) return;
+
     const now = performance.now();
-    const elapsed = now - pb.phaseStart;
-    if (pb.phase === "hold") {
-      if (elapsed >= pb.holdMs) {
-        pb.phase = "move";
-        pb.phaseStart = now;
-      }
-    } else if (pb.phase === "move") {
-      if (elapsed >= pb.moveMs) {
-        const ch = pb.currentHandle;
-        if (ch) pb.played.add(normalizeHandle(ch));
-        pb.phase = "gap";
-        pb.phaseStart = now;
-      }
-    } else if (pb.phase === "gap") {
-      if (elapsed >= pb.gapMs) {
-        if (!historyPlaybackAdvance(pb, now)) {
-          if (pb.rafId) cancelAnimationFrame(pb.rafId);
-          pb.rafId = 0;
-          pb.active = false;
-          pb.currentHandle = null;
-          pb.phase = "idle";
-          pb.played = new Set();
-          pb.sequence = [];
-          setHistoryPlaybackHasFinishedOnce(true);
-          setHistoryPlaybackPlaying(false);
-          drawRef.current();
-          return;
+    const cw = canvasRef.current?.clientWidth || w;
+    const ch = canvasRef.current?.clientHeight || h;
+    pb.stagingSlots = computeHistoryStagingSlots(HISTORY_STAGE_COUNT, cw, ch, headerHeightPx);
+
+    // Complete finished flights → land in graph.
+    if (pb.flying.length) {
+      const stillFlying = [];
+      for (const flight of pb.flying) {
+        if (now >= flight.endMs) {
+          pb.landed.add(normalizeHandle(flight.handle));
+        } else {
+          stillFlying.push(flight);
         }
       }
+      pb.flying = stillFlying;
     }
+
+    // After initial hold, launch staged avatars on a 200ms stagger; refill vacated slots.
+    if (!pb.launching && now >= pb.holdUntil) {
+      pb.launching = true;
+      pb.nextLaunchAt = now;
+    }
+    if (pb.launching) {
+      while (now >= pb.nextLaunchAt) {
+        const stagedCount = pb.slots.filter(Boolean).length;
+        if (stagedCount === 0 && pb.queueIndex >= pb.sequence.length) break;
+        if (stagedCount === 0) break;
+        const layout = pb.stagingSlots;
+        const result = launchNextStagedAvatar({
+          slots: pb.slots,
+          sequence: pb.sequence,
+          queueIndex: pb.queueIndex,
+          now,
+          flightMs: HISTORY_FLIGHT_MS,
+        });
+        pb.queueIndex = result.queueIndex;
+        if (!result.launched) break;
+        const slot = layout[result.launched.slotIndex];
+        pb.flying.push({
+          ...result.launched,
+          fromCx: slot?.cx ?? cw / 2,
+          fromCy: slot?.cy ?? ch * 0.22,
+          fromSide: slot?.side ?? 52,
+        });
+        pb.nextLaunchAt += HISTORY_LAUNCH_STAGGER_MS;
+      }
+    }
+
+    const stagedCount = pb.slots.filter(Boolean).length;
+    if (
+      historyPlaybackComplete({
+        sequenceLength: pb.sequence.length,
+        landedCount: pb.landed.size,
+        flyingCount: pb.flying.length,
+        stagedCount,
+        queueIndex: pb.queueIndex,
+      })
+    ) {
+      historyPlaybackFinish();
+      return;
+    }
+
     drawRef.current();
     pb.rafId = requestAnimationFrame(historyPlaybackTick);
   }
@@ -5248,18 +5333,58 @@ export default function App() {
     if (pb.rafId) cancelAnimationFrame(pb.rafId);
     pb.rafId = 0;
     pb.active = false;
-    pb.currentHandle = null;
-    pb.phase = "idle";
-    pb.played = new Set();
+    pb.paused = false;
+    pb.pauseAt = 0;
+    pb.flying = [];
+    pb.slots = Array.from({ length: HISTORY_STAGE_COUNT }, () => null);
+    pb.queueIndex = 0;
+    pb.landed = new Set();
     pb.sequence = [];
-    pb.index = 0;
+    pb.launching = false;
     setHistoryPlaybackPlaying(false);
+    setHistoryPlaybackPaused(false);
     drawRef.current();
+  }
+
+  function pauseHistoryPlayback() {
+    const pb = historyPlaybackRef.current;
+    if (!pb.active || pb.paused) return;
+    pb.paused = true;
+    pb.pauseAt = performance.now();
+    if (pb.rafId) cancelAnimationFrame(pb.rafId);
+    pb.rafId = 0;
+    setHistoryPlaybackPaused(true);
+    setHistoryPlaybackPlaying(true);
+    drawRef.current();
+  }
+
+  function resumeHistoryPlayback() {
+    const pb = historyPlaybackRef.current;
+    if (!pb.active || !pb.paused) return;
+    const dt = performance.now() - pb.pauseAt;
+    pb.holdUntil += dt;
+    pb.nextLaunchAt += dt;
+    for (const flight of pb.flying) {
+      flight.startMs += dt;
+      flight.endMs += dt;
+    }
+    pb.paused = false;
+    pb.pauseAt = 0;
+    setHistoryPlaybackPaused(false);
+    setHistoryPlaybackPlaying(true);
+    pb.rafId = requestAnimationFrame(historyPlaybackTick);
+    drawRef.current();
+  }
+
+  function rewindHistoryPlayback() {
+    stopHistoryPlayback();
+    beginHistoryPlayback();
   }
 
   function applyStanceListsView(on) {
     if (on) {
       stopHistoryPlayback();
+      setHistoryTransportOpen(false);
       setPlebsMode(false);
       setInfluencersMode(false);
       setManualEditMode(false);
@@ -5271,41 +5396,43 @@ export default function App() {
   }
 
   function beginHistoryPlayback() {
+    if (!canUseAdminHistoryRef.current) return;
     const pb = historyPlaybackRef.current;
     if (pb.rafId) cancelAnimationFrame(pb.rafId);
     pb.rafId = 0;
-    pb.active = false;
-    pb.currentHandle = null;
-    pb.phase = "idle";
-    pb.played = new Set();
-    pb.sequence = [];
-    pb.index = 0;
+
+    if (newStancesIntroRef.current.active) {
+      // Don't overlap with new-stances intro.
+      return;
+    }
 
     const sequence = historyPlaybackResolvePlayable();
     if (!sequence.length) return;
 
-    const count = sequence.length;
-    const totalBudget = 60000;
-    const stepDuration = clamp(Math.round(totalBudget / count), 200, 520);
-    const holdMs = clamp(Math.round(stepDuration * 0.24), 80, 120);
-    const moveMs = clamp(Math.round(stepDuration * 0.62), 200, 340);
-    const gapMs = Math.max(12, stepDuration - holdMs - moveMs);
+    const cw = canvasRef.current?.clientWidth || w;
+    const ch = canvasRef.current?.clientHeight || h;
+    const now = performance.now();
 
     pb.active = true;
+    pb.paused = false;
+    pb.pauseAt = 0;
     pb.sequence = sequence;
-    pb.index = 0;
-    pb.holdMs = holdMs;
-    pb.moveMs = moveMs;
-    pb.gapMs = gapMs;
-    setHistoryPlaybackPlaying(true);
+    pb.slots = Array.from({ length: HISTORY_STAGE_COUNT }, () => null);
+    pb.queueIndex = fillHistorySlots({
+      slots: pb.slots,
+      sequence,
+      queueIndex: 0,
+    });
+    pb.flying = [];
+    pb.landed = new Set();
+    pb.holdUntil = now + HISTORY_HOLD_MS;
+    pb.nextLaunchAt = pb.holdUntil;
+    pb.launching = false;
+    pb.stagingSlots = computeHistoryStagingSlots(HISTORY_STAGE_COUNT, cw, ch, headerHeightPx);
 
-    const t0 = performance.now();
-    if (!historyPlaybackAdvance(pb, t0)) {
-      pb.active = false;
-      setHistoryPlaybackPlaying(false);
-      drawRef.current();
-      return;
-    }
+    setHistoryTransportOpen(true);
+    setHistoryPlaybackPlaying(true);
+    setHistoryPlaybackPaused(false);
     pb.rafId = requestAnimationFrame(historyPlaybackTick);
     drawRef.current();
   }
@@ -6012,7 +6139,7 @@ export default function App() {
                   ...styles.canvas,
                   touchAction: "none",
                   cursor: manualEditMode && isPrivilegedEditor ? "crosshair" : "default",
-                  pointerEvents: historyPlaybackPlaying ? "none" : "auto",
+                  pointerEvents: historyPlaybackPlaying || historyPlaybackPaused ? "none" : "auto",
                 }}
               />
               {joinDateFilterActive && visibleAccounts.length === 0 ? (
@@ -6226,16 +6353,42 @@ export default function App() {
         <button type="button" className="toolbarBtn" onClick={() => setShowDonateModal(true)}>
           Donate
         </button>
-        {stancePlaybackSequenceCount > 0 && !stanceListsViewEnabled ? (
+        {canUseAdminHistory && stancePlaybackSequenceCount > 0 && !stanceListsViewEnabled ? (
           <>
             <div style={styles.barDivider} aria-hidden="true" />
-            <button
-              type="button"
-              className="toolbarBtn"
-              onClick={() => (historyPlaybackPlaying ? stopHistoryPlayback() : beginHistoryPlayback())}
-            >
-              {historyPlaybackPlaying ? "Stop" : historyPlaybackHasFinishedOnce ? "Replay History" : "Play History"}
-            </button>
+            <div id="admin-history-transport" style={{ position: "relative", display: "inline-flex" }}>
+              <button
+                type="button"
+                className="toolbarBtn"
+                onClick={() => {
+                  setHistoryTransportOpen((v) => {
+                    if (v) {
+                      stopHistoryPlayback();
+                      return false;
+                    }
+                    return true;
+                  });
+                }}
+                aria-expanded={historyTransportOpen}
+                title="History"
+              >
+                History
+              </button>
+              <AdminHistoryTransport
+                open={historyTransportOpen}
+                playing={historyPlaybackPlaying && !historyPlaybackPaused}
+                paused={historyPlaybackPaused}
+                onPlay={() => {
+                  if (historyPlaybackPaused) resumeHistoryPlayback();
+                  else beginHistoryPlayback();
+                }}
+                onPause={pauseHistoryPlayback}
+                onStop={() => {
+                  stopHistoryPlayback();
+                }}
+                onRewind={rewindHistoryPlayback}
+              />
+            </div>
           </>
         ) : null}
       </div>
