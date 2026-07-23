@@ -9,7 +9,7 @@ export const HALO_AVATAR_OUTPUT_SIZE = 1024;
 export const HALO_AVATAR_EDGE_PAD = 56;
 
 /** Inward glow depth at 1024×1024 (within 25–45 px guidance). */
-export const HALO_AVATAR_GLOW_PX = 42;
+export const HALO_AVATAR_GLOW_PX = 45;
 
 export const HALO_AVATAR_RING_WIDTH = 12;
 
@@ -122,33 +122,46 @@ export function drawHaloAvatar(
     cover.dh
   );
 
-  // Inward glow over the avatar (transparent center → stance color near rim).
+  // Inward glow over the avatar (strong near rim, clear face center).
   const inner = Math.max(0, radius - glowPx);
   const glow = ctx.createRadialGradient(cx, cy, inner, cx, cy, radius);
   glow.addColorStop(0, `rgba(${r},${g},${b},0)`);
-  glow.addColorStop(0.4, `rgba(${r},${g},${b},0.1)`);
-  glow.addColorStop(0.72, `rgba(${r},${g},${b},0.34)`);
-  glow.addColorStop(1, `rgba(${r},${g},${b},0.62)`);
+  glow.addColorStop(0.35, `rgba(${r},${g},${b},0.05)`);
+  glow.addColorStop(0.62, `rgba(${r},${g},${b},0.22)`);
+  glow.addColorStop(0.82, `rgba(${r},${g},${b},0.48)`);
+  glow.addColorStop(1, `rgba(${r},${g},${b},0.78)`);
   ctx.fillStyle = glow;
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
   ctx.fill();
+
+  // Layered translucent strokes pull the halo glow inward over the photo.
+  const ringCenter = radius - ringWidth / 2;
+  const glowSteps = 14;
+  for (let i = glowSteps; i >= 1; i -= 1) {
+    const t = i / glowSteps;
+    const inset = glowPx * t;
+    const strokeR = Math.max(2, ringCenter - inset);
+    // Fall off quickly toward the center so the face stays readable.
+    const alpha = 0.42 * (1 - t) * (1 - t);
+    if (alpha < 0.02) continue;
+    ctx.beginPath();
+    ctx.arc(cx, cy, strokeR, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
+    ctx.lineWidth = Math.max(2, 10 * (1 - t) + 2);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.stroke();
+  }
   ctx.restore();
 
   // Crisp stance ring just inside the circular crop boundary.
   ctx.beginPath();
-  ctx.arc(cx, cy, radius - ringWidth / 2, 0, Math.PI * 2);
+  ctx.arc(cx, cy, ringCenter, 0, Math.PI * 2);
   ctx.strokeStyle = `rgb(${r},${g},${b})`;
   ctx.lineWidth = ringWidth;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  ctx.stroke();
-
-  // Soft inner edge on the ring so it sits on the photo cleanly.
-  ctx.beginPath();
-  ctx.arc(cx, cy, radius - ringWidth - 1, 0, Math.PI * 2);
-  ctx.strokeStyle = `rgba(${r},${g},${b},0.4)`;
-  ctx.lineWidth = 2.5;
   ctx.stroke();
 
   ctx.restore();
