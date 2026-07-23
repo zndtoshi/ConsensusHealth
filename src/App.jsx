@@ -1404,7 +1404,7 @@ export default function App() {
   canUseAdminHistoryRef.current = canUseAdminHistory;
 
   useEffect(() => {
-    if (!API_BASE || !canUseAdminHistory) {
+    if (!canUseAdminHistory) {
       stancePlaybackItemsRef.current = [];
       setStancePlaybackSequenceCount(0);
       return;
@@ -1412,6 +1412,7 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
+        // Same-origin relative URL when VITE_API_BASE is empty (prod / vite proxy).
         const res = await fetch(`${API_BASE}/api/stance-playback-sequence`, { credentials: "include" });
         if (cancelled) return;
         if (!res.ok) {
@@ -5220,19 +5221,33 @@ export default function App() {
   function historyPlaybackResolvePlayable() {
     const raw = stancePlaybackItemsRef.current;
     const nodeList = nodesRef.current || [];
-    if (!raw?.length || !nodeList.length) return [];
+    if (!nodeList.length) return [];
     const out = [];
     const seen = new Set();
-    for (const it of raw) {
-      const h = normalizeHandle(it.handle);
-      if (!h || seen.has(h)) continue;
-      const n = nodeList.find((nn) => normalizeHandle(nn.handle) === h);
-      if (!n) continue;
+
+    const pushNode = (n) => {
+      const h = normalizeHandle(n?.handle);
+      if (!h || seen.has(h)) return;
       const stance = getNodeStance(n, labelsRef.current);
-      if (!stance) continue;
-      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+      if (!stance) return;
+      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) return;
       seen.add(h);
       out.push({ handle: n.handle });
+    };
+
+    // Prefer chronological API order when available.
+    if (Array.isArray(raw) && raw.length) {
+      for (const it of raw) {
+        const h = normalizeHandle(it.handle);
+        if (!h) continue;
+        const n = nodeList.find((nn) => normalizeHandle(nn.handle) === h);
+        if (n) pushNode(n);
+      }
+    }
+
+    // Fallback: every stanced graph node (keeps History usable if API is empty).
+    if (!out.length) {
+      for (const n of nodeList) pushNode(n);
     }
     return out;
   }
@@ -6353,7 +6368,7 @@ export default function App() {
         <button type="button" className="toolbarBtn" onClick={() => setShowDonateModal(true)}>
           Donate
         </button>
-        {canUseAdminHistory && stancePlaybackSequenceCount > 0 && !stanceListsViewEnabled ? (
+        {canUseAdminHistory && !stanceListsViewEnabled ? (
           <>
             <div style={styles.barDivider} aria-hidden="true" />
             <div id="admin-history-transport" style={{ position: "relative", display: "inline-flex" }}>
