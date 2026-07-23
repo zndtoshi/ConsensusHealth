@@ -23,8 +23,8 @@ export function StanceChoiceCard({
   const title = mode === "change" ? "Change your stance" : "Choose your stance";
   const subtitle =
     mode === "change"
-      ? "Pick a new position on Consensus Health."
-      : "Welcome. Where do you stand on Consensus Health?";
+      ? "Pick a new position on BIP-110."
+      : "Welcome. Where do you stand on BIP-110?";
   const canDismiss = mode === "change" && typeof onDismiss === "function";
 
   return (
