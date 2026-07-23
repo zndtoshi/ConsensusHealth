@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   assertHaloAvatarAdmin,
+  HALO_AVATAR_DOWNLOAD_ENABLED,
   haloAvatarFilename,
   haloColorForStance,
   isHaloAvatarAdmin,
@@ -24,26 +25,25 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const appSrc = readFileSync(join(root, "src", "App.jsx"), "utf8");
 const modalSrc = readFileSync(join(root, "src", "components", "HaloAvatarModal.jsx"), "utf8");
 
-test("isHaloAvatarAdmin accepts only authenticated zndtoshi", () => {
-  assert.equal(isHaloAvatarAdmin({ authenticated: true, handle: "zndtoshi" }), true);
-  assert.equal(isHaloAvatarAdmin({ authenticated: true, handle: "@zndtoshi" }), true);
-  assert.equal(isHaloAvatarAdmin({ authenticated: true, handle: "ZndToshi " }), true);
-  assert.equal(isHaloAvatarAdmin({ authenticated: true, username: "@ZNDTOSHI" }), true);
+test("halo avatar download feature is disabled", () => {
+  assert.equal(HALO_AVATAR_DOWNLOAD_ENABLED, false);
 });
 
-test("isHaloAvatarAdmin rejects other users and logged-out state", () => {
+test("isHaloAvatarAdmin is false for everyone while feature is disabled", () => {
+  assert.equal(isHaloAvatarAdmin({ authenticated: true, handle: "zndtoshi" }), false);
+  assert.equal(isHaloAvatarAdmin({ authenticated: true, handle: "@zndtoshi" }), false);
+  assert.equal(isHaloAvatarAdmin({ authenticated: true, handle: "ZndToshi " }), false);
+  assert.equal(isHaloAvatarAdmin({ authenticated: true, username: "@ZNDTOSHI" }), false);
   assert.equal(isHaloAvatarAdmin(null), false);
   assert.equal(isHaloAvatarAdmin(undefined), false);
   assert.equal(isHaloAvatarAdmin({ authenticated: false, handle: "zndtoshi" }), false);
   assert.equal(isHaloAvatarAdmin({ authenticated: true, handle: "alice" }), false);
-  assert.equal(isHaloAvatarAdmin({ authenticated: true, handle: "zndtoshi_alt" }), false);
-  assert.equal(isHaloAvatarAdmin({ handle: "zndtoshi" }), false);
 });
 
-test("assertHaloAvatarAdmin rejects unauthorized generation", () => {
+test("assertHaloAvatarAdmin rejects generation while feature is disabled", () => {
   assert.throws(() => assertHaloAvatarAdmin({ authenticated: true, handle: "alice" }), /authorized admin/);
   assert.throws(() => assertHaloAvatarAdmin(null), /authorized admin/);
-  assert.doesNotThrow(() => assertHaloAvatarAdmin({ authenticated: true, handle: "@zndtoshi" }));
+  assert.throws(() => assertHaloAvatarAdmin({ authenticated: true, handle: "@zndtoshi" }), /authorized admin/);
 });
 
 test("halo colors map approve/neutral/against via STANCE_COLORS", () => {

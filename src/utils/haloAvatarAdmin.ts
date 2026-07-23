@@ -2,6 +2,12 @@
 
 import { STANCE_COLORS, type StanceKey } from "./stanceColors.js";
 
+/**
+ * Kill switch for the Account-menu “Download Halo Avatar” feature.
+ * Set to true to re-enable for the authorized admin handle.
+ */
+export const HALO_AVATAR_DOWNLOAD_ENABLED = false;
+
 export type HaloAvatarUserLike = {
   authenticated?: unknown;
   handle?: unknown;
@@ -16,8 +22,12 @@ function normalizeHandle(value: unknown): string {
     .replace(/^@+/, "");
 }
 
-/** True only for the authenticated X account with handle exactly "zndtoshi". */
+/**
+ * True only when the feature is enabled and the authenticated X account
+ * handle is exactly "zndtoshi".
+ */
 export function isHaloAvatarAdmin(user: HaloAvatarUserLike): boolean {
+  if (!HALO_AVATAR_DOWNLOAD_ENABLED) return false;
   if (!user || user.authenticated !== true) return false;
   const handle = normalizeHandle(user.handle ?? user.username ?? user.screen_name);
   return handle === "zndtoshi";
