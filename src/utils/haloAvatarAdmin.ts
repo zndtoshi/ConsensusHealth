@@ -36,8 +36,13 @@ export function haloColorForStance(stance: StanceKey): string {
   return STANCE_COLORS[stance];
 }
 
-export function haloAvatarFilename(stance: StanceKey): string {
-  return `zndtoshi-consensus-halo-${normalizeHaloStance(stance)}.png`;
+/**
+ * Download basename for the exporting account.
+ * `{handle}-consensus-halo-{stance}.png`
+ */
+export function haloAvatarFilename(stance: StanceKey, handle?: unknown): string {
+  const h = normalizeHandle(handle) || "zndtoshi";
+  return `${h}-consensus-halo-${normalizeHaloStance(stance)}.png`;
 }
 
 /**

@@ -12,8 +12,14 @@ import {
   haloAvatarPngFile,
   loadHaloAvatarImage,
   renderHaloAvatarPngBlob,
-  triggerHaloAvatarDownload,
 } from "../utils/haloAvatarCanvas";
+
+function accountHandle(user) {
+  return String(user?.handle ?? user?.username ?? user?.screen_name ?? "")
+    .trim()
+    .replace(/^@+/, "")
+    .toLowerCase();
+}
 
 /**
  * Compact admin-only modal: preview + download a stance-halo PNG of the
@@ -30,10 +36,13 @@ export function HaloAvatarModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const revokePreviewRef = useRef(null);
-  const revokeDownloadRef = useRef(null);
 
   const stanceKey = useMemo(() => normalizeHaloStance(stance), [stance]);
   const haloColor = useMemo(() => haloColorForStance(stanceKey), [stanceKey]);
+  const downloadName = useMemo(
+    () => haloAvatarFilename(stanceKey, accountHandle(user)),
+    [stanceKey, user]
+  );
 
   useEffect(() => {
     if (!open) return undefined;
@@ -54,8 +63,8 @@ export function HaloAvatarModal({
         });
         if (cancelled) return;
         if (revokePreviewRef.current) revokePreviewRef.current();
-        // Named File so Save-as / downloads are not titled "unknown".
-        const file = haloAvatarPngFile(blob, haloAvatarFilename(stanceKey));
+        // Named File + object URL used by the <a download> control (no async on click).
+        const file = haloAvatarPngFile(blob, downloadName);
         const url = URL.createObjectURL(file);
         revokePreviewRef.current = () => URL.revokeObjectURL(url);
         setPreviewUrl(url);
@@ -73,17 +82,13 @@ export function HaloAvatarModal({
     return () => {
       cancelled = true;
     };
-  }, [open, user, avatarSrc, haloColor, stanceKey]);
+  }, [open, user, avatarSrc, haloColor, downloadName]);
 
   useEffect(() => {
     if (open) return undefined;
     if (revokePreviewRef.current) {
       revokePreviewRef.current();
       revokePreviewRef.current = null;
-    }
-    if (revokeDownloadRef.current) {
-      revokeDownloadRef.current();
-      revokeDownloadRef.current = null;
     }
     setPreviewUrl("");
     setError("");
@@ -103,31 +108,19 @@ export function HaloAvatarModal({
   if (!open) return null;
   if (!isHaloAvatarAdmin(user)) return null;
 
-  async function onDownload() {
+  function onDownloadClick(e) {
     setError("");
-    setBusy(true);
     try {
       assertHaloAvatarAdmin(user);
-      if (!avatarSrc) throw new Error("No avatar URL is available for export.");
-      const img = await loadHaloAvatarImage(avatarSrc);
-      const blob = await renderHaloAvatarPngBlob({
-        image: img,
-        stanceColor: haloColor,
-        size: HALO_AVATAR_OUTPUT_SIZE,
-      });
-      if (revokeDownloadRef.current) revokeDownloadRef.current();
-      const cleanup = triggerHaloAvatarDownload(blob, haloAvatarFilename(stanceKey));
-      revokeDownloadRef.current = cleanup;
-      window.setTimeout(() => {
-        if (revokeDownloadRef.current === cleanup) {
-          cleanup();
-          revokeDownloadRef.current = null;
-        }
-      }, 60_000);
+      if (!previewUrl) {
+        e.preventDefault();
+        setError("Preview is not ready yet. Wait a moment and try again.");
+      }
+      // Do not await anything here. Native <a download={name} href={blobUrl}>
+      // must run under the user gesture or Chrome saves as "untitled".
     } catch (err) {
+      e.preventDefault();
       setError(err?.message || "Unable to download halo avatar PNG.");
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -160,7 +153,7 @@ export function HaloAvatarModal({
           {previewUrl ? (
             <img
               src={previewUrl}
-              alt={`Halo avatar preview (${haloAvatarFilename(stanceKey)})`}
+              alt={`Halo avatar preview (${downloadName})`}
               style={styles.previewImg}
             />
           ) : (
@@ -182,14 +175,24 @@ export function HaloAvatarModal({
         ) : null}
 
         <div style={styles.actions}>
-          <button
-            type="button"
+          {/*
+            Real anchor + download attribute under the user click. Async regenerate
+            after await loses user activation and Chrome saves as "untitled".
+          */}
+          <a
             className="toolbarBtn toolbarBtn--primary"
-            onClick={onDownload}
-            disabled={busy || !previewUrl}
+            href={previewUrl || "#"}
+            download={downloadName}
+            aria-disabled={busy || !previewUrl ? "true" : "false"}
+            onClick={onDownloadClick}
+            style={{
+              ...styles.downloadLink,
+              opacity: busy || !previewUrl ? 0.55 : 1,
+              pointerEvents: busy || !previewUrl ? "none" : "auto",
+            }}
           >
             {busy ? "Working…" : "Download PNG"}
-          </button>
+          </a>
         </div>
       </div>
     </div>
@@ -286,5 +289,11 @@ const styles = {
   actions: {
     display: "flex",
     justifyContent: "flex-end",
+  },
+  downloadLink: {
+    textDecoration: "none",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
   },
 };

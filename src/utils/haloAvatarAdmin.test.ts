@@ -55,11 +55,12 @@ test("halo colors map approve/neutral/against via STANCE_COLORS", () => {
   assert.equal(normalizeHaloStance(""), "neutral");
 });
 
-test("filename contains normalized stance", () => {
+test("filename contains downloading account handle and normalized stance", () => {
   assert.equal(haloAvatarFilename("against"), "zndtoshi-consensus-halo-against.png");
-  assert.equal(haloAvatarFilename("Approve"), "zndtoshi-consensus-halo-approve.png");
-  assert.equal(haloAvatarFilename("support"), "zndtoshi-consensus-halo-approve.png");
-  assert.equal(haloAvatarFilename("neutral"), "zndtoshi-consensus-halo-neutral.png");
+  assert.equal(haloAvatarFilename("against", "zndtoshi"), "zndtoshi-consensus-halo-against.png");
+  assert.equal(haloAvatarFilename("Approve", "@ZndToshi"), "zndtoshi-consensus-halo-approve.png");
+  assert.equal(haloAvatarFilename("support", "alice"), "alice-consensus-halo-approve.png");
+  assert.equal(haloAvatarFilename("neutral", "bob"), "bob-consensus-halo-neutral.png");
 });
 
 test("haloAvatarPngFile attaches download name so browsers avoid unknown", async () => {
@@ -214,4 +215,12 @@ test("HaloAvatarModal re-checks admin auth before download", () => {
   assert.match(modalSrc, /assertHaloAvatarAdmin/);
   assert.match(modalSrc, /renderHaloAvatarPngBlob|drawHaloAvatar/);
   assert.match(modalSrc, /Download PNG/);
+});
+
+test("HaloAvatarModal uses native anchor download with account filename", () => {
+  // Must not regenerate via await inside the click path (loses filename → untitled).
+  assert.match(modalSrc, /download=\{downloadName\}/);
+  assert.match(modalSrc, /haloAvatarFilename\(stanceKey/);
+  assert.match(modalSrc, /<a[\s\S]*download=\{downloadName\}/);
+  assert.doesNotMatch(modalSrc, /async function onDownload/);
 });
