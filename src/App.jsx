@@ -26,10 +26,6 @@ import { fetchCommunityUsersResult } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor, removeAccountFromList } from "./utils/manualEditState";
 import { assertHaloAvatarAdmin, isHaloAvatarAdmin } from "./utils/haloAvatarAdmin";
 import { HaloAvatarModal } from "./components/HaloAvatarModal";
-import { GalaxyHeaderNav } from "./components/GalaxyHeaderNav";
-import { DistantGalaxies } from "./components/DistantGalaxies";
-import { EdgeGalaxyNav } from "./components/EdgeGalaxyNav";
-import { GalaxyTravelOverlay } from "./components/GalaxyTravelOverlay";
 import {
   DEFAULT_PROPOSAL_ID,
   FALLBACK_PROPOSALS,
@@ -42,6 +38,7 @@ import {
   getAdjacent,
 } from "./utils/proposalNavigation";
 import { fetchAccessibleProposals } from "./api/proposals";
+import { usePrefersReducedMotion } from "./hooks/usePrefersReducedMotion";
 import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
 import { followersForAvatarSize } from "./utils/avatarSize";
 import { formatXJoinDate } from "./utils/xJoinDate";
@@ -164,6 +161,9 @@ const StatisticsModal = lazy(() =>
 );
 const BitcoinQr = lazy(() =>
   import("./components/BitcoinQr").then((m) => ({ default: m.BitcoinQr }))
+);
+const ConsensusUniverseChrome = lazy(() =>
+  import("./features/consensusUniverse/ConsensusUniverseChrome")
 );
 
 function toInt(v) {
@@ -972,10 +972,7 @@ export default function App() {
   const proposalReloadAbortRef = useRef(null);
   const parallaxLayerRef = useRef(null);
   const travelCleanupRef = useRef(null);
-  const prefersGalaxyReducedMotion =
-    typeof window !== "undefined" &&
-    window.matchMedia &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const prefersGalaxyReducedMotion = usePrefersReducedMotion();
   const [proposalCatalog, setProposalCatalog] = useState(FALLBACK_PROPOSALS.filter((p) => !p.adminOnly));
   const [proposalCatalogReady, setProposalCatalogReady] = useState(false);
   const showClusterHalo = useMemo(
@@ -5922,12 +5919,15 @@ export default function App() {
         </div>
         <div style={styles.headerCenter}>
           {adminGalaxiesEnabled ? (
-            <GalaxyHeaderNav
-              proposalId={activeProposalId}
-              catalog={proposalCatalog}
-              disabled={Boolean(galaxyTravel)}
-              onNavigate={travelToGalaxy}
-            />
+            <Suspense fallback={<div className="galaxyHeaderNav" aria-hidden="true" />}>
+              <ConsensusUniverseChrome
+                slot="header"
+                proposalId={activeProposalId}
+                catalog={proposalCatalog}
+                disabled={Boolean(galaxyTravel)}
+                onNavigate={travelToGalaxy}
+              />
+            </Suspense>
           ) : null}
           {selectedHandle && (
             <>
@@ -6248,29 +6248,20 @@ export default function App() {
                 </div>
               ) : null}
               {adminGalaxiesEnabled ? (
-                <>
-                  <div ref={parallaxLayerRef} className="galaxyParallaxLayer" aria-hidden="true" />
-                  <DistantGalaxies
-                    activeProposalId={activeProposalId}
-                    catalog={proposalCatalog}
-                    disabled={Boolean(galaxyTravel)}
-                    onNavigate={travelToGalaxy}
-                    reducedMotion={prefersGalaxyReducedMotion}
-                  />
-                  <EdgeGalaxyNav
+                <Suspense fallback={null}>
+                  <ConsensusUniverseChrome
+                    slot="overlays"
                     proposalId={activeProposalId}
                     catalog={proposalCatalog}
                     disabled={Boolean(galaxyTravel)}
                     onNavigate={travelToGalaxy}
-                  />
-                  <GalaxyTravelOverlay
-                    active={Boolean(galaxyTravel)}
+                    reducedMotion={prefersGalaxyReducedMotion}
+                    parallaxRef={parallaxLayerRef}
+                    travel={galaxyTravel}
                     fromProposal={getProposalById(galaxyTravel?.from, proposalCatalog)}
                     toProposal={getProposalById(galaxyTravel?.to, proposalCatalog)}
-                    progress={galaxyTravel?.progress || 0}
-                    reducedMotion={prefersGalaxyReducedMotion}
                   />
-                </>
+                </Suspense>
               ) : null}
               <div className="sr-only" aria-live="polite">
                 {filterAriaStatus}
