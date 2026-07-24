@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   DEFAULT_PROPOSAL_ID,
   FALLBACK_PROPOSALS,
@@ -69,4 +72,14 @@ test("distant galaxies are every accessible non-active proposal", () => {
   const active = "bip54";
   const distant = FALLBACK_PROPOSALS.filter((p) => p.enabled && p.id !== active).map((p) => p.id);
   assert.deepEqual(distant, ["bip110", "bip119"]);
+});
+
+test("reduced-motion hook subscribes to matchMedia change events", () => {
+  const src = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "hooks", "usePrefersReducedMotion.js"),
+    "utf8"
+  );
+  assert.match(src, /prefers-reduced-motion:\s*reduce/);
+  assert.match(src, /addEventListener\("change"/);
+  assert.match(src, /removeEventListener\("change"/);
 });

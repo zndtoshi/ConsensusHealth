@@ -6,16 +6,16 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-test("admin galaxy UI is gated behind privileged editor check in App", () => {
+test("admin galaxy UI is lazy-loaded behind privileged multi-proposal catalog", () => {
   const appSrc = fs.readFileSync(path.join(here, "..", "App.jsx"), "utf8");
   assert.match(appSrc, /adminGalaxiesEnabled/);
-  assert.match(appSrc, /GalaxyHeaderNav/);
-  assert.match(appSrc, /DistantGalaxies/);
-  assert.match(appSrc, /EdgeGalaxyNav/);
+  assert.match(appSrc, /ConsensusUniverseChrome/);
+  assert.match(appSrc, /lazy\(\(\) =>\s*\n\s*import\("\.\/features\/consensusUniverse\/ConsensusUniverseChrome"\)/);
   assert.match(appSrc, /travelToGalaxy/);
   assert.match(appSrc, /ArrowLeft/);
   assert.match(appSrc, /galaxyEmptyState/);
   assert.match(appSrc, /isPrivilegedManualEditor\(me\?\.handle\)/);
+  assert.doesNotMatch(appSrc, /from "\.\/components\/GalaxyHeaderNav"/);
 });
 
 test("non-admin path keeps BIP-110 badge link", () => {
