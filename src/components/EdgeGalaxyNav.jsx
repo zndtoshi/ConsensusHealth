@@ -1,13 +1,13 @@
 import React from "react";
 import { getAdjacent } from "../utils/proposalNavigation";
 
-/** Subtle left/right edge hit targets for galaxy travel (admin). */
 export function EdgeGalaxyNav({
   proposalId,
+  catalog,
   disabled = false,
   onNavigate,
 }) {
-  const { prev, next } = getAdjacent(proposalId);
+  const { prev, next } = getAdjacent(proposalId, catalog);
   return (
     <>
       <button
@@ -15,7 +15,8 @@ export function EdgeGalaxyNav({
         className="edgeGalaxyNav edgeGalaxyNav--left"
         disabled={disabled}
         onClick={() => onNavigate(prev.id)}
-        aria-label={`Go to ${prev.shortName}`}
+        aria-label={`Travel to previous galaxy ${prev.shortName}`}
+        title={prev.shortName}
       >
         <span className="edgeGalaxyNav__label">{prev.shortName}</span>
       </button>
@@ -24,7 +25,8 @@ export function EdgeGalaxyNav({
         className="edgeGalaxyNav edgeGalaxyNav--right"
         disabled={disabled}
         onClick={() => onNavigate(next.id)}
-        aria-label={`Go to ${next.shortName}`}
+        aria-label={`Travel to next galaxy ${next.shortName}`}
+        title={next.shortName}
       >
         <span className="edgeGalaxyNav__label">{next.shortName}</span>
       </button>
