@@ -18,6 +18,7 @@
     "start": "node server/dist/index.js",
     "lint": "eslint .",
     "test": "tsx --test server/src/**/*.test.ts src/**/*.test.ts",
+    "test:integration": "tsx --test server/src/integration/*.ts",
     "preview": "vite preview",
     "prune:stanced": "node scripts/prune_to_stanced_accounts.js"
   },
