@@ -23,8 +23,8 @@ import {
 import {
   DEFAULT_PROPOSAL_ID,
   ensureProposalSchema,
-  listEnabledProposals,
-  resolveProposalAccess,
+  loadAccessibleProposals,
+  resolveProposalAccessAsync,
   type ProposalId,
 } from "./proposals.js";
 import { buildStanceCsvExport } from "./stanceCsvExport.js";
@@ -262,6 +262,12 @@ function normalizeHandle(value: unknown): string {
   return String(value ?? "").trim().toLowerCase().replace(/^@+/, "");
 }
 
+/**
+ * Canonical stance writer.
+ * - Always updates user_proposal_stances (+ history on change).
+ * - For BIP110 only, mirrors into legacy community_users.stance / stance_history /
+ *   stance_events in the SAME transaction (compatibility; not authoritative).
+ */
 async function upsertStanceWithHistory(
   client: PoolClient,
   args: {
@@ -305,7 +311,8 @@ async function upsertStanceWithHistory(
   const prevStance = normalizeStanceValue(prevPropRes.rows[0]?.stance ?? null);
   const changed = prevStance !== nextStance;
 
-  // Upsert identity. For BIP110, also mirror legacy community_users.stance.
+  // Identity row first — do not treat community_users.stance as authoritative.
+  // Preserve existing legacy stance on conflict; BIP110 mirror updates it after canonical write.
   const result = await client.query(
     `
     INSERT INTO community_users (
@@ -324,10 +331,6 @@ async function upsertStanceWithHistory(
       name = COALESCE(NULLIF(EXCLUDED.name, ''), community_users.name),
       avatar_url = COALESCE(NULLIF(EXCLUDED.avatar_url, ''), community_users.avatar_url),
       followers_count = COALESCE(NULLIF(EXCLUDED.followers_count, 0), community_users.followers_count),
-      stance = CASE
-        WHEN $7::text = 'bip110' THEN EXCLUDED.stance
-        ELSE community_users.stance
-      END,
       updated_at = NOW()
     RETURNING *
   `,
@@ -337,12 +340,12 @@ async function upsertStanceWithHistory(
       incomingName,
       incomingAvatar,
       safeIncomingFollowers,
-      proposalId === DEFAULT_PROPOSAL_ID ? nextStance : prevUserRow?.stance ?? null,
-      proposalId,
+      prevUserRow?.stance ?? null,
     ]
   );
-  const row = (result.rows[0] ?? {}) as Record<string, unknown>;
+  let row = (result.rows[0] ?? {}) as Record<string, unknown>;
 
+  // Canonical source of truth (all proposals, including BIP110).
   await client.query(
     `
     INSERT INTO user_proposal_stances (x_user_id, proposal_id, stance, updated_at)
@@ -361,8 +364,21 @@ async function upsertStanceWithHistory(
     `,
       [xUserId, proposalId, prevStance, nextStance, args.changedBy]
     );
-    // Legacy mirrors for BIP110 only (existing consumers / playback).
-    if (proposalId === DEFAULT_PROPOSAL_ID) {
+  }
+
+  // BIP110 compatibility mirrors only — same transaction; failure rolls everything back.
+  if (proposalId === DEFAULT_PROPOSAL_ID) {
+    const mirrored = await client.query(
+      `
+      UPDATE community_users
+      SET stance = $2, updated_at = NOW()
+      WHERE x_user_id = $1
+      RETURNING *
+      `,
+      [xUserId, nextStance]
+    );
+    row = (mirrored.rows[0] ?? row) as Record<string, unknown>;
+    if (changed) {
       await client.query(
         `
         INSERT INTO stance_history (x_user_id, previous_stance, new_stance, changed_by)
@@ -649,56 +665,45 @@ async function loadRemovedCommunityUserKeys(): Promise<{ handles: Set<string>; x
 async function loadMergedCommunityUsersWithStance(
   proposalId: ProposalId = DEFAULT_PROPOSAL_ID
 ): Promise<Record<string, unknown>[]> {
-  // Non-BIP110 galaxies: only explicit proposal stances (no seed accounts).
+  // Canonical: proposal-scoped stances only (no community_users.stance reads).
+  const { rows } = await pool.query(
+    `
+    SELECT
+      cu.x_user_id,
+      cu.handle,
+      cu.name,
+      cu.avatar_url,
+      cu.avatar_path,
+      cu.followers_count,
+      cu.bio,
+      cu.account_created_at,
+      cu.account_created_at AS "accountCreatedAt",
+      ups.stance,
+      (user_changed.x_user_id IS NOT NULL) AS "hasUserStanceChange"
+    FROM user_proposal_stances ups
+    INNER JOIN community_users cu ON cu.x_user_id = ups.x_user_id
+    LEFT JOIN (
+      SELECT DISTINCT x_user_id
+      FROM user_proposal_stance_history
+      WHERE changed_by = 'user' AND proposal_id = $1
+    ) user_changed ON user_changed.x_user_id = cu.x_user_id
+    WHERE ups.proposal_id = $1
+    `,
+    [proposalId]
+  );
+  const dbRows = (rows as Record<string, unknown>[]).filter((r) => hasStanceValue(r.stance));
+
+  // BIP110 only: union seed JSON accounts that are not already present as canonical
+  // proposal stances. Seeds are never copied into BIP54/BIP119.
   if (proposalId !== DEFAULT_PROPOSAL_ID) {
-    const { rows } = await pool.query(
-      `
-      SELECT
-        cu.x_user_id,
-        cu.handle,
-        cu.name,
-        cu.avatar_url,
-        cu.avatar_path,
-        cu.followers_count,
-        cu.bio,
-        cu.account_created_at,
-        cu.account_created_at AS "accountCreatedAt",
-        ups.stance,
-        (user_changed.x_user_id IS NOT NULL) AS "hasUserStanceChange"
-      FROM user_proposal_stances ups
-      INNER JOIN community_users cu ON cu.x_user_id = ups.x_user_id
-      LEFT JOIN (
-        SELECT DISTINCT x_user_id
-        FROM user_proposal_stance_history
-        WHERE changed_by = 'user' AND proposal_id = $1
-      ) user_changed ON user_changed.x_user_id = cu.x_user_id
-      WHERE ups.proposal_id = $1
-      `,
-      [proposalId]
-    );
-    const withStance = (rows as Record<string, unknown>[]).filter((r) => hasStanceValue(r.stance));
     const removed = await loadRemovedCommunityUserKeys();
-    return filterOutRemovedCommunityUsers(withStance, removed);
+    return filterOutRemovedCommunityUsers(dbRows, removed);
   }
 
   const seededRows = await loadSeededAccountsForCommunity();
-  const { rows } = await pool.query(`
-    SELECT
-      cu.*,
-      cu.account_created_at AS "accountCreatedAt",
-      COALESCE(ups.stance, cu.stance) AS stance,
-      (user_changed.x_user_id IS NOT NULL) AS "hasUserStanceChange"
-    FROM community_users cu
-    LEFT JOIN user_proposal_stances ups
-      ON ups.x_user_id = cu.x_user_id AND ups.proposal_id = 'bip110'
-    LEFT JOIN (
-      SELECT DISTINCT x_user_id
-      FROM stance_history
-      WHERE changed_by = 'user'
-    ) user_changed ON user_changed.x_user_id = cu.x_user_id
-  `);
-  const dbRows = rows as Record<string, unknown>[];
   const mergedRows = mergeCommunityUsers(seededRows, dbRows);
+  // After merge, prefer DB/canonical stance when present; seed stance remains for
+  // seed-only accounts that have no user_proposal_stances row.
   const withStance = mergedRows.filter((r) => hasStanceValue(r.stance));
   const removed = await loadRemovedCommunityUserKeys();
   return filterOutRemovedCommunityUsers(withStance, removed);
@@ -743,14 +748,7 @@ async function queryRecentStanceHistoryPage(args: {
 }> {
   const proposalId = args.proposalId || DEFAULT_PROPOSAL_ID;
   const limit = Math.max(1, Math.min(50, Math.trunc(args.limit) || 10));
-  const params: Array<string | number> = [];
-  // Deduplicate by stable internal user id (x_user_id): keep only each user's latest
-  // event (newest changed_at, then highest id as deterministic tie-breaker). Pagination
-  // via cursor is applied AFTER dedup so each page returns unique users. Mirrors the pure
-  // logic in selectLatestStanceEventsPerUser (see stanceHistoryDedup.ts).
-  if (proposalId !== DEFAULT_PROPOSAL_ID) {
-    params.push(proposalId);
-  }
+  const params: Array<string | number> = [proposalId];
   let cursorSql = "";
   if (args.cursor) {
     params.push(args.cursor.changed_at);
@@ -758,10 +756,7 @@ async function queryRecentStanceHistoryPage(args: {
     cursorSql = `AND (l.changed_at, l.id) < ($${params.length - 1}::timestamptz, $${params.length}::int)`;
   }
   params.push(limit + 1);
-  const historyTable =
-    proposalId === DEFAULT_PROPOSAL_ID
-      ? "stance_history sh"
-      : "user_proposal_stance_history sh WHERE sh.proposal_id = $1";
+  // Canonical: user_proposal_stance_history for every proposal (including BIP110).
   const { rows } = await pool.query(
     `
     WITH latest AS (
@@ -776,7 +771,8 @@ async function queryRecentStanceHistoryPage(args: {
           PARTITION BY sh.x_user_id
           ORDER BY sh.changed_at DESC, sh.id DESC
         ) AS rn
-      FROM ${historyTable}
+      FROM user_proposal_stance_history sh
+      WHERE sh.proposal_id = $1
     )
     SELECT
       l.id,
@@ -1383,20 +1379,11 @@ app.get("/auth/x/callback", async (req, res, next) => {
 app.get("/api/proposals", async (req, res, next) => {
   try {
     const user = getSessionUser(req);
-    const isAdmin = isPrivilegedManualEditorHandle(user?.handle);
-    const all = listEnabledProposals();
-    const items = isAdmin ? all : all.filter((p) => !p.adminOnly);
+    const { isAdmin, items } = await loadAccessibleProposals(pool, user?.handle);
     res.json({
       generated_at: new Date().toISOString(),
       admin_galaxies: isAdmin,
-      items: items.map((p) => ({
-        id: p.id,
-        bip_number: p.bipNumber,
-        short_name: p.shortName,
-        title: p.title,
-        description: p.description,
-        order: p.order,
-      })),
+      items,
     });
   } catch (err) {
     next(err);
@@ -1406,10 +1393,14 @@ app.get("/api/proposals", async (req, res, next) => {
 app.get("/api/community", async (req, res, next) => {
   try {
     const user = getSessionUser(req);
-    const access = resolveProposalAccess({
+    const access = await resolveProposalAccessAsync(pool, {
       rawProposal: req.query.proposal ?? req.query.bip,
       sessionHandle: user?.handle,
     });
+    if (!access.known) {
+      res.status(400).json({ error: "unknown_proposal" });
+      return;
+    }
     if (!access.allowed) {
       res.status(403).json({ error: "forbidden_proposal" });
       return;
@@ -1417,10 +1408,12 @@ app.get("/api/community", async (req, res, next) => {
 
     const withStance = await loadMergedCommunityUsersWithStance(access.proposalId);
 
-    console.log("[api/community] counts", {
-      proposal_id: access.proposalId,
-      final_with_stance_count: withStance.length,
-    });
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[api/community] counts", {
+        proposal_id: access.proposalId,
+        final_with_stance_count: withStance.length,
+      });
+    }
 
     // BIP110: keep legacy bare-array response for public clients.
     if (access.proposalId === DEFAULT_PROPOSAL_ID) {
@@ -1443,14 +1436,18 @@ for (const route of STANCE_CSV_EXPORT_ROUTES) {
   app.get(route.path, async (req, res, next) => {
     try {
       const user = getSessionUser(req);
-      const access = resolveProposalAccess({
-        rawProposal: req.query.proposal ?? req.query.bip,
-        sessionHandle: user?.handle,
-      });
-      if (!access.allowed) {
-        res.status(403).json({ error: "forbidden_proposal" });
-        return;
-      }
+      const access = await resolveProposalAccessAsync(pool, {
+      rawProposal: req.query.proposal ?? req.query.bip,
+      sessionHandle: user?.handle,
+    });
+    if (!access.known) {
+      res.status(400).json({ error: "unknown_proposal" });
+      return;
+    }
+    if (!access.allowed) {
+      res.status(403).json({ error: "forbidden_proposal" });
+      return;
+    }
       const mergedRows = await loadMergedCommunityUsersWithStance(access.proposalId);
       const { filename, content } = buildStanceCsvExport(mergedRows, route.stance);
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
@@ -1569,14 +1566,10 @@ app.get("/api/me", async (req, res, next) => {
       const st = normalizeStanceValue(r.stance);
       if (pid in proposal_stances) proposal_stances[pid] = st;
     }
-    // Prefer proposal table for bip110; fall back to legacy column.
-    if (!proposal_stances.bip110) {
-      proposal_stances.bip110 = normalizeStanceValue(row.stance);
-    }
-
+    // Canonical: proposal tables only (legacy community_users.stance is mirror, not read).
     res.json({
       ...row,
-      stance: proposal_stances.bip110 ?? row.stance ?? null,
+      stance: proposal_stances.bip110 ?? null,
       proposal_stances,
     });
   } catch (err) {
@@ -1633,10 +1626,14 @@ app.post("/api/stance", async (req, res, next) => {
       return;
     }
 
-    const access = resolveProposalAccess({
+    const access = await resolveProposalAccessAsync(pool, {
       rawProposal: req.body?.proposal ?? req.body?.proposal_id ?? req.query.proposal,
       sessionHandle: user.handle,
     });
+    if (!access.known) {
+      res.status(400).json({ error: "unknown_proposal" });
+      return;
+    }
     if (!access.allowed) {
       res.status(403).json({ error: "forbidden_proposal" });
       return;
@@ -1845,10 +1842,14 @@ app.post("/api/admin/stance", async (req, res, next) => {
       return;
     }
 
-    const access = resolveProposalAccess({
+    const access = await resolveProposalAccessAsync(pool, {
       rawProposal: req.body?.proposal ?? req.body?.proposal_id,
       sessionHandle: user.handle,
     });
+    if (!access.known) {
+      res.status(400).json({ error: "unknown_proposal" });
+      return;
+    }
     if (!access.allowed) {
       res.status(403).json({ error: "forbidden_proposal" });
       return;
@@ -1919,42 +1920,21 @@ app.post("/api/admin/stance", async (req, res, next) => {
 app.get("/api/stance-playback-sequence", async (req, res, next) => {
   try {
     const user = getSessionUser(req);
-    const access = resolveProposalAccess({
+    const access = await resolveProposalAccessAsync(pool, {
       rawProposal: req.query.proposal ?? req.query.bip,
       sessionHandle: user?.handle,
     });
+    if (!access.known) {
+      res.status(400).json({ error: "unknown_proposal" });
+      return;
+    }
     if (!access.allowed) {
       res.status(403).json({ error: "forbidden_proposal" });
       return;
     }
     const proposalId = access.proposalId;
-    const rowsRes =
-      proposalId === DEFAULT_PROPOSAL_ID
-        ? await pool.query(
-            `
-      WITH first_user AS (
-        SELECT DISTINCT ON (sh.x_user_id)
-          sh.x_user_id,
-          sh.changed_at AS first_at,
-          sh.new_stance
-        FROM stance_history sh
-        WHERE sh.changed_by = 'user'
-        ORDER BY sh.x_user_id ASC, sh.changed_at ASC
-      )
-      SELECT
-        f.x_user_id,
-        lower(trim(coalesce(cu.handle, ''))) AS handle,
-        f.new_stance AS stance,
-        f.first_at
-      FROM first_user f
-      INNER JOIN community_users cu ON cu.x_user_id = f.x_user_id
-      WHERE trim(coalesce(cu.handle, '')) <> ''
-      ORDER BY f.first_at ASC
-      LIMIT 2000
+    const rowsRes = await pool.query(
       `
-          )
-        : await pool.query(
-            `
       WITH first_user AS (
         SELECT DISTINCT ON (sh.x_user_id)
           sh.x_user_id,
@@ -1976,8 +1956,8 @@ app.get("/api/stance-playback-sequence", async (req, res, next) => {
       ORDER BY f.first_at ASC
       LIMIT 2000
       `,
-            [proposalId]
-          );
+      [proposalId]
+    );
 
     const items = rowsRes.rows.map((r) => ({
       x_user_id: String(r.x_user_id ?? ""),
@@ -1995,10 +1975,14 @@ app.get("/api/stance-playback-sequence", async (req, res, next) => {
 app.get("/api/stances/new", async (req, res, next) => {
   try {
     const user = getSessionUser(req);
-    const access = resolveProposalAccess({
+    const access = await resolveProposalAccessAsync(pool, {
       rawProposal: req.query.proposal ?? req.query.bip,
       sessionHandle: user?.handle,
     });
+    if (!access.known) {
+      res.status(400).json({ error: "unknown_proposal" });
+      return;
+    }
     if (!access.allowed) {
       res.status(403).json({ error: "forbidden_proposal" });
       return;
@@ -2028,17 +2012,20 @@ app.get("/api/stances/new", async (req, res, next) => {
 app.get("/api/stance-history", async (req, res, next) => {
   try {
     const user = getSessionUser(req);
-    const access = resolveProposalAccess({
+    const access = await resolveProposalAccessAsync(pool, {
       rawProposal: req.query.proposal ?? req.query.bip,
       sessionHandle: user?.handle,
     });
+    if (!access.known) {
+      res.status(400).json({ error: "unknown_proposal" });
+      return;
+    }
     if (!access.allowed) {
       res.status(403).json({ error: "forbidden_proposal" });
       return;
     }
     const proposalId = access.proposalId;
-    const historyTable =
-      proposalId === DEFAULT_PROPOSAL_ID ? "stance_history" : "user_proposal_stance_history";
+    const historyTable = "user_proposal_stance_history";
 
     const limitRaw = String(req.query.limit ?? "").trim();
     const cursorRaw = String(req.query.cursor ?? "").trim();
@@ -2079,10 +2066,8 @@ app.get("/api/stance-history", async (req, res, next) => {
     const handle = normalizeHandle(req.query.handle);
     const where: string[] = [];
     const params: string[] = [];
-    if (proposalId !== DEFAULT_PROPOSAL_ID) {
-      params.push(proposalId);
-      where.push(`sh.proposal_id = $${params.length}`);
-    }
+    params.push(proposalId);
+    where.push(`sh.proposal_id = $${params.length}`);
     if (xUserId) {
       params.push(xUserId);
       where.push(`sh.x_user_id = $${params.length}`);
@@ -2179,10 +2164,14 @@ app.get("/api/stance-history", async (req, res, next) => {
 app.get("/api/stats", async (req, res, next) => {
   try {
     const user = getSessionUser(req);
-    const access = resolveProposalAccess({
+    const access = await resolveProposalAccessAsync(pool, {
       rawProposal: req.query.proposal ?? req.query.bip,
       sessionHandle: user?.handle,
     });
+    if (!access.known) {
+      res.status(400).json({ error: "unknown_proposal" });
+      return;
+    }
     if (!access.allowed) {
       res.status(403).json({ error: "forbidden_proposal" });
       return;

@@ -4,11 +4,12 @@ import { buildStatsSql } from "./proposalStats.js";
 import { DEFAULT_PROPOSAL_ID } from "./proposalCatalog.js";
 import { buildStanceCsvExport } from "./stanceCsvExport.js";
 
-test("bip110 stats SQL uses legacy community_users tables", () => {
+test("all proposals including bip110 use canonical proposal tables for stats", () => {
   const sql = buildStatsSql(DEFAULT_PROPOSAL_ID);
-  assert.equal(sql.params.length, 0);
-  assert.match(sql.aggSql, /FROM community_users/);
-  assert.match(sql.changedEverSql, /FROM stance_history/);
+  assert.deepEqual(sql.params, ["bip110"]);
+  assert.match(sql.aggSql, /user_proposal_stances/);
+  assert.match(sql.changedEverSql, /user_proposal_stance_history/);
+  assert.doesNotMatch(sql.aggSql, /FROM community_users\s*$/m);
 });
 
 test("bip54 stats SQL scopes to user_proposal tables", () => {
