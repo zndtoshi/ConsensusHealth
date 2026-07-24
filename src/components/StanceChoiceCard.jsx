@@ -17,14 +17,15 @@ export function StanceChoiceCard({
   busy = false,
   onSelect,
   onDismiss,
+  proposalLabel = "BIP-110",
 }) {
   if (!open) return null;
 
   const title = mode === "change" ? "Change your stance" : "Choose your stance";
   const subtitle =
     mode === "change"
-      ? "Pick a new position on BIP-110."
-      : "Welcome. Where do you stand on BIP-110?";
+      ? `Pick a new position on ${proposalLabel}.`
+      : `Welcome. Where do you stand on ${proposalLabel}?`;
   const canDismiss = mode === "change" && typeof onDismiss === "function";
 
   return (

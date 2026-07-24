@@ -9,6 +9,7 @@ export function StatisticsModal({
   loading,
   error,
   apiBase = "",
+  proposalId = "bip110",
   onRetryHistory,
 }: {
   open: boolean;
@@ -17,6 +18,7 @@ export function StatisticsModal({
   loading?: boolean;
   error?: string;
   apiBase?: string;
+  proposalId?: string;
   onRetryHistory?: () => void;
 }) {
   useEffect(() => {
@@ -92,7 +94,7 @@ export function StatisticsModal({
         </div>
 
         {data ? (
-          <StatisticsCards data={data} apiBase={apiBase} onRetryHistory={onRetryHistory} />
+          <StatisticsCards data={data} apiBase={apiBase} proposalId={proposalId} onRetryHistory={onRetryHistory} />
         ) : loading ? (
           <div style={{ opacity: 0.85, fontSize: 13 }}>Loading statistics...</div>
         ) : error ? (
@@ -123,7 +125,7 @@ export function StatisticsModal({
         )}
 
         <div style={{ marginTop: 16 }}>
-          <StanceCsvExportSection />
+          <StanceCsvExportSection proposalId={proposalId} />
         </div>
       </div>
     </div>

@@ -321,10 +321,12 @@ function Legend({
 export function StatisticsCards({
   data,
   apiBase = "",
+  proposalId = "bip110",
   onRetryHistory,
 }: {
   data: StatisticsData;
   apiBase?: string;
+  proposalId?: string;
   onRetryHistory?: () => void;
 }) {
   const total = data.totalUsersWithStance;
@@ -608,10 +610,11 @@ export function StatisticsCards({
               </div>
               <StanceHistoryRecentList
                 apiBase={apiBase}
+                proposalId={proposalId}
                 initialItems={data.recentChanges}
                 initialCursor={data.recentChangesNextCursor}
                 initialHasMore={data.recentChangesHasMore}
-                resetKey={data.generatedAtISO}
+                resetKey={`${data.generatedAtISO}|${proposalId}`}
               />
             </>
           )}
@@ -703,12 +706,14 @@ function StanceHandleLink({ handle }: { handle: string }) {
 
 function StanceHistoryRecentList({
   apiBase,
+  proposalId = "bip110",
   initialItems,
   initialCursor,
   initialHasMore,
   resetKey,
 }: {
   apiBase: string;
+  proposalId?: string;
   initialItems: HistoryChangeItem[];
   initialCursor: string | null;
   initialHasMore: boolean;
@@ -742,6 +747,7 @@ function StanceHistoryRecentList({
         apiBase,
         limit: 10,
         cursor: nextCursor,
+        proposalId,
       });
       setItems((prev) => {
         const seen = new Set(prev.map((row) => row.id));
