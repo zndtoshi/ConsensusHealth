@@ -5,24 +5,22 @@ import {
   parseProposalFromPathname,
   proposalPath,
   resolveProposalId,
+  type ProposalConfig,
   type ProposalId,
 } from "../config/proposals";
 
-export type ActiveProposalState = {
-  proposalId: ProposalId;
-  setProposalId: (id: ProposalId, opts?: { replace?: boolean }) => void;
-  navigateRelative: (delta: -1 | 1) => void;
-};
-
-/** Sync active proposal with /bip/:number URL (History API, no full reload). */
-export function readProposalIdFromLocation(): ProposalId {
+export function readProposalIdFromLocation(catalog?: ProposalConfig[]): ProposalId {
   if (typeof window === "undefined") return DEFAULT_PROPOSAL_ID;
-  return parseProposalFromPathname(window.location.pathname);
+  return parseProposalFromPathname(window.location.pathname, catalog);
 }
 
-export function writeProposalIdToLocation(id: ProposalId, replace = false): void {
+export function writeProposalIdToLocation(
+  id: ProposalId,
+  replace = false,
+  catalog?: ProposalConfig[]
+): void {
   if (typeof window === "undefined") return;
-  const next = proposalPath(id);
+  const next = proposalPath(id, catalog);
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   const target = `${next}${window.location.search}${window.location.hash}`;
   if (current === target) return;
@@ -30,17 +28,20 @@ export function writeProposalIdToLocation(id: ProposalId, replace = false): void
   else window.history.pushState({ proposalId: id }, "", target);
 }
 
-export function getAdjacent(id: ProposalId) {
-  return adjacentProposals(id);
+export function getAdjacent(id: ProposalId, catalog?: ProposalConfig[]) {
+  return adjacentProposals(id, catalog);
 }
 
-export function getPublicOrAdminProposals(adminGalaxies: boolean) {
-  const all = listEnabledProposals();
-  return adminGalaxies ? all : all.filter((p) => p.publicDefault);
-}
-
-export function normalizeIncomingProposalId(raw: unknown, adminGalaxies: boolean): ProposalId {
-  const id = resolveProposalId(raw, DEFAULT_PROPOSAL_ID);
-  if (adminGalaxies) return id;
+export function normalizeIncomingProposalId(
+  raw: unknown,
+  adminGalaxies: boolean,
+  catalog?: ProposalConfig[]
+): ProposalId {
+  const list = listEnabledProposals(catalog);
+  const id = resolveProposalId(raw, list, DEFAULT_PROPOSAL_ID);
+  if (adminGalaxies) {
+    if (list.some((p) => p.id === id)) return id;
+    return list[0]?.id || DEFAULT_PROPOSAL_ID;
+  }
   return DEFAULT_PROPOSAL_ID;
 }

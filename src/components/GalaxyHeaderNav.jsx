@@ -1,17 +1,17 @@
 import React from "react";
-import { getProposalById } from "../config/proposals";
 import { getAdjacent } from "../utils/proposalNavigation";
 
 /**
- * Admin galaxy header: [prev] [ACTIVE] [next] — replaces centered selected-user title.
+ * Admin galaxy header: [prev] [ACTIVE] [next]
  */
 export function GalaxyHeaderNav({
   proposalId,
+  catalog,
   disabled = false,
   onNavigate,
 }) {
-  const { prev, next, current } = getAdjacent(proposalId);
-  const theme = getProposalById(current.id)?.visualTheme;
+  const { prev, next, current } = getAdjacent(proposalId, catalog);
+  const theme = current?.visualTheme;
 
   return (
     <nav className="galaxyHeaderNav" aria-label="Consensus galaxies">

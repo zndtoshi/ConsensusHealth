@@ -8,22 +8,23 @@ function distantLayout(id, index) {
     bip54: { x: 86, y: 22 },
     bip119: { x: 78, y: 72 },
   };
-  return seeds[id] || { x: 20 + index * 30, y: 30 + index * 18 };
+  return seeds[id] || { x: 20 + ((index * 37) % 60), y: 24 + ((index * 29) % 50) };
 }
 
 /**
  * Decorative clickable distant galaxies for inactive proposals (admin only).
- * Not full graphs — lightweight markers only.
+ * Lightweight markers only — not full graphs.
  */
 export function DistantGalaxies({
   activeProposalId,
+  catalog,
   disabled = false,
   onNavigate,
   reducedMotion = false,
 }) {
   const others = useMemo(
-    () => listEnabledProposals().filter((p) => p.id !== activeProposalId),
-    [activeProposalId]
+    () => listEnabledProposals(catalog).filter((p) => p.id !== activeProposalId),
+    [activeProposalId, catalog]
   );
   const [tipId, setTipId] = useState(null);
 

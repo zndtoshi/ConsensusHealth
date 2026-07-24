@@ -30,6 +30,7 @@ import { EdgeGalaxyNav } from "./components/EdgeGalaxyNav";
 import { GalaxyTravelOverlay } from "./components/GalaxyTravelOverlay";
 import {
   DEFAULT_PROPOSAL_ID,
+  FALLBACK_PROPOSALS,
   getProposalById,
 } from "./config/proposals";
 import {
@@ -38,6 +39,7 @@ import {
   writeProposalIdToLocation,
   getAdjacent,
 } from "./utils/proposalNavigation";
+import { fetchAccessibleProposals } from "./api/proposals";
 import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
 import { followersForAvatarSize } from "./utils/avatarSize";
 import { formatXJoinDate } from "./utils/xJoinDate";
@@ -971,10 +973,13 @@ export default function App() {
   const galaxyTravelLockRef = useRef(false);
   const proposalReloadAbortRef = useRef(null);
   const parallaxLayerRef = useRef(null);
+  const travelCleanupRef = useRef(null);
   const prefersGalaxyReducedMotion =
     typeof window !== "undefined" &&
     window.matchMedia &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const [proposalCatalog, setProposalCatalog] = useState(FALLBACK_PROPOSALS.filter((p) => !p.adminOnly));
+  const [proposalCatalogReady, setProposalCatalogReady] = useState(false);
   const showClusterHalo = useMemo(
     () =>
       shouldShowClusterHalo({
@@ -1414,12 +1419,7 @@ export default function App() {
   const meForActiveProposal = useMemo(() => {
     if (!me?.authenticated) return me;
     const fromMap = me?.proposal_stances?.[activeProposalId];
-    const stance =
-      fromMap != null && fromMap !== ""
-        ? fromMap
-        : activeProposalId === DEFAULT_PROPOSAL_ID
-          ? me?.stance
-          : null;
+    const stance = fromMap != null && fromMap !== "" ? fromMap : null;
     return { ...me, stance };
   }, [me, activeProposalId]);
   const meStance = meForActiveProposal?.stance ? normalizedStance(meForActiveProposal.stance) : "";
@@ -1428,10 +1428,38 @@ export default function App() {
   const meHandleLower = safeLower(me?.handle);
   const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
   const adminGalaxiesEnabled = useMemo(
-    () => me?.authenticated === true && isPrivilegedManualEditor(me?.handle),
-    [me?.authenticated, me?.handle]
+    () =>
+      me?.authenticated === true &&
+      isPrivilegedManualEditor(me?.handle) &&
+      proposalCatalogReady &&
+      proposalCatalog.filter((p) => p.enabled).length > 1,
+    [me?.authenticated, me?.handle, proposalCatalog, proposalCatalogReady]
   );
-  const activeProposal = useMemo(() => getProposalById(activeProposalId), [activeProposalId]);
+  const activeProposal = useMemo(
+    () => getProposalById(activeProposalId, proposalCatalog),
+    [activeProposalId, proposalCatalog]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { items } = await fetchAccessibleProposals({ apiBase: API_BASE });
+        if (cancelled) return;
+        const next = items.length ? items : FALLBACK_PROPOSALS.filter((p) => !p.adminOnly);
+        setProposalCatalog(next);
+        setProposalCatalogReady(true);
+      } catch {
+        if (!cancelled) {
+          setProposalCatalog(FALLBACK_PROPOSALS.filter((p) => !p.adminOnly));
+          setProposalCatalogReady(true);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [me?.authenticated, me?.handle]);
 
   useEffect(() => {
     if (!meForActiveProposal?.authenticated) {
@@ -2073,10 +2101,10 @@ export default function App() {
   // briefly show seed-only accounts and then expand to the full live set.
   useEffect(() => {
     let dead = false;
-    const proposalId = normalizeIncomingProposalId(activeProposalId, adminGalaxiesEnabled);
+    const proposalId = normalizeIncomingProposalId(activeProposalId, adminGalaxiesEnabled, proposalCatalog);
     if (proposalId !== activeProposalId) {
       setActiveProposalId(proposalId);
-      writeProposalIdToLocation(proposalId, true);
+      writeProposalIdToLocation(proposalId, true, proposalCatalog);
       return undefined;
     }
     if (proposalReloadAbortRef.current) proposalReloadAbortRef.current.abort();
@@ -2114,20 +2142,24 @@ export default function App() {
       dead = true;
       controller.abort();
     };
-  }, [activeProposalId, adminGalaxiesEnabled]);
+  }, [activeProposalId, adminGalaxiesEnabled, proposalCatalog]);
 
   useEffect(() => {
     function onPopState() {
-      const next = normalizeIncomingProposalId(readProposalIdFromLocation(), adminGalaxiesEnabled);
+      const next = normalizeIncomingProposalId(
+        readProposalIdFromLocation(proposalCatalog),
+        adminGalaxiesEnabled,
+        proposalCatalog
+      );
       setActiveProposalId(next);
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [adminGalaxiesEnabled]);
+  }, [adminGalaxiesEnabled, proposalCatalog]);
 
   function travelToGalaxy(nextId) {
     if (!adminGalaxiesEnabled) return;
-    const target = normalizeIncomingProposalId(nextId, true);
+    const target = normalizeIncomingProposalId(nextId, true, proposalCatalog);
     if (target === activeProposalId) return;
     if (galaxyTravelLockRef.current) return;
     galaxyTravelLockRef.current = true;
@@ -2136,24 +2168,35 @@ export default function App() {
     const t0 = performance.now();
     setGalaxyTravel({ from, to: target, progress: 0 });
     let midSwapped = false;
+    let rafId = 0;
     const tick = (now) => {
       const p = Math.min(1, (now - t0) / duration);
       setGalaxyTravel({ from, to: target, progress: p });
       if (!midSwapped && p >= 0.45) {
         midSwapped = true;
-        writeProposalIdToLocation(target, false);
+        writeProposalIdToLocation(target, false, proposalCatalog);
         setActiveProposalId(target);
         setSelectedHandle(null);
       }
       if (p < 1) {
-        requestAnimationFrame(tick);
+        rafId = requestAnimationFrame(tick);
       } else {
         setGalaxyTravel(null);
         galaxyTravelLockRef.current = false;
       }
     };
-    requestAnimationFrame(tick);
+    rafId = requestAnimationFrame(tick);
+    // Ensure lock releases if component unmounts mid-travel.
+    travelCleanupRef.current = () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      galaxyTravelLockRef.current = false;
+      setGalaxyTravel(null);
+    };
   }
+
+  useEffect(() => () => {
+    if (travelCleanupRef.current) travelCleanupRef.current();
+  }, []);
 
   useEffect(() => {
     if (!adminGalaxiesEnabled) return undefined;
@@ -2164,15 +2207,15 @@ export default function App() {
       if (galaxyTravelLockRef.current) return;
       if (e.key === "ArrowLeft") {
         e.preventDefault();
-        travelToGalaxy(getAdjacent(activeProposalId).prev.id);
+        travelToGalaxy(getAdjacent(activeProposalId, proposalCatalog).prev.id);
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        travelToGalaxy(getAdjacent(activeProposalId).next.id);
+        travelToGalaxy(getAdjacent(activeProposalId, proposalCatalog).next.id);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [adminGalaxiesEnabled, activeProposalId]);
+  }, [adminGalaxiesEnabled, activeProposalId, proposalCatalog]);
 
   // Defer the mentions CSV (462 KB) + PapaParse: it is only needed to show a
   // selected user's tweets, not for first paint. Dynamically import PapaParse so
@@ -5886,6 +5929,7 @@ export default function App() {
           {adminGalaxiesEnabled ? (
             <GalaxyHeaderNav
               proposalId={activeProposalId}
+              catalog={proposalCatalog}
               disabled={Boolean(galaxyTravel)}
               onNavigate={travelToGalaxy}
             />
@@ -6231,19 +6275,21 @@ export default function App() {
                   <div ref={parallaxLayerRef} className="galaxyParallaxLayer" aria-hidden="true" />
                   <DistantGalaxies
                     activeProposalId={activeProposalId}
+                    catalog={proposalCatalog}
                     disabled={Boolean(galaxyTravel)}
                     onNavigate={travelToGalaxy}
                     reducedMotion={prefersGalaxyReducedMotion}
                   />
                   <EdgeGalaxyNav
                     proposalId={activeProposalId}
+                    catalog={proposalCatalog}
                     disabled={Boolean(galaxyTravel)}
                     onNavigate={travelToGalaxy}
                   />
                   <GalaxyTravelOverlay
                     active={Boolean(galaxyTravel)}
-                    fromId={galaxyTravel?.from}
-                    toId={galaxyTravel?.to}
+                    fromProposal={getProposalById(galaxyTravel?.from, proposalCatalog)}
+                    toProposal={getProposalById(galaxyTravel?.to, proposalCatalog)}
                     progress={galaxyTravel?.progress || 0}
                     reducedMotion={prefersGalaxyReducedMotion}
                   />
