@@ -32,11 +32,13 @@ export async function fetchStanceHistoryPage(args: {
   apiBase?: string;
   limit?: number;
   cursor?: string | null;
+  proposalId?: string | null;
 }): Promise<StanceHistoryPage> {
   const base = (args.apiBase || "").replace(/\/$/, "");
   const params = new URLSearchParams();
   params.set("limit", String(args.limit ?? 10));
   if (args.cursor) params.set("cursor", args.cursor);
+  if (args.proposalId) params.set("proposal", String(args.proposalId));
 
   const res = await fetch(`${base}/api/stance-history?${params.toString()}`, {
     credentials: "include",

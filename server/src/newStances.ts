@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { normalizeStanceValue } from "./stanceHistory.js";
+import { DEFAULT_PROPOSAL_ID, type ProposalId } from "./proposalCatalog.js";
 
 export const NEW_STANCES_MAX_LIMIT = 9;
 
@@ -48,24 +49,43 @@ export function mapNewStanceEventRow(r: Record<string, unknown>): NewStanceEvent
  */
 export async function queryNewStanceEvents(
   pool: Pool,
-  opts: { afterEventId?: number | null; limit: number }
+  opts: { afterEventId?: number | null; limit: number; proposalId?: ProposalId }
 ): Promise<NewStanceEventRow[]> {
   const limit = clampNewStancesLimit(opts.limit);
-  const params: Array<number> = [];
+  const proposalId = opts.proposalId || DEFAULT_PROPOSAL_ID;
+  const params: Array<string | number> = [];
   let afterSql = "";
+  let proposalSql = "";
+
+  if (proposalId !== DEFAULT_PROPOSAL_ID) {
+    params.push(proposalId);
+    proposalSql = `AND sh.proposal_id = $${params.length}`;
+  }
 
   if (opts.afterEventId != null && Number.isFinite(opts.afterEventId) && opts.afterEventId > 0) {
     params.push(Math.trunc(opts.afterEventId));
+    const histTable = proposalId === DEFAULT_PROPOSAL_ID ? "stance_history" : "user_proposal_stance_history";
     afterSql = `
       AND (l.changed_at, l.id) > (
         SELECT sh.changed_at, sh.id
-        FROM stance_history sh
+        FROM ${histTable} sh
         WHERE sh.id = $${params.length}
       )`;
   }
 
   params.push(limit);
   const limitParam = `$${params.length}`;
+  const fromHistory =
+    proposalId === DEFAULT_PROPOSAL_ID
+      ? "stance_history sh"
+      : "user_proposal_stance_history sh";
+  const hasStanceJoin =
+    proposalId === DEFAULT_PROPOSAL_ID
+      ? "AND cu.stance IS NOT NULL"
+      : `AND EXISTS (
+          SELECT 1 FROM user_proposal_stances ups
+          WHERE ups.x_user_id = cu.x_user_id AND ups.proposal_id = $1
+        )`;
 
   const { rows } = await pool.query(
     `
@@ -80,8 +100,9 @@ export async function queryNewStanceEvents(
           PARTITION BY sh.x_user_id
           ORDER BY sh.changed_at DESC, sh.id DESC
         ) AS rn
-      FROM stance_history sh
+      FROM ${fromHistory}
       WHERE sh.changed_by IN ('user', 'admin')
+      ${proposalSql}
     )
     SELECT
       l.id,
@@ -95,7 +116,7 @@ export async function queryNewStanceEvents(
     INNER JOIN community_users cu ON cu.x_user_id = l.x_user_id
     WHERE l.rn = 1
       AND trim(coalesce(cu.handle, '')) <> ''
-      AND cu.stance IS NOT NULL
+      ${hasStanceJoin}
       ${afterSql}
     ORDER BY l.changed_at DESC, l.id DESC
     LIMIT ${limitParam}

@@ -20,6 +20,7 @@ export async function fetchAvatarStanceHistory(args: {
   apiBase?: string;
   handle?: string | null;
   xUserId?: string | null;
+  proposalId?: string | null;
   signal?: AbortSignal;
 }): Promise<AvatarStanceHistoryEvent[]> {
   const base = (args.apiBase || "").replace(/\/$/, "");
@@ -28,6 +29,7 @@ export async function fetchAvatarStanceHistory(args: {
   const handle = normalizeXHandle(args.handle);
   if (xUserId) params.set("x_user_id", xUserId);
   if (handle) params.set("handle", handle);
+  if (args.proposalId) params.set("proposal", String(args.proposalId));
   if (![...params.keys()].length) return [];
 
   const res = await fetch(`${base}/api/stance-history?${params.toString()}`, {

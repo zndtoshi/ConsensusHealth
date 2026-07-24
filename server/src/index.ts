@@ -20,6 +20,13 @@ import {
   type ChangedByValue,
   type StanceValue,
 } from "./stanceHistory.js";
+import {
+  DEFAULT_PROPOSAL_ID,
+  ensureProposalSchema,
+  listEnabledProposals,
+  resolveProposalAccess,
+  type ProposalId,
+} from "./proposals.js";
 import { buildStanceCsvExport } from "./stanceCsvExport.js";
 import {
   createEnsureLocalAvatar,
@@ -27,6 +34,7 @@ import {
   resolveAvatarsDir,
 } from "./avatarStorage.js";
 import { clampNewStancesLimit, queryNewStanceEvents } from "./newStances.js";
+import { runStatsQueries } from "./proposalStats.js";
 import {
   coerceXUserIdToDigitString,
   coerceXUserIdKey,
@@ -58,10 +66,13 @@ const STATS_CACHE_TTL_MS = 45_000;
 // BIP-110 has concluded. Keep identity/session infrastructure active for future BIPs,
 // while making this proposal's final positions immutable at the API boundary.
 const BIP_110_STANCES_FROZEN: boolean = true;
-let statsResponseCache: { expiresAt: number; payload: Record<string, unknown> } | null = null;
+const statsResponseCacheByProposal = new Map<
+  string,
+  { expiresAt: number; payload: Record<string, unknown> }
+>();
 
 function invalidateStatsCache(): void {
-  statsResponseCache = null;
+  statsResponseCacheByProposal.clear();
 }
 
 if (!SESSION_SECRET) {
@@ -261,6 +272,7 @@ async function upsertStanceWithHistory(
     followersCount: number | null;
     stance: StanceValue;
     changedBy: ChangedByValue;
+    proposalId?: ProposalId;
   }
 ): Promise<{ row: Record<string, unknown>; changed: boolean; previous: StanceValue | null }> {
   const xUserId = String(args.xUserId || "").trim();
@@ -268,6 +280,7 @@ async function upsertStanceWithHistory(
   if (!xUserId || !handle) {
     throw new Error("x_user_id and handle are required");
   }
+  const proposalId: ProposalId = args.proposalId || DEFAULT_PROPOSAL_ID;
   const incomingFollowersNum = Number(args.followersCount);
   const safeIncomingFollowers =
     Number.isFinite(incomingFollowersNum) && incomingFollowersNum > 0 ? incomingFollowersNum : null;
@@ -275,15 +288,24 @@ async function upsertStanceWithHistory(
   const incomingName = String(args.name ?? "").trim() || null;
   const nextStance = args.stance;
 
-  const prevRes = await client.query(
+  // Ensure community_users row exists (identity / avatar) without necessarily changing BIP110 stance.
+  const prevUserRes = await client.query(
     "SELECT stance, followers_count FROM community_users WHERE x_user_id = $1 LIMIT 1",
     [xUserId]
   );
-  const prevRow = prevRes.rows[0] as { stance?: string | null; followers_count?: number | null } | undefined;
-  const prevStance = normalizeStanceValue(prevRow?.stance ?? null);
-  const followersBefore = Number(prevRow?.followers_count ?? NaN);
+  const prevUserRow = prevUserRes.rows[0] as
+    | { stance?: string | null; followers_count?: number | null }
+    | undefined;
+  const followersBefore = Number(prevUserRow?.followers_count ?? NaN);
+
+  const prevPropRes = await client.query(
+    `SELECT stance FROM user_proposal_stances WHERE x_user_id = $1 AND proposal_id = $2 LIMIT 1`,
+    [xUserId, proposalId]
+  );
+  const prevStance = normalizeStanceValue(prevPropRes.rows[0]?.stance ?? null);
   const changed = prevStance !== nextStance;
 
+  // Upsert identity. For BIP110, also mirror legacy community_users.stance.
   const result = await client.query(
     `
     INSERT INTO community_users (
@@ -302,29 +324,60 @@ async function upsertStanceWithHistory(
       name = COALESCE(NULLIF(EXCLUDED.name, ''), community_users.name),
       avatar_url = COALESCE(NULLIF(EXCLUDED.avatar_url, ''), community_users.avatar_url),
       followers_count = COALESCE(NULLIF(EXCLUDED.followers_count, 0), community_users.followers_count),
-      stance = EXCLUDED.stance,
+      stance = CASE
+        WHEN $7::text = 'bip110' THEN EXCLUDED.stance
+        ELSE community_users.stance
+      END,
       updated_at = NOW()
     RETURNING *
   `,
-    [xUserId, handle, incomingName, incomingAvatar, safeIncomingFollowers, nextStance]
+    [
+      xUserId,
+      handle,
+      incomingName,
+      incomingAvatar,
+      safeIncomingFollowers,
+      proposalId === DEFAULT_PROPOSAL_ID ? nextStance : prevUserRow?.stance ?? null,
+      proposalId,
+    ]
   );
   const row = (result.rows[0] ?? {}) as Record<string, unknown>;
+
+  await client.query(
+    `
+    INSERT INTO user_proposal_stances (x_user_id, proposal_id, stance, updated_at)
+    VALUES ($1, $2, $3, NOW())
+    ON CONFLICT (x_user_id, proposal_id)
+    DO UPDATE SET stance = EXCLUDED.stance, updated_at = NOW()
+    `,
+    [xUserId, proposalId, nextStance]
+  );
 
   if (changed) {
     await client.query(
       `
-      INSERT INTO stance_history (x_user_id, previous_stance, new_stance, changed_by)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO user_proposal_stance_history (x_user_id, proposal_id, previous_stance, new_stance, changed_by)
+      VALUES ($1, $2, $3, $4, $5)
     `,
-      [xUserId, prevStance, nextStance, args.changedBy]
+      [xUserId, proposalId, prevStance, nextStance, args.changedBy]
     );
-    await client.query(
-      `
-      INSERT INTO stance_events (x_user_id, from_stance, to_stance)
-      VALUES ($1, $2, $3)
-    `,
-      [xUserId, prevStance, nextStance]
-    );
+    // Legacy mirrors for BIP110 only (existing consumers / playback).
+    if (proposalId === DEFAULT_PROPOSAL_ID) {
+      await client.query(
+        `
+        INSERT INTO stance_history (x_user_id, previous_stance, new_stance, changed_by)
+        VALUES ($1, $2, $3, $4)
+      `,
+        [xUserId, prevStance, nextStance, args.changedBy]
+      );
+      await client.query(
+        `
+        INSERT INTO stance_events (x_user_id, from_stance, to_stance)
+        VALUES ($1, $2, $3)
+      `,
+        [xUserId, prevStance, nextStance]
+      );
+    }
   }
 
   if (changed) {
@@ -335,6 +388,7 @@ async function upsertStanceWithHistory(
     console.log("[stance-update]", {
       x_user_id: xUserId,
       handle,
+      proposal_id: proposalId,
       previous_stance: prevStance,
       next_stance: nextStance,
       changed,
@@ -344,7 +398,11 @@ async function upsertStanceWithHistory(
     });
   }
 
-  return { row, changed, previous: prevStance };
+  return {
+    row: { ...row, stance: nextStance, proposal_id: proposalId },
+    changed,
+    previous: prevStance,
+  };
 }
 
 function b64url(input: Buffer): string {
@@ -588,14 +646,51 @@ async function loadRemovedCommunityUserKeys(): Promise<{ handles: Set<string>; x
   return { handles, xUserIds };
 }
 
-async function loadMergedCommunityUsersWithStance(): Promise<Record<string, unknown>[]> {
+async function loadMergedCommunityUsersWithStance(
+  proposalId: ProposalId = DEFAULT_PROPOSAL_ID
+): Promise<Record<string, unknown>[]> {
+  // Non-BIP110 galaxies: only explicit proposal stances (no seed accounts).
+  if (proposalId !== DEFAULT_PROPOSAL_ID) {
+    const { rows } = await pool.query(
+      `
+      SELECT
+        cu.x_user_id,
+        cu.handle,
+        cu.name,
+        cu.avatar_url,
+        cu.avatar_path,
+        cu.followers_count,
+        cu.bio,
+        cu.account_created_at,
+        cu.account_created_at AS "accountCreatedAt",
+        ups.stance,
+        (user_changed.x_user_id IS NOT NULL) AS "hasUserStanceChange"
+      FROM user_proposal_stances ups
+      INNER JOIN community_users cu ON cu.x_user_id = ups.x_user_id
+      LEFT JOIN (
+        SELECT DISTINCT x_user_id
+        FROM user_proposal_stance_history
+        WHERE changed_by = 'user' AND proposal_id = $1
+      ) user_changed ON user_changed.x_user_id = cu.x_user_id
+      WHERE ups.proposal_id = $1
+      `,
+      [proposalId]
+    );
+    const withStance = (rows as Record<string, unknown>[]).filter((r) => hasStanceValue(r.stance));
+    const removed = await loadRemovedCommunityUserKeys();
+    return filterOutRemovedCommunityUsers(withStance, removed);
+  }
+
   const seededRows = await loadSeededAccountsForCommunity();
   const { rows } = await pool.query(`
     SELECT
       cu.*,
       cu.account_created_at AS "accountCreatedAt",
+      COALESCE(ups.stance, cu.stance) AS stance,
       (user_changed.x_user_id IS NOT NULL) AS "hasUserStanceChange"
     FROM community_users cu
+    LEFT JOIN user_proposal_stances ups
+      ON ups.x_user_id = cu.x_user_id AND ups.proposal_id = 'bip110'
     LEFT JOIN (
       SELECT DISTINCT x_user_id
       FROM stance_history
@@ -640,13 +735,22 @@ function mapStanceHistoryPublicRow(r: Record<string, unknown>) {
 async function queryRecentStanceHistoryPage(args: {
   limit: number;
   cursor?: { changed_at: string; id: number } | null;
+  proposalId?: ProposalId;
 }): Promise<{
   items: ReturnType<typeof mapStanceHistoryPublicRow>[];
   next_cursor: string | null;
   has_more: boolean;
 }> {
+  const proposalId = args.proposalId || DEFAULT_PROPOSAL_ID;
   const limit = Math.max(1, Math.min(50, Math.trunc(args.limit) || 10));
   const params: Array<string | number> = [];
+  // Deduplicate by stable internal user id (x_user_id): keep only each user's latest
+  // event (newest changed_at, then highest id as deterministic tie-breaker). Pagination
+  // via cursor is applied AFTER dedup so each page returns unique users. Mirrors the pure
+  // logic in selectLatestStanceEventsPerUser (see stanceHistoryDedup.ts).
+  if (proposalId !== DEFAULT_PROPOSAL_ID) {
+    params.push(proposalId);
+  }
   let cursorSql = "";
   if (args.cursor) {
     params.push(args.cursor.changed_at);
@@ -654,10 +758,10 @@ async function queryRecentStanceHistoryPage(args: {
     cursorSql = `AND (l.changed_at, l.id) < ($${params.length - 1}::timestamptz, $${params.length}::int)`;
   }
   params.push(limit + 1);
-  // Deduplicate by stable internal user id (x_user_id): keep only each user's latest
-  // event (newest changed_at, then highest id as deterministic tie-breaker). Pagination
-  // via cursor is applied AFTER dedup so each page returns unique users. Mirrors the pure
-  // logic in selectLatestStanceEventsPerUser (see stanceHistoryDedup.ts).
+  const historyTable =
+    proposalId === DEFAULT_PROPOSAL_ID
+      ? "stance_history sh"
+      : "user_proposal_stance_history sh WHERE sh.proposal_id = $1";
   const { rows } = await pool.query(
     `
     WITH latest AS (
@@ -672,7 +776,7 @@ async function queryRecentStanceHistoryPage(args: {
           PARTITION BY sh.x_user_id
           ORDER BY sh.changed_at DESC, sh.id DESC
         ) AS rn
-      FROM stance_history sh
+      FROM ${historyTable}
     )
     SELECT
       l.id,
@@ -832,6 +936,9 @@ async function initDb(): Promise<void> {
       ) IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM stance_history sh WHERE sh.x_user_id = cu.x_user_id);
   `);
+
+  // Multi-BIP proposal tables + BIP110 backfill (idempotent).
+  await ensureProposalSchema(pool);
 }
 
 async function cleanupExpiredSessions(): Promise<void> {
@@ -1273,15 +1380,54 @@ app.get("/auth/x/callback", async (req, res, next) => {
   }
 });
 
-app.get("/api/community", async (_req, res, next) => {
+app.get("/api/proposals", async (req, res, next) => {
   try {
-    const withStance = await loadMergedCommunityUsersWithStance();
+    const user = getSessionUser(req);
+    const isAdmin = isPrivilegedManualEditorHandle(user?.handle);
+    const all = listEnabledProposals();
+    const items = isAdmin ? all : all.filter((p) => p.publicDefault);
+    res.json({
+      generated_at: new Date().toISOString(),
+      admin_galaxies: isAdmin,
+      items: items.map((p) => ({
+        id: p.id,
+        bip_number: p.bipNumber,
+        short_name: p.shortName,
+        title: p.title,
+        description: p.description,
+        order: p.order,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get("/api/community", async (req, res, next) => {
+  try {
+    const user = getSessionUser(req);
+    const access = resolveProposalAccess({
+      rawProposal: req.query.proposal ?? req.query.bip,
+      sessionHandle: user?.handle,
+    });
+    if (!access.allowed) {
+      res.status(403).json({ error: "forbidden_proposal" });
+      return;
+    }
+
+    const withStance = await loadMergedCommunityUsersWithStance(access.proposalId);
 
     console.log("[api/community] counts", {
+      proposal_id: access.proposalId,
       final_with_stance_count: withStance.length,
     });
 
-    res.json(withStance);
+    // BIP110: keep legacy bare-array response for public clients.
+    if (access.proposalId === DEFAULT_PROPOSAL_ID) {
+      res.json(withStance);
+      return;
+    }
+    res.json({ proposal_id: access.proposalId, accounts: withStance });
   } catch (err) {
     next(err);
   }
@@ -1294,9 +1440,18 @@ const STANCE_CSV_EXPORT_ROUTES: Array<{ path: string; stance: StanceValue }> = [
 ];
 
 for (const route of STANCE_CSV_EXPORT_ROUTES) {
-  app.get(route.path, async (_req, res, next) => {
+  app.get(route.path, async (req, res, next) => {
     try {
-      const mergedRows = await loadMergedCommunityUsersWithStance();
+      const user = getSessionUser(req);
+      const access = resolveProposalAccess({
+        rawProposal: req.query.proposal ?? req.query.bip,
+        sessionHandle: user?.handle,
+      });
+      if (!access.allowed) {
+        res.status(403).json({ error: "forbidden_proposal" });
+        return;
+      }
+      const mergedRows = await loadMergedCommunityUsersWithStance(access.proposalId);
       const { filename, content } = buildStanceCsvExport(mergedRows, route.stance);
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
@@ -1399,7 +1554,31 @@ app.get("/api/me", async (req, res, next) => {
       res.json(null);
       return;
     }
-    res.json(row);
+
+    const stancesRes = await pool.query(
+      `SELECT proposal_id, stance FROM user_proposal_stances WHERE x_user_id = $1`,
+      [user.x_user_id]
+    );
+    const proposal_stances: Record<string, string | null> = {
+      bip110: null,
+      bip54: null,
+      bip119: null,
+    };
+    for (const r of stancesRes.rows) {
+      const pid = String(r.proposal_id || "");
+      const st = normalizeStanceValue(r.stance);
+      if (pid in proposal_stances) proposal_stances[pid] = st;
+    }
+    // Prefer proposal table for bip110; fall back to legacy column.
+    if (!proposal_stances.bip110) {
+      proposal_stances.bip110 = normalizeStanceValue(row.stance);
+    }
+
+    res.json({
+      ...row,
+      stance: proposal_stances.bip110 ?? row.stance ?? null,
+      proposal_stances,
+    });
   } catch (err) {
     next(err);
   }
@@ -1454,10 +1633,20 @@ app.post("/api/stance", async (req, res, next) => {
       return;
     }
 
+    const access = resolveProposalAccess({
+      rawProposal: req.body?.proposal ?? req.body?.proposal_id ?? req.query.proposal,
+      sessionHandle: user.handle,
+    });
+    if (!access.allowed) {
+      res.status(403).json({ error: "forbidden_proposal" });
+      return;
+    }
+
     if (process.env.NODE_ENV !== "production") {
       console.log("[stance-save] session-user", {
         x_user_id: user.x_user_id,
         handle: user.handle,
+        proposal_id: access.proposalId,
         avatar_url_session: user.avatar_url,
         followers_count_session: user.followers_count,
         requested_stance: String(req.body?.stance ?? ""),
@@ -1477,6 +1666,7 @@ app.post("/api/stance", async (req, res, next) => {
         followersCount: user.followers_count ?? null,
         stance: requestedStance,
         changedBy: "user",
+        proposalId: access.proposalId,
       });
       row = result.row;
       await client.query("COMMIT");
@@ -1655,6 +1845,15 @@ app.post("/api/admin/stance", async (req, res, next) => {
       return;
     }
 
+    const access = resolveProposalAccess({
+      rawProposal: req.body?.proposal ?? req.body?.proposal_id,
+      sessionHandle: user.handle,
+    });
+    if (!access.allowed) {
+      res.status(403).json({ error: "forbidden_proposal" });
+      return;
+    }
+
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -1692,6 +1891,7 @@ app.post("/api/admin/stance", async (req, res, next) => {
             : Number(existingRow?.followers_count || 0) || null,
         stance: requestedStance,
         changedBy: "admin",
+        proposalId: access.proposalId,
       });
       await client.query("COMMIT");
       if (process.env.NODE_ENV !== "production") {
@@ -1699,6 +1899,7 @@ app.post("/api/admin/stance", async (req, res, next) => {
           requester: normalizeHandle(user.handle),
           target_handle: resolvedHandle,
           target_x_user_id: resolvedXUserId,
+          proposal_id: access.proposalId,
           changed: result.changed,
           next_stance: requestedStance,
         });
@@ -1717,8 +1918,20 @@ app.post("/api/admin/stance", async (req, res, next) => {
 
 app.get("/api/stance-playback-sequence", async (req, res, next) => {
   try {
-    const rowsRes = await pool.query(
-      `
+    const user = getSessionUser(req);
+    const access = resolveProposalAccess({
+      rawProposal: req.query.proposal ?? req.query.bip,
+      sessionHandle: user?.handle,
+    });
+    if (!access.allowed) {
+      res.status(403).json({ error: "forbidden_proposal" });
+      return;
+    }
+    const proposalId = access.proposalId;
+    const rowsRes =
+      proposalId === DEFAULT_PROPOSAL_ID
+        ? await pool.query(
+            `
       WITH first_user AS (
         SELECT DISTINCT ON (sh.x_user_id)
           sh.x_user_id,
@@ -1739,7 +1952,32 @@ app.get("/api/stance-playback-sequence", async (req, res, next) => {
       ORDER BY f.first_at ASC
       LIMIT 2000
       `
-    );
+          )
+        : await pool.query(
+            `
+      WITH first_user AS (
+        SELECT DISTINCT ON (sh.x_user_id)
+          sh.x_user_id,
+          sh.changed_at AS first_at,
+          sh.new_stance
+        FROM user_proposal_stance_history sh
+        WHERE sh.changed_by = 'user'
+          AND sh.proposal_id = $1
+        ORDER BY sh.x_user_id ASC, sh.changed_at ASC
+      )
+      SELECT
+        f.x_user_id,
+        lower(trim(coalesce(cu.handle, ''))) AS handle,
+        f.new_stance AS stance,
+        f.first_at
+      FROM first_user f
+      INNER JOIN community_users cu ON cu.x_user_id = f.x_user_id
+      WHERE trim(coalesce(cu.handle, '')) <> ''
+      ORDER BY f.first_at ASC
+      LIMIT 2000
+      `,
+            [proposalId]
+          );
 
     const items = rowsRes.rows.map((r) => ({
       x_user_id: String(r.x_user_id ?? ""),
@@ -1748,7 +1986,7 @@ app.get("/api/stance-playback-sequence", async (req, res, next) => {
       changed_at: new Date(r.first_at).toISOString(),
     }));
 
-    res.json({ items });
+    res.json({ proposal_id: proposalId, items });
   } catch (err) {
     next(err);
   }
@@ -1756,6 +1994,15 @@ app.get("/api/stance-playback-sequence", async (req, res, next) => {
 
 app.get("/api/stances/new", async (req, res, next) => {
   try {
+    const user = getSessionUser(req);
+    const access = resolveProposalAccess({
+      rawProposal: req.query.proposal ?? req.query.bip,
+      sessionHandle: user?.handle,
+    });
+    if (!access.allowed) {
+      res.status(403).json({ error: "forbidden_proposal" });
+      return;
+    }
     const afterRaw = String(req.query.afterEventId ?? "").trim();
     const limitRaw = String(req.query.limit ?? "").trim();
     const afterEventId =
@@ -1763,9 +2010,14 @@ app.get("/api/stances/new", async (req, res, next) => {
         ? Math.trunc(Number(afterRaw))
         : null;
     const limit = clampNewStancesLimit(limitRaw || 9);
-    const items = await queryNewStanceEvents(pool, { afterEventId, limit });
+    const items = await queryNewStanceEvents(pool, {
+      afterEventId,
+      limit,
+      proposalId: access.proposalId,
+    });
     res.json({
       generated_at: new Date().toISOString(),
+      proposal_id: access.proposalId,
       items,
     });
   } catch (err) {
@@ -1775,6 +2027,19 @@ app.get("/api/stances/new", async (req, res, next) => {
 
 app.get("/api/stance-history", async (req, res, next) => {
   try {
+    const user = getSessionUser(req);
+    const access = resolveProposalAccess({
+      rawProposal: req.query.proposal ?? req.query.bip,
+      sessionHandle: user?.handle,
+    });
+    if (!access.allowed) {
+      res.status(403).json({ error: "forbidden_proposal" });
+      return;
+    }
+    const proposalId = access.proposalId;
+    const historyTable =
+      proposalId === DEFAULT_PROPOSAL_ID ? "stance_history" : "user_proposal_stance_history";
+
     const limitRaw = String(req.query.limit ?? "").trim();
     const cursorRaw = String(req.query.cursor ?? "").trim();
     const wantsPage = Boolean(limitRaw || cursorRaw || String(req.query.page ?? "").trim() === "1");
@@ -1789,9 +2054,11 @@ app.get("/api/stance-history", async (req, res, next) => {
       const page = await queryRecentStanceHistoryPage({
         limit: Number.isFinite(limit) ? limit : 10,
         cursor,
+        proposalId,
       });
       res.json({
         generated_at: new Date().toISOString(),
+        proposal_id: proposalId,
         items: page.items.map((item) => ({
           id: item.id,
           handle: item.handle,
@@ -1812,6 +2079,10 @@ app.get("/api/stance-history", async (req, res, next) => {
     const handle = normalizeHandle(req.query.handle);
     const where: string[] = [];
     const params: string[] = [];
+    if (proposalId !== DEFAULT_PROPOSAL_ID) {
+      params.push(proposalId);
+      where.push(`sh.proposal_id = $${params.length}`);
+    }
     if (xUserId) {
       params.push(xUserId);
       where.push(`sh.x_user_id = $${params.length}`);
@@ -1834,7 +2105,7 @@ app.get("/api/stance-history", async (req, res, next) => {
         sh.new_stance,
         sh.changed_at,
         sh.changed_by
-      FROM stance_history sh
+      FROM ${historyTable} sh
       LEFT JOIN community_users cu ON cu.x_user_id = sh.x_user_id
       ${whereSql}
       ORDER BY sh.changed_at ASC
@@ -1848,7 +2119,7 @@ app.get("/api/stance-history", async (req, res, next) => {
       SELECT
         date_trunc('day', sh.changed_at)::date AS day,
         COUNT(*)::int AS total_changes
-      FROM stance_history sh
+      FROM ${historyTable} sh
       LEFT JOIN community_users cu ON cu.x_user_id = sh.x_user_id
       ${whereSql}
       GROUP BY 1
@@ -1864,7 +2135,7 @@ app.get("/api/stance-history", async (req, res, next) => {
         sh.previous_stance AS "from",
         sh.new_stance AS "to",
         COUNT(*)::int AS count
-      FROM stance_history sh
+      FROM ${historyTable} sh
       LEFT JOIN community_users cu ON cu.x_user_id = sh.x_user_id
       ${whereSql}
       GROUP BY 1,2,3
@@ -1875,6 +2146,7 @@ app.get("/api/stance-history", async (req, res, next) => {
 
     res.json({
       generated_at: new Date().toISOString(),
+      proposal_id: proposalId,
       history: historyRes.rows.map((r) => {
         const mapped = mapStanceHistoryPublicRow(r as Record<string, unknown>);
         return {
@@ -1904,13 +2176,24 @@ app.get("/api/stance-history", async (req, res, next) => {
   }
 });
 
-app.get("/api/stats", async (_req, res, next) => {
+app.get("/api/stats", async (req, res, next) => {
   try {
+    const user = getSessionUser(req);
+    const access = resolveProposalAccess({
+      rawProposal: req.query.proposal ?? req.query.bip,
+      sessionHandle: user?.handle,
+    });
+    if (!access.allowed) {
+      res.status(403).json({ error: "forbidden_proposal" });
+      return;
+    }
+    const proposalId = access.proposalId;
     const handlerStarted = Date.now();
     const now = Date.now();
-    if (statsResponseCache && statsResponseCache.expiresAt > now) {
+    const cachedEntry = statsResponseCacheByProposal.get(proposalId);
+    if (cachedEntry && cachedEntry.expiresAt > now) {
       const cached = {
-        ...statsResponseCache.payload,
+        ...cachedEntry.payload,
         _timing: {
           total_ms: Date.now() - handlerStarted,
           db_ms: 0,
@@ -1937,112 +2220,13 @@ app.get("/api/stats", async (_req, res, next) => {
       changes7dRes,
       totalChangesRes,
       transitionCountsRes,
-      recentPage,
       flowsRes,
-    ] = await Promise.all([
-      pool.query(`
-        WITH normalized AS (
-          SELECT
-            CASE
-              WHEN lower(coalesce(stance, '')) = 'support' THEN 'approve'
-              WHEN lower(coalesce(stance, '')) IN ('against', 'neutral', 'approve') THEN lower(stance)
-              ELSE NULL
-            END AS stance_norm,
-            COALESCE(followers_count, 0) AS followers_count
-          FROM community_users
-        )
-        SELECT
-          COUNT(*) FILTER (WHERE stance_norm IS NOT NULL)::int AS total_users_with_stance,
-          COUNT(*) FILTER (WHERE stance_norm = 'against')::int AS against_count,
-          COUNT(*) FILTER (WHERE stance_norm = 'neutral')::int AS neutral_count,
-          COUNT(*) FILTER (WHERE stance_norm = 'approve')::int AS approve_count,
-          COALESCE(SUM(followers_count) FILTER (WHERE stance_norm = 'against'), 0)::bigint AS against_followers_total,
-          COALESCE(SUM(followers_count) FILTER (WHERE stance_norm = 'neutral'), 0)::bigint AS neutral_followers_total,
-          COALESCE(SUM(followers_count) FILTER (WHERE stance_norm = 'approve'), 0)::bigint AS approve_followers_total,
-          COALESCE(ROUND(AVG(followers_count) FILTER (WHERE stance_norm = 'against')), 0)::int AS against_followers_avg,
-          COALESCE(ROUND(AVG(followers_count) FILTER (WHERE stance_norm = 'neutral')), 0)::int AS neutral_followers_avg,
-          COALESCE(ROUND(AVG(followers_count) FILTER (WHERE stance_norm = 'approve')), 0)::int AS approve_followers_avg
-        FROM normalized
-      `),
-      pool.query(`
-        WITH ranked AS (
-          SELECT
-            handle,
-            followers_count,
-            CASE
-              WHEN lower(coalesce(stance, '')) = 'support' THEN 'approve'
-              WHEN lower(coalesce(stance, '')) IN ('against', 'neutral', 'approve') THEN lower(stance)
-              ELSE NULL
-            END AS stance_norm,
-            ROW_NUMBER() OVER (
-              PARTITION BY
-                CASE
-                  WHEN lower(coalesce(stance, '')) = 'support' THEN 'approve'
-                  WHEN lower(coalesce(stance, '')) IN ('against', 'neutral', 'approve') THEN lower(stance)
-                  ELSE NULL
-                END
-              ORDER BY COALESCE(followers_count, 0) DESC, handle ASC
-            ) AS rn
-          FROM community_users
-        )
-        SELECT stance_norm, handle, followers_count
-        FROM ranked
-        WHERE stance_norm IN ('against', 'neutral', 'approve') AND rn = 1
-      `),
-      pool.query(`
-        -- Distinct users who have any real stance transition. This intentionally
-        -- INCLUDES first-time adoptions (Unset -> stance, previous_stance IS NULL),
-        -- because every other metric here (total_changes, changes_last_7d,
-        -- transitions, flows) counts Unset -> X as a change. Requiring
-        -- previous_stance IS NOT NULL made this the odd one out and produced an
-        -- impossible value (e.g. 60 while 285 users did Unset -> Against).
-        SELECT COUNT(DISTINCT x_user_id)::int AS changed_ever
-        FROM stance_history
-        WHERE previous_stance IS DISTINCT FROM new_stance
-      `),
-      pool.query(`
-        SELECT COUNT(*)::int AS changes_last_7d
-        FROM stance_history
-        WHERE changed_at >= now() - interval '7 days'
-          AND previous_stance IS DISTINCT FROM new_stance
-      `),
-      pool.query(`
-        SELECT COUNT(*)::int AS total_changes
-        FROM stance_history
-        WHERE previous_stance IS DISTINCT FROM new_stance
-      `),
-      pool.query(`
-        SELECT previous_stance AS "from", new_stance AS "to", COUNT(*)::int AS count
-        FROM stance_history
-        GROUP BY previous_stance, new_stance
-        HAVING COUNT(*) > 0
-        ORDER BY count DESC, previous_stance NULLS FIRST, new_stance
-      `),
-      queryRecentStanceHistoryPage({ limit: 10, cursor: null }),
-      pool.query(`
-        WITH norm AS (
-          SELECT
-            CASE
-              WHEN lower(coalesce(previous_stance, '')) = 'support' THEN 'approve'
-              WHEN lower(coalesce(previous_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(previous_stance)
-              ELSE NULL
-            END AS from_norm,
-            CASE
-              WHEN lower(coalesce(new_stance, '')) = 'support' THEN 'approve'
-              WHEN lower(coalesce(new_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(new_stance)
-              ELSE NULL
-            END AS to_norm
-          FROM stance_history
-          WHERE changed_at >= now() - interval '7 days'
-        )
-        SELECT from_norm AS "from", to_norm AS "to", COUNT(*)::int AS count
-        FROM norm
-        WHERE to_norm IN ('against', 'neutral', 'approve')
-        GROUP BY from_norm, to_norm
-        HAVING COUNT(*) > 0
-        ORDER BY count DESC, from_norm NULLS FIRST, to_norm
-      `),
-    ]);
+    ] = await runStatsQueries(pool, proposalId);
+    const recentPage = await queryRecentStanceHistoryPage({
+      limit: 10,
+      cursor: null,
+      proposalId,
+    });
     const dbMs = Date.now() - dbStarted;
 
     const agg = aggRes.rows[0] || {};
@@ -2103,6 +2287,7 @@ app.get("/api/stats", async (_req, res, next) => {
 
     const payload: Record<string, unknown> = {
       generated_at: new Date().toISOString(),
+      proposal_id: proposalId,
       total_users_with_stance: totalUsersWithStance,
       counts,
       percentages,
@@ -2127,10 +2312,10 @@ app.get("/api/stats", async (_req, res, next) => {
       })),
     };
 
-    statsResponseCache = {
+    statsResponseCacheByProposal.set(proposalId, {
       expiresAt: Date.now() + STATS_CACHE_TTL_MS,
       payload,
-    };
+    });
 
     const timing = {
       total_ms: Date.now() - handlerStarted,

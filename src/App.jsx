@@ -26,6 +26,20 @@ import { fetchCommunityUsersResult } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor, removeAccountFromList } from "./utils/manualEditState";
 import { assertHaloAvatarAdmin, isHaloAvatarAdmin } from "./utils/haloAvatarAdmin";
 import { HaloAvatarModal } from "./components/HaloAvatarModal";
+import { GalaxyHeaderNav } from "./components/GalaxyHeaderNav";
+import { DistantGalaxies } from "./components/DistantGalaxies";
+import { EdgeGalaxyNav } from "./components/EdgeGalaxyNav";
+import { GalaxyTravelOverlay } from "./components/GalaxyTravelOverlay";
+import {
+  DEFAULT_PROPOSAL_ID,
+  getProposalById,
+} from "./config/proposals";
+import {
+  normalizeIncomingProposalId,
+  readProposalIdFromLocation,
+  writeProposalIdToLocation,
+  getAdjacent,
+} from "./utils/proposalNavigation";
 import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
 import { followersForAvatarSize } from "./utils/avatarSize";
 import { formatXJoinDate } from "./utils/xJoinDate";
@@ -671,19 +685,25 @@ function consumeLoginReturnSnapshot() {
 }
 
 /** Load canonical seeded accounts + community accounts and merge by handle. */
-async function loadAccounts() {
+async function loadAccounts(proposalId = DEFAULT_PROPOSAL_ID, signal) {
   const base = getBase();
-  const seededPromise = fetch(`${base}/data/accounts_stanced.json?v=${DATA_REV}`).then(async (r) => {
-    if (!r.ok) return [];
-    const text = await r.text();
-    try {
-      const data = parseJsonPreservingSnowflakeIds(text);
-      return Array.isArray(data) ? data : [];
-    } catch {
-      return [];
-    }
-  });
-  const communityPromise = fetchCommunityUsersResult().catch(() => ({ ok: false, users: [] }));
+  const isBip110 = proposalId === DEFAULT_PROPOSAL_ID;
+  const seededPromise = isBip110
+    ? fetch(`${base}/data/accounts_stanced.json?v=${DATA_REV}`, { signal }).then(async (r) => {
+        if (!r.ok) return [];
+        const text = await r.text();
+        try {
+          const data = parseJsonPreservingSnowflakeIds(text);
+          return Array.isArray(data) ? data : [];
+        } catch {
+          return [];
+        }
+      })
+    : Promise.resolve([]);
+  const communityPromise = fetchCommunityUsersResult({ proposal: proposalId, signal }).catch(() => ({
+    ok: false,
+    users: [],
+  }));
 
   // Wait for both sources before first paint so the graph does not briefly show
   // seed-only (~150) accounts and then jump to the full live community set.
@@ -944,6 +964,15 @@ export default function App() {
   const [selectedHandle, setSelectedHandle] = useState(null);
   const [search, setSearch] = useState("");
   const [me, setMe] = useState(null);
+  const [activeProposalId, setActiveProposalId] = useState(() => readProposalIdFromLocation());
+  const [galaxyTravel, setGalaxyTravel] = useState(null); // { from, to, progress } | null
+  const galaxyTravelLockRef = useRef(false);
+  const proposalReloadAbortRef = useRef(null);
+  const parallaxLayerRef = useRef(null);
+  const prefersGalaxyReducedMotion =
+    typeof window !== "undefined" &&
+    window.matchMedia &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const showClusterHalo = useMemo(
     () =>
       shouldShowClusterHalo({
@@ -1095,8 +1124,16 @@ export default function App() {
       const authenticated = Boolean(data && data.x_user_id);
       setMe(authenticated ? { authenticated: true, ...data } : { authenticated: false });
       setEqualAvatarSizeEnabled(authenticated ? Boolean(data?.equal_avatar_size) : false);
-      if (authenticated && data?.handle && data?.stance) {
-        setLabels((prev) => ({ ...prev, [String(data.handle).toLowerCase()]: normalizedStance(data.stance) }));
+      if (authenticated && data?.handle) {
+        const stanceForActive =
+          data?.proposal_stances?.[activeProposalId] ??
+          (activeProposalId === DEFAULT_PROPOSAL_ID ? data?.stance : null);
+        if (stanceForActive) {
+          setLabels((prev) => ({
+            ...prev,
+            [String(data.handle).toLowerCase()]: normalizedStance(stanceForActive),
+          }));
+        }
       }
     } catch {
       // ignore auth failures in local dev
@@ -1224,7 +1261,10 @@ export default function App() {
     try {
       if (forceLoading || !statsDataRef.current) setStatsLoading(true);
       setStatsError("");
-      const res = await fetch(`${API_BASE}/api/stats`, { credentials: "include" });
+      const res = await fetch(
+        `${API_BASE}/api/stats?proposal=${encodeURIComponent(activeProposalId)}`,
+        { credentials: "include" }
+      );
       if (!res.ok) throw new Error(`Failed to load stats (${res.status})`);
       const data = await res.json();
       if (isCancelled()) return;
@@ -1251,14 +1291,19 @@ export default function App() {
     if (!showStatsModal) return;
     let dead = false;
     fetchStats({
-      forceLoading: !statsDataRef.current,
+      forceLoading: true,
       cancelled: () => dead,
     });
     return () => {
       dead = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showStatsModal]);
+  }, [showStatsModal, activeProposalId]);
+
+  useEffect(() => {
+    // Drop stale stats when switching galaxies so the modal never shows wrong BIP.
+    setStatsData(null);
+  }, [activeProposalId]);
 
   function openStatsModal() {
     statsFetchStartedAtRef.current = performance.now();
@@ -1310,11 +1355,58 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const meStance = me?.stance ? normalizedStance(me.stance) : "";
-  const meHasStance = userHasChosenStance(me);
+  const meForActiveProposal = useMemo(() => {
+    if (!me?.authenticated) return me;
+    const fromMap = me?.proposal_stances?.[activeProposalId];
+    const stance =
+      fromMap != null && fromMap !== ""
+        ? fromMap
+        : activeProposalId === DEFAULT_PROPOSAL_ID
+          ? me?.stance
+          : null;
+    return { ...me, stance };
+  }, [me, activeProposalId]);
+  const meStance = meForActiveProposal?.stance ? normalizedStance(meForActiveProposal.stance) : "";
+  const meHasStance = userHasChosenStance(meForActiveProposal);
   const meStanceToolbar = toolbarStanceMeta(meStance);
   const meHandleLower = safeLower(me?.handle);
   const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
+  const adminGalaxiesEnabled = useMemo(
+    () => me?.authenticated === true && isPrivilegedManualEditor(me?.handle),
+    [me?.authenticated, me?.handle]
+  );
+  const activeProposal = useMemo(() => getProposalById(activeProposalId), [activeProposalId]);
+
+  useEffect(() => {
+    if (!meForActiveProposal?.authenticated) {
+      setStanceChoiceOpen(false);
+      return;
+    }
+    if (shouldAutoOpenStanceChoice(meForActiveProposal)) {
+      setStanceChoiceOpen(true);
+    }
+  }, [meForActiveProposal?.authenticated, meForActiveProposal?.stance, meForActiveProposal?.x_user_id, activeProposalId]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const theme = activeProposal?.visualTheme;
+    if (adminGalaxiesEnabled && theme) {
+      document.documentElement.style.setProperty("--galaxy-nebula-from", theme.nebulaFrom);
+      document.documentElement.style.setProperty("--galaxy-nebula-to", theme.nebulaTo);
+      document.documentElement.style.setProperty("--galaxy-accent", theme.accent);
+      document.title = `Consensus Health · ${activeProposal.shortName}`;
+    } else {
+      document.documentElement.style.removeProperty("--galaxy-nebula-from");
+      document.documentElement.style.removeProperty("--galaxy-nebula-to");
+      document.documentElement.style.removeProperty("--galaxy-accent");
+      document.title = "Consensus Health";
+    }
+  }, [adminGalaxiesEnabled, activeProposal]);
+
+  useEffect(() => {
+    historyCacheRef.current?.clear?.();
+  }, [activeProposalId]);
+
   // Delayed avatar stance-history panel: authenticated admin (zndtoshi) only.
   const canViewAvatarStanceHistory = useMemo(
     () => me?.authenticated === true && isPrivilegedManualEditor(me?.handle),
@@ -1693,6 +1785,7 @@ export default function App() {
           handle: manualEditTarget.handle,
           x_user_id: manualEditTarget.x_user_id || null,
           stance: manualEditChoice,
+          proposal: activeProposalId,
         }),
       });
       if (!res.ok) {
@@ -1977,6 +2070,15 @@ export default function App() {
   // briefly show seed-only accounts and then expand to the full live set.
   useEffect(() => {
     let dead = false;
+    const proposalId = normalizeIncomingProposalId(activeProposalId, adminGalaxiesEnabled);
+    if (proposalId !== activeProposalId) {
+      setActiveProposalId(proposalId);
+      writeProposalIdToLocation(proposalId, true);
+      return undefined;
+    }
+    if (proposalReloadAbortRef.current) proposalReloadAbortRef.current.abort();
+    const controller = new AbortController();
+    proposalReloadAbortRef.current = controller;
     (async () => {
       try {
         setLoading(true);
@@ -1985,7 +2087,7 @@ export default function App() {
         // OAuth redirect, restore the previously loaded dataset instead of
         // refetching the whole graph.
         const restored = consumeLoginReturnSnapshot();
-        if (restored) {
+        if (restored && proposalId === DEFAULT_PROPOSAL_ID) {
           if (dead) return;
           setAccounts(restored.accounts);
           if (restored.selectedHandle) setSelectedHandle(restored.selectedHandle);
@@ -1993,21 +2095,81 @@ export default function App() {
         }
         const apiStarted = performance.now();
         perfMark("accounts-load-start");
-        const cleanedAccounts = await loadAccounts();
-        if (dead) return;
+        const cleanedAccounts = await loadAccounts(proposalId, controller.signal);
+        if (dead || controller.signal.aborted) return;
         const accountsFiltered = cleanedAccounts.filter((r) => (r.handle ?? "").toString().trim().length > 0);
         perfSetMs("lastApiMs", performance.now() - apiStarted);
         setAccounts(accountsFiltered);
+        setLabels({});
       } catch (e) {
-        if (!dead) setErr(String(e?.message || e));
+        if (!dead && !controller.signal.aborted) setErr(String(e?.message || e));
       } finally {
-        if (!dead) setLoading(false);
+        if (!dead && !controller.signal.aborted) setLoading(false);
       }
     })();
     return () => {
       dead = true;
+      controller.abort();
     };
-  }, []);
+  }, [activeProposalId, adminGalaxiesEnabled]);
+
+  useEffect(() => {
+    function onPopState() {
+      const next = normalizeIncomingProposalId(readProposalIdFromLocation(), adminGalaxiesEnabled);
+      setActiveProposalId(next);
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [adminGalaxiesEnabled]);
+
+  function travelToGalaxy(nextId) {
+    if (!adminGalaxiesEnabled) return;
+    const target = normalizeIncomingProposalId(nextId, true);
+    if (target === activeProposalId) return;
+    if (galaxyTravelLockRef.current) return;
+    galaxyTravelLockRef.current = true;
+    const from = activeProposalId;
+    const duration = prefersGalaxyReducedMotion ? 280 : 900;
+    const t0 = performance.now();
+    setGalaxyTravel({ from, to: target, progress: 0 });
+    let midSwapped = false;
+    const tick = (now) => {
+      const p = Math.min(1, (now - t0) / duration);
+      setGalaxyTravel({ from, to: target, progress: p });
+      if (!midSwapped && p >= 0.45) {
+        midSwapped = true;
+        writeProposalIdToLocation(target, false);
+        setActiveProposalId(target);
+        setSelectedHandle(null);
+      }
+      if (p < 1) {
+        requestAnimationFrame(tick);
+      } else {
+        setGalaxyTravel(null);
+        galaxyTravelLockRef.current = false;
+      }
+    };
+    requestAnimationFrame(tick);
+  }
+
+  useEffect(() => {
+    if (!adminGalaxiesEnabled) return undefined;
+    function onKey(e) {
+      if (e.defaultPrevented) return;
+      const tag = String(e.target?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || e.target?.isContentEditable) return;
+      if (galaxyTravelLockRef.current) return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        travelToGalaxy(getAdjacent(activeProposalId).prev.id);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        travelToGalaxy(getAdjacent(activeProposalId).next.id);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [adminGalaxiesEnabled, activeProposalId]);
 
   // Defer the mentions CSV (462 KB) + PapaParse: it is only needed to show a
   // selected user's tweets, not for first paint. Dynamically import PapaParse so
@@ -3286,6 +3448,7 @@ export default function App() {
         apiBase: API_BASE,
         handle: hover.handle,
         xUserId: hover.xUserId,
+        proposalId: activeProposalId,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
@@ -5639,7 +5802,28 @@ export default function App() {
   }
 
   return (
-    <div style={styles.page}>
+    <div
+      style={{
+        ...styles.page,
+        ...(adminGalaxiesEnabled && activeProposal?.visualTheme
+          ? {
+              background: `radial-gradient(ellipse 120% 100% at 50% 0%, ${activeProposal.visualTheme.nebulaFrom} 0%, ${activeProposal.visualTheme.nebulaTo} 55%, #000 100%)`,
+            }
+          : null),
+      }}
+      onPointerMove={
+        adminGalaxiesEnabled && !prefersGalaxyReducedMotion
+          ? (e) => {
+              const layer = parallaxLayerRef.current;
+              if (!layer || e.pointerType === "touch") return;
+              if (cameraInteractingRef.current) return;
+              const nx = (e.clientX / window.innerWidth - 0.5) * 2;
+              const ny = (e.clientY / window.innerHeight - 0.5) * 2;
+              layer.style.transform = `translate3d(${(-nx * 6).toFixed(2)}px, ${(-ny * 4).toFixed(2)}px, 0)`;
+            }
+          : undefined
+      }
+    >
       <div ref={headerRef} style={styles.header}>
         <div style={styles.headerLeft}>
           <div style={styles.brandWrap}>
@@ -5694,9 +5878,21 @@ export default function App() {
           </div>
         </div>
         <div style={styles.headerCenter}>
+          {adminGalaxiesEnabled ? (
+            <GalaxyHeaderNav
+              proposalId={activeProposalId}
+              disabled={Boolean(galaxyTravel)}
+              onNavigate={travelToGalaxy}
+            />
+          ) : null}
           {selectedHandle && (
             <>
-              <div style={styles.selectedMetaBlock}>
+              <div
+                style={{
+                  ...styles.selectedMetaBlock,
+                  ...(adminGalaxiesEnabled ? { marginTop: 6 } : null),
+                }}
+              >
                 <img
                   src={selectedHeaderAvatarSrc}
                   alt={selectedHandle ? `@${selectedHandle}` : "selected user"}
@@ -5996,6 +6192,40 @@ export default function App() {
                   No accounts joined X in this range.
                 </div>
               ) : null}
+              {!loading &&
+              !joinDateFilterActive &&
+              visibleAccounts.length === 0 &&
+              activeProposalId !== DEFAULT_PROPOSAL_ID ? (
+                <div className="galaxyEmptyState" role="status">
+                  <div className="galaxyEmptyState__title">{activeProposal?.shortName || "Galaxy"}</div>
+                  <div className="galaxyEmptyState__msg">
+                    {activeProposal?.emptyMessage || "Be the first to map this consensus galaxy."}
+                  </div>
+                </div>
+              ) : null}
+              {adminGalaxiesEnabled ? (
+                <>
+                  <div ref={parallaxLayerRef} className="galaxyParallaxLayer" aria-hidden="true" />
+                  <DistantGalaxies
+                    activeProposalId={activeProposalId}
+                    disabled={Boolean(galaxyTravel)}
+                    onNavigate={travelToGalaxy}
+                    reducedMotion={prefersGalaxyReducedMotion}
+                  />
+                  <EdgeGalaxyNav
+                    proposalId={activeProposalId}
+                    disabled={Boolean(galaxyTravel)}
+                    onNavigate={travelToGalaxy}
+                  />
+                  <GalaxyTravelOverlay
+                    active={Boolean(galaxyTravel)}
+                    fromId={galaxyTravel?.from}
+                    toId={galaxyTravel?.to}
+                    progress={galaxyTravel?.progress || 0}
+                    reducedMotion={prefersGalaxyReducedMotion}
+                  />
+                </>
+              ) : null}
               <div className="sr-only" aria-live="polite">
                 {filterAriaStatus}
               </div>
@@ -6224,6 +6454,7 @@ export default function App() {
             loading={statsLoading && !statisticsData}
             error={statsError}
             apiBase={API_BASE}
+            proposalId={activeProposalId}
             onRetryHistory={() => {
               statsFetchStartedAtRef.current = performance.now();
               fetchStats({ forceLoading: true });
