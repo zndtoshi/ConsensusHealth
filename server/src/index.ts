@@ -1385,7 +1385,7 @@ app.get("/api/proposals", async (req, res, next) => {
     const user = getSessionUser(req);
     const isAdmin = isPrivilegedManualEditorHandle(user?.handle);
     const all = listEnabledProposals();
-    const items = isAdmin ? all : all.filter((p) => p.publicDefault);
+    const items = isAdmin ? all : all.filter((p) => !p.adminOnly);
     res.json({
       generated_at: new Date().toISOString(),
       admin_galaxies: isAdmin,
