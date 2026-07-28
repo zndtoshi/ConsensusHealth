@@ -39,6 +39,18 @@ export function resolveGlowProfile(opts?: {
   const cr = opts?.isChromium ?? isChromium();
   const debug = opts?.debugGlow ?? null;
 
+  // Richer multi-pass glow retained behind ?debugGlow=default (all browsers).
+  if (debug === "default") {
+    return {
+      id: cr ? "chromium-default" : "standard",
+      quality: ff ? 0.48 : 1,
+      blurMultiplier: DEFAULT_GLOW_BLUR_MULTIPLIER,
+      opacityMultiplier: 1,
+      nonEmphasizedPasses: 3,
+      zoneAlphaMultiplier: 1,
+    };
+  }
+
   if (ff) {
     return {
       id: "firefox",
@@ -51,33 +63,23 @@ export function resolveGlowProfile(opts?: {
   }
 
   if (cr) {
-    const useSharp = debug !== "default";
-    if (useSharp) {
-      return {
-        id: "chromium-sharp",
-        quality: 1,
-        blurMultiplier: CHROMIUM_GLOW_BLUR_MULTIPLIER,
-        opacityMultiplier: CHROMIUM_GLOW_OPACITY_MULTIPLIER,
-        nonEmphasizedPasses: 1,
-        zoneAlphaMultiplier: CHROMIUM_ZONE_ALPHA_MULTIPLIER,
-      };
-    }
     return {
-      id: "chromium-default",
+      id: "chromium-sharp",
       quality: 1,
-      blurMultiplier: DEFAULT_GLOW_BLUR_MULTIPLIER,
-      opacityMultiplier: 1,
-      nonEmphasizedPasses: 3,
-      zoneAlphaMultiplier: 1,
+      blurMultiplier: CHROMIUM_GLOW_BLUR_MULTIPLIER,
+      opacityMultiplier: CHROMIUM_GLOW_OPACITY_MULTIPLIER,
+      nonEmphasizedPasses: 1,
+      zoneAlphaMultiplier: CHROMIUM_ZONE_ALPHA_MULTIPLIER,
     };
   }
 
+  // Default production glow: one composited pass.
   return {
     id: "standard",
     quality: 1,
     blurMultiplier: DEFAULT_GLOW_BLUR_MULTIPLIER,
     opacityMultiplier: 1,
-    nonEmphasizedPasses: 3,
+    nonEmphasizedPasses: 1,
     zoneAlphaMultiplier: 1,
   };
 }
