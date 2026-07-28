@@ -14,15 +14,15 @@ test("parseDebugGlowParams reads debugGlow query values", () => {
   assert.equal(parseDebugGlowParams(""), null);
 });
 
-test("resolveGlowProfile keeps Firefox unchanged", () => {
-  const profile = resolveGlowProfile({ isFirefox: true, isChromium: false, debugGlow: "sharp" });
+test("resolveGlowProfile keeps Firefox one-pass by default", () => {
+  const profile = resolveGlowProfile({ isFirefox: true, isChromium: false, debugGlow: null });
   assert.equal(profile.id, "firefox");
   assert.equal(profile.quality, 0.48);
   assert.equal(profile.blurMultiplier, 1);
   assert.equal(profile.nonEmphasizedPasses, 1);
 });
 
-test("resolveGlowProfile tightens Chromium by default", () => {
+test("resolveGlowProfile defaults Chromium to one pass", () => {
   const profile = resolveGlowProfile({ isFirefox: false, isChromium: true, debugGlow: null });
   assert.equal(profile.id, "chromium-sharp");
   assert.equal(profile.blurMultiplier, CHROMIUM_GLOW_BLUR_MULTIPLIER);
@@ -30,11 +30,20 @@ test("resolveGlowProfile tightens Chromium by default", () => {
   assert.equal(profile.nonEmphasizedPasses, 1);
 });
 
-test("resolveGlowProfile debugGlow=default restores legacy Chromium passes", () => {
-  const profile = resolveGlowProfile({ isFirefox: false, isChromium: true, debugGlow: "default" });
-  assert.equal(profile.id, "chromium-default");
-  assert.equal(profile.blurMultiplier, 1);
-  assert.equal(profile.nonEmphasizedPasses, 3);
+test("resolveGlowProfile defaults non-Chromium to one pass", () => {
+  const profile = resolveGlowProfile({ isFirefox: false, isChromium: false, debugGlow: null });
+  assert.equal(profile.id, "standard");
+  assert.equal(profile.nonEmphasizedPasses, 1);
+});
+
+test("resolveGlowProfile debugGlow=default restores richer multi-pass glow", () => {
+  const chromium = resolveGlowProfile({ isFirefox: false, isChromium: true, debugGlow: "default" });
+  assert.equal(chromium.id, "chromium-default");
+  assert.equal(chromium.nonEmphasizedPasses, 3);
+
+  const standard = resolveGlowProfile({ isFirefox: false, isChromium: false, debugGlow: "default" });
+  assert.equal(standard.id, "standard");
+  assert.equal(standard.nonEmphasizedPasses, 3);
 });
 
 test("scaleRgbaAlpha scales alpha channel", () => {
