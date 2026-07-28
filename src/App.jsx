@@ -19,6 +19,8 @@ import {
 } from "./utils/perfDebug";
 import { isChromium, isFirefox } from "./utils/browser";
 import { clearCanvasBitmap } from "./utils/canvasClear";
+import { resolveCanvasDpr } from "./utils/canvasDpr";
+import { createGraphIdleScheduler } from "./utils/graphIdleScheduler";
 import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./utils/glowRendering";
 import { fetchCommunityUsers } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
@@ -1923,39 +1925,25 @@ export default function App() {
     };
   }, [pulseSelectedEnabled, selectedHandle]);
 
-  // Gentle cluster-halo breathing repaint — skip while intro is frozen or the
-  // camera is being dragged (pan uses a static layer instead). Coalesce through
-  // scheduleDraw so we never stack a second full paint beside other rAF drawers.
+  // Gentle cluster / breathing halo idle redraws — single throttled scheduler.
+  // Interaction (drag/pan/zoom/hover) continues to use scheduleDraw at full rate.
   useEffect(() => {
-    if (!showClusterHalo || stanceListsViewEnabled) return;
-    let raf = 0;
-    const tick = () => {
-      if (!newStancesIntroRef.current.graphFrozen && !cameraInteractingRef.current) {
-        cameraInteractApiRef.current.scheduleDraw();
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => {
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [showClusterHalo, stanceListsViewEnabled]);
+    const needsIdleHalo =
+      !stanceListsViewEnabled &&
+      (showClusterHalo || (useBreathingHalo && !readReducedMotionPreference()));
+    if (!needsIdleHalo) return undefined;
 
-  // Top-account breathing halo repaint — skip while dragging.
-  useEffect(() => {
-    if (!useBreathingHalo || stanceListsViewEnabled || readReducedMotionPreference()) return;
-    let raf = 0;
-    const tick = () => {
-      if (!newStancesIntroRef.current.graphFrozen && !cameraInteractingRef.current) {
-        cameraInteractApiRef.current.scheduleDraw();
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => {
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [useBreathingHalo, stanceListsViewEnabled]);
+    const scheduler = createGraphIdleScheduler({
+      shouldAnimate: () =>
+        !stanceListsViewEnabled &&
+        (showClusterHalo || (useBreathingHalo && !readReducedMotionPreference())),
+      isCameraInteracting: () => cameraInteractingRef.current,
+      isIntroFrozen: () => Boolean(newStancesIntroRef.current.graphFrozen),
+      scheduleDraw: () => cameraInteractApiRef.current.scheduleDraw(),
+    });
+    scheduler.start();
+    return () => scheduler.stop();
+  }, [showClusterHalo, useBreathingHalo, stanceListsViewEnabled]);
 
   // Opt-in performance overlay (?debugPerformance=1).
   useEffect(() => {
@@ -1966,7 +1954,7 @@ export default function App() {
     const tick = () => {
       updatePerfOverlay([
         `settling=${layoutSettlingRef.current ? 1 : 0} camDrag=${cameraInteractingRef.current ? 1 : 0}`,
-        `panLayer=${panLayerRef.current.valid ? 1 : 0} dpr=${window.devicePixelRatio || 1}`,
+        `panLayer=${panLayerRef.current.valid ? 1 : 0} dpr=${resolveCanvasDpr(window.devicePixelRatio || 1)}`,
       ]);
       raf = requestAnimationFrame(tick);
     };
@@ -3801,8 +3789,7 @@ export default function App() {
     const layer = panLayerRef.current;
     layer.valid = false;
     if (!layer.canvas) layer.canvas = document.createElement("canvas");
-    const rawDpr = window.devicePixelRatio || 1;
-    const dpr = isFirefoxBrowser ? Math.min(rawDpr, 1.5) : rawDpr;
+    const dpr = resolveCanvasDpr(window.devicePixelRatio || 1);
     const cw = Math.max(1, w);
     const ch = Math.max(1, h);
     const bw = Math.floor(cw * dpr);
@@ -4579,8 +4566,7 @@ export default function App() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const rawDpr = window.devicePixelRatio || 1;
-    const dpr = isFirefoxBrowser ? Math.min(rawDpr, 1.5) : rawDpr;
+    const dpr = resolveCanvasDpr(window.devicePixelRatio || 1);
     const cw = Math.max(1, w);
     const ch = Math.max(1, h);
 
