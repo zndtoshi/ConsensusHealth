@@ -22,8 +22,8 @@ import { clearCanvasBitmap } from "./utils/canvasClear";
 import { resolveCanvasDpr } from "./utils/canvasDpr";
 import { createGraphIdleScheduler } from "./utils/graphIdleScheduler";
 import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./utils/glowRendering";
-import { fetchCommunityUsers } from "./api/community";
-import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./utils/manualEditState";
+import { fetchCommunityUsersResult } from "./api/community";
+import { applyManualStanceUpdate, isPrivilegedManualEditor, removeAccountFromList } from "./utils/manualEditState";
 import { assertHaloAvatarAdmin, isHaloAvatarAdmin } from "./utils/haloAvatarAdmin";
 import { HaloAvatarModal } from "./components/HaloAvatarModal";
 import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
@@ -710,11 +710,13 @@ async function loadAccounts() {
       return [];
     }
   });
-  const communityPromise = fetchCommunityUsers().catch(() => []);
+  const communityPromise = fetchCommunityUsersResult().catch(() => ({ ok: false, users: [] }));
 
   // Wait for both sources before first paint so the graph does not briefly show
   // seed-only (~150) accounts and then jump to the full live community set.
-  const [seeded, community] = await Promise.all([seededPromise, communityPromise]);
+  const [seeded, communityResult] = await Promise.all([seededPromise, communityPromise]);
+  const communityOk = Boolean(communityResult?.ok);
+  const community = Array.isArray(communityResult?.users) ? communityResult.users : [];
   const isDevRuntime =
     (typeof process !== "undefined" && process.env && process.env.NODE_ENV !== "production") ||
     (typeof import.meta !== "undefined" && import.meta.env && !import.meta.env.PROD);
@@ -869,8 +871,24 @@ async function loadAccounts() {
     }
   };
 
-  for (const a of Array.isArray(seeded) ? seeded : []) upsert(a, "seeded");
-  for (const c of Array.isArray(community) ? community : []) upsert(c, "community");
+  // When /api/community succeeds it already merges seed+DB and applies admin removals.
+  // Only use seed rows to enrich existing community records — do not re-add removed users.
+  if (communityOk) {
+    for (const c of Array.isArray(community) ? community : []) upsert(c, "community");
+    for (const a of Array.isArray(seeded) ? seeded : []) {
+      const handleNorm = normalizeHandle(a?.handle ?? a?.username ?? a?.screen_name);
+      const xId =
+        coerceXUserIdToDigitString(a?.x_user_id ?? a?.xUserId ?? a?.id) ??
+        coerceXUserIdKey(a?.x_user_id ?? a?.xUserId) ??
+        "";
+      if ((handleNorm && byHandle.has(handleNorm)) || (xId && byXid.has(xId))) {
+        upsert(a, "seeded");
+      }
+    }
+  } else {
+    for (const a of Array.isArray(seeded) ? seeded : []) upsert(a, "seeded");
+    for (const c of Array.isArray(community) ? community : []) upsert(c, "community");
+  }
   finalizeMerged();
 
   console.log(
@@ -878,6 +896,8 @@ async function loadAccounts() {
     Array.isArray(seeded) ? seeded.length : 0,
     "community:",
     Array.isArray(community) ? community.length : 0,
+    "communityOk:",
+    communityOk ? 1 : 0,
     "merged:",
     merged.length
   );
@@ -1786,6 +1806,73 @@ export default function App() {
         console.warn("[manual-edit] failed", {
           target: manualEditTarget?.handle || null,
           stance: manualEditChoice,
+          error: msg,
+        });
+      }
+    } finally {
+      setManualEditBusy(false);
+    }
+  }
+
+  async function removeManualEditUser() {
+    if (!isPrivilegedEditor || !manualEditTarget || manualEditBusy) return;
+    const handle = normalizeHandle(manualEditTarget.handle);
+    if (!handle) return;
+    const confirmed =
+      typeof window === "undefined" ||
+      window.confirm(`Remove @${handle} from the website?\n\nThey will no longer appear on the graph.`);
+    if (!confirmed) return;
+    setManualEditBusy(true);
+    setManualEditError("");
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/remove-user`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          handle: manualEditTarget.handle,
+          x_user_id: manualEditTarget.x_user_id || null,
+        }),
+      });
+      if (!res.ok) {
+        let msg = `Failed (${res.status})`;
+        try {
+          const errData = await res.json();
+          if (errData?.error) msg = String(errData.error);
+        } catch {
+          // ignore parse errors
+        }
+        throw new Error(msg);
+      }
+      const data = await res.json();
+      const targetHandleNorm = normalizeHandle(data?.handle || manualEditTarget.handle);
+      const targetXUserId = String(data?.x_user_id || manualEditTarget.x_user_id || "").trim();
+      setAccounts((prev) =>
+        removeAccountFromList(prev, { handle: targetHandleNorm, x_user_id: targetXUserId })
+      );
+      setLabels((prev) => {
+        if (!targetHandleNorm || !(targetHandleNorm in prev)) return prev;
+        const next = { ...prev };
+        delete next[targetHandleNorm];
+        return next;
+      });
+      if (normalizeHandle(selectedHandle) === targetHandleNorm) setSelectedHandle(null);
+      await refreshStatsNow();
+      setManualEditTarget(null);
+      if (!import.meta.env.PROD) {
+        // eslint-disable-next-line no-console
+        console.log("[manual-edit] removed", {
+          target: targetHandleNorm,
+          x_user_id: targetXUserId || null,
+        });
+      }
+    } catch (e) {
+      const msg = String(e?.message || e);
+      setManualEditError(msg);
+      if (!import.meta.env.PROD) {
+        // eslint-disable-next-line no-console
+        console.warn("[manual-edit] remove failed", {
+          target: manualEditTarget?.handle || null,
           error: msg,
         });
       }
@@ -6300,6 +6387,13 @@ export default function App() {
                 {manualEditBusy ? "Saving..." : "Save"}
               </button>
             </div>
+            <button
+              style={styles.manualEditRemoveBtn}
+              onClick={removeManualEditUser}
+              disabled={manualEditBusy}
+            >
+              Remove from website
+            </button>
           </div>
         </div>
       )}
@@ -6956,6 +7050,18 @@ const styles = {
     display: "flex",
     justifyContent: "flex-end",
     gap: 8,
+  },
+  manualEditRemoveBtn: {
+    alignSelf: "stretch",
+    marginTop: 2,
+    padding: "8px 10px",
+    borderRadius: 8,
+    border: "1px solid rgba(248,113,113,0.45)",
+    background: "rgba(127,29,29,0.35)",
+    color: "#fecaca",
+    fontWeight: 800,
+    fontSize: 12,
+    cursor: "pointer",
   },
   manualEditErr: {
     fontSize: 12,
