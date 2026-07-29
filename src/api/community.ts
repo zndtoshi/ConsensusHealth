@@ -12,14 +12,22 @@ export type CommunityUser = {
 };
 
 export async function fetchCommunityUsers(): Promise<CommunityUser[]> {
+  const { users } = await fetchCommunityUsersResult();
+  return users;
+}
+
+export async function fetchCommunityUsersResult(): Promise<{
+  ok: boolean;
+  users: CommunityUser[];
+}> {
   try {
     const base = ((import.meta as any).env?.VITE_API_BASE || "").replace(/\/$/, "");
     const res = await fetch(`${base}/api/community`, { credentials: "include" });
-    if (!res.ok) return [];
+    if (!res.ok) return { ok: false, users: [] };
     const data = await res.json();
-    return Array.isArray(data) ? data : [];
+    return { ok: true, users: Array.isArray(data) ? data : [] };
   } catch (err) {
     console.warn("[ConsensusHealth] failed to load community users:", err);
-    return [];
+    return { ok: false, users: [] };
   }
 }

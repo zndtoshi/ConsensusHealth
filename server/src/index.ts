@@ -32,6 +32,12 @@ import {
   coerceXUserIdKey,
   parseJsonPreservingSnowflakeIds,
 } from "./xUserId.js";
+import {
+  filterOutRemovedCommunityUsers,
+  normalizeRemovedHandle,
+  normalizeRemovedXUserId,
+  resolveRemovalTarget,
+} from "./removedCommunityUsers.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
@@ -566,6 +572,19 @@ function mergeCommunityUsers(
   return merged;
 }
 
+async function loadRemovedCommunityUserKeys(): Promise<{ handles: Set<string>; xUserIds: Set<string> }> {
+  const { rows } = await pool.query(`SELECT handle, x_user_id FROM removed_community_users`);
+  const handles = new Set<string>();
+  const xUserIds = new Set<string>();
+  for (const row of rows as Array<{ handle?: unknown; x_user_id?: unknown }>) {
+    const handle = normalizeRemovedHandle(row.handle);
+    const xUserId = normalizeRemovedXUserId(row.x_user_id);
+    if (handle) handles.add(handle);
+    if (xUserId) xUserIds.add(xUserId);
+  }
+  return { handles, xUserIds };
+}
+
 async function loadMergedCommunityUsersWithStance(): Promise<Record<string, unknown>[]> {
   const seededRows = await loadSeededAccountsForCommunity();
   const { rows } = await pool.query(`
@@ -582,7 +601,9 @@ async function loadMergedCommunityUsersWithStance(): Promise<Record<string, unkn
   `);
   const dbRows = rows as Record<string, unknown>[];
   const mergedRows = mergeCommunityUsers(seededRows, dbRows);
-  return mergedRows.filter((r) => hasStanceValue(r.stance));
+  const withStance = mergedRows.filter((r) => hasStanceValue(r.stance));
+  const removed = await loadRemovedCommunityUserKeys();
+  return filterOutRemovedCommunityUsers(withStance, removed);
 }
 
 function mapStanceHistoryPublicRow(r: Record<string, unknown>) {
@@ -759,6 +780,30 @@ async function initDb(): Promise<void> {
   // playback CTE: WHERE sh.x_user_id = $ AND sh.changed_by = 'user'.
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_stance_history_x_user_id_changed_by ON stance_history (x_user_id, changed_by);`
+  );
+  // Admin removals: hide seeded + DB users from the public graph until restored.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS removed_community_users (
+      id SERIAL PRIMARY KEY,
+      handle TEXT,
+      x_user_id TEXT,
+      removed_by TEXT NOT NULL,
+      removed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CONSTRAINT removed_community_users_target_chk CHECK (
+        (handle IS NOT NULL AND length(trim(handle)) > 0)
+        OR (x_user_id IS NOT NULL AND length(trim(x_user_id)) > 0)
+      )
+    );
+  `);
+  await pool.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_removed_community_users_handle
+     ON removed_community_users (lower(handle))
+     WHERE handle IS NOT NULL AND length(trim(handle)) > 0;`
+  );
+  await pool.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_removed_community_users_x_user_id
+     ON removed_community_users (x_user_id)
+     WHERE x_user_id IS NOT NULL AND length(trim(x_user_id)) > 0;`
   );
   // Idempotent backfill: seed one initial history event for rows that already have stance and no history.
   await pool.query(`
@@ -1449,6 +1494,116 @@ app.post("/api/stance", async (req, res, next) => {
     }).catch(() => {});
 
     res.json(row);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post("/api/admin/remove-user", async (req, res, next) => {
+  try {
+    const user = getSessionUser(req);
+    if (!user || !isPrivilegedManualEditorHandle(user.handle)) {
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[admin-remove-user] forbidden", { requester: normalizeHandle(user?.handle) || null });
+      }
+      res.status(403).json({ error: "forbidden" });
+      return;
+    }
+
+    const target = resolveRemovalTarget({
+      handle: req.body?.handle,
+      x_user_id: req.body?.x_user_id,
+      requesterHandle: user.handle,
+    });
+    if (!target.ok) {
+      res.status(400).json({ error: target.error });
+      return;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      let existingRow: Record<string, unknown> | null = null;
+      if (target.xUserId) {
+        const byId = await client.query("SELECT * FROM community_users WHERE x_user_id = $1 LIMIT 1", [
+          target.xUserId,
+        ]);
+        existingRow = (byId.rows[0] ?? null) as Record<string, unknown> | null;
+      }
+      if (!existingRow && target.handle) {
+        const byHandle = await client.query(
+          "SELECT * FROM community_users WHERE lower(coalesce(handle, '')) = $1 LIMIT 1",
+          [target.handle]
+        );
+        existingRow = (byHandle.rows[0] ?? null) as Record<string, unknown> | null;
+      }
+
+      const resolvedHandle =
+        normalizeRemovedHandle(existingRow?.handle ?? target.handle) || null;
+      const resolvedXUserId =
+        normalizeRemovedXUserId(existingRow?.x_user_id ?? target.xUserId) || null;
+      if (!resolvedHandle && !resolvedXUserId) {
+        await client.query("ROLLBACK");
+        res.status(400).json({ error: "target_required" });
+        return;
+      }
+      if (resolvedHandle && resolvedHandle === normalizeHandle(user.handle)) {
+        await client.query("ROLLBACK");
+        res.status(400).json({ error: "cannot_remove_self" });
+        return;
+      }
+
+      // Record removal (idempotent). Partial unique indexes can't share one ON CONFLICT target.
+      const existingRemoval = await client.query(
+        `
+        SELECT id FROM removed_community_users
+        WHERE ($1::text IS NOT NULL AND lower(handle) = $1)
+           OR ($2::text IS NOT NULL AND x_user_id = $2)
+        LIMIT 1
+        `,
+        [resolvedHandle, resolvedXUserId]
+      );
+      if (existingRemoval.rows.length === 0) {
+        await client.query(
+          `INSERT INTO removed_community_users (handle, x_user_id, removed_by) VALUES ($1, $2, $3)`,
+          [resolvedHandle, resolvedXUserId, normalizeHandle(user.handle)]
+        );
+      } else if (resolvedHandle && resolvedXUserId) {
+        await client.query(
+          `
+          UPDATE removed_community_users
+          SET handle = COALESCE(handle, $1),
+              x_user_id = COALESCE(x_user_id, $2)
+          WHERE id = $3
+          `,
+          [resolvedHandle, resolvedXUserId, existingRemoval.rows[0].id]
+        );
+      }
+
+      if (resolvedXUserId) {
+        await client.query(`DELETE FROM community_users WHERE x_user_id = $1`, [resolvedXUserId]);
+      } else if (resolvedHandle) {
+        await client.query(`DELETE FROM community_users WHERE lower(coalesce(handle, '')) = $1`, [
+          resolvedHandle,
+        ]);
+      }
+
+      await client.query("COMMIT");
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[admin-remove-user] removed", {
+          requester: normalizeHandle(user.handle),
+          target_handle: resolvedHandle,
+          target_x_user_id: resolvedXUserId,
+        });
+      }
+      res.json({ removed: true, handle: resolvedHandle, x_user_id: resolvedXUserId });
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
   } catch (err) {
     next(err);
   }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyManualStanceUpdate, isPrivilegedManualEditor } from "./manualEditState";
+import { applyManualStanceUpdate, isPrivilegedManualEditor, removeAccountFromList } from "./manualEditState";
 
 test("privileged manual editor is only zndtoshi", () => {
   assert.equal(isPrivilegedManualEditor("zndtoshi"), true);
@@ -38,4 +38,22 @@ test("manual stance update changes only matching handle", () => {
   assert.equal(updated[0]?.stance, "neutral");
   assert.equal(updated[1]?.stance, "against");
   assert.equal(updated[1]?.followers_count, 20);
+});
+
+test("removeAccountFromList drops matching handle or x_user_id", () => {
+  const original = [
+    { handle: "alice", x_user_id: "1", stance: "neutral" },
+    { handle: "bob", x_user_id: "2", stance: "approve" },
+    { handle: "carol", x_user_id: "3", stance: "against" },
+  ];
+  const byHandle = removeAccountFromList(original, { handle: "bob" });
+  assert.deepEqual(
+    byHandle.map((a) => a.handle),
+    ["alice", "carol"]
+  );
+  const byId = removeAccountFromList(original, { x_user_id: "3" });
+  assert.deepEqual(
+    byId.map((a) => a.handle),
+    ["alice", "bob"]
+  );
 });

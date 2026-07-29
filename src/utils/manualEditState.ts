@@ -35,3 +35,21 @@ export function applyManualStanceUpdate<T extends AccountRecord>(
   });
   return changed ? out : accounts;
 }
+
+/** Remove a user from the in-memory graph accounts list (by handle and/or x_user_id). */
+export function removeAccountFromList<T extends AccountRecord>(
+  accounts: T[],
+  target: { handle?: unknown; x_user_id?: unknown }
+): T[] {
+  const handle = normalizeHandle(target.handle);
+  const xUserId = String(target.x_user_id ?? "").trim();
+  if (!handle && !xUserId) return accounts;
+  const next = accounts.filter((a) => {
+    const ah = normalizeHandle(a?.handle);
+    const ax = String(a?.x_user_id ?? "").trim();
+    if (handle && ah === handle) return false;
+    if (xUserId && ax && ax === xUserId) return false;
+    return true;
+  });
+  return next.length === accounts.length ? accounts : next;
+}
