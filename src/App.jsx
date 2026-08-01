@@ -2450,6 +2450,18 @@ export default function App() {
     rafId: 0,
     displaced: [],
   });
+  // Click-animation fast path. The selection FX only moves the selected node and
+  // a small ring of neighbors, but every frame re-drew all ~1000 nodes (and their
+  // glows — the dominant per-frame cost). Instead we snapshot the static part of
+  // the scene once when the animation starts, then each frame blit it and redraw
+  // only the animating nodes.
+  const selFxBgRef = useRef({ canvas: null, valid: false, dpr: 1, cw: 0, ch: 0 });
+  // The node objects the FX animates. The snapshot omits exactly this set and
+  // each fast frame draws exactly this set, so together they partition the scene
+  // with no node drawn twice or dropped.
+  const selFxDynamicRef = useRef(null);
+  // True only while capturing the snapshot (forces the full path, minus dynamics).
+  const selFxCapturingRef = useRef(false);
   // Cached fit transform, frozen while the selection FX runs so the whole graph
   // does not visibly rescale as neighbors are nudged.
   const frozenFitRef = useRef(null);
@@ -2550,14 +2562,16 @@ export default function App() {
     drawRef.current();
     if (t >= 1) {
       fx.rafId = 0;
+      // Animation over: drop the snapshot so later frames redraw everything.
+      endSelectionFxFastPath();
       if (fx.toU <= 0) {
         restoreSelectionDisplacementImmediate();
         fx.handle = null;
         fx.node = null;
         fx.scale = 1;
         fx.u = 0;
-        drawRef.current();
       }
+      drawRef.current();
       return;
     }
     fx.rafId = requestAnimationFrame(selectionFxTick);
@@ -2570,6 +2584,10 @@ export default function App() {
     fx.toU = toU;
     fx.dur = durMs;
     fx.startAt = performance.now();
+    // Snapshot the static scene once so the ~300ms of frames below each redraw
+    // only the handful of animating nodes instead of all ~1000.
+    endSelectionFxFastPath();
+    buildSelectionFxBg(computeSelectionFxDynamicSet(fx));
     fx.rafId = requestAnimationFrame(selectionFxTick);
   }
 
@@ -2599,6 +2617,8 @@ export default function App() {
       cancelAnimationFrame(fx.rafId);
       fx.rafId = 0;
     }
+    // Node array/positions are about to change; any snapshot is stale.
+    endSelectionFxFastPath();
     restoreSelectionDisplacementImmediate();
     const handle = selectedHandleRef.current;
     if (!handle) {
@@ -2641,6 +2661,7 @@ export default function App() {
       cancelAnimationFrame(fx.rafId);
       fx.rafId = 0;
     }
+    endSelectionFxFastPath();
     if (fx.handle || fx.displaced.length) {
       restoreSelectionDisplacementImmediate();
       fx.handle = null;
@@ -3846,6 +3867,9 @@ export default function App() {
 
   function invalidatePanLayer() {
     panLayerRef.current.valid = false;
+    // The click-animation snapshot bakes the same scene, so it goes stale with
+    // the pan layer (pan/zoom, avatar loads, label edits, resize, relayout).
+    selFxBgRef.current.valid = false;
     worldLayerVersionRef.current += 1;
   }
 
@@ -3907,6 +3931,86 @@ export default function App() {
     if (isPerfDebugEnabled()) perfInc("worldLayerBuilds");
     cameraInteractingRef.current = true;
     draw(); // restore starfield under the current view
+  }
+
+  /**
+   * The set of nodes a fast selection-FX frame must redraw: the selected node,
+   * the neighbors it displaces, and any node close enough to overlap one of
+   * them. The overlap expansion matters because the snapshot freezes draw order
+   * — without it a static avatar that currently paints *over* a moving one would
+   * end up underneath. Distances use each node's largest drawn size.
+   */
+  function computeSelectionFxDynamicSet(fx) {
+    const moving = [];
+    if (fx.node) moving.push(fx.node);
+    for (const d of fx.displaced) moving.push(d.node);
+    if (!moving.length) return null;
+
+    const set = new Set(moving);
+    // The selected node grows to SELECTED_TARGET_SIDE; others draw at their own
+    // size. Pad generously so near-misses are included rather than excluded.
+    const reachOf = (n) =>
+      (n === fx.node ? Math.max(n.side || 0, SELECTED_TARGET_SIDE) : n.side || 0) * 0.75 + 24;
+    const nodes = nodesRef.current || [];
+    for (const m of nodes) {
+      if (set.has(m)) continue;
+      const mReach = (m.side || 0) * 0.75 + 24;
+      for (const a of moving) {
+        const limit = reachOf(a) + mReach;
+        if (Math.abs(m.x - a.x) > limit || Math.abs(m.y - a.y) > limit) continue;
+        if (Math.hypot(m.x - a.x, m.y - a.y) <= limit) {
+          set.add(m);
+          break;
+        }
+      }
+    }
+    return set;
+  }
+
+  /**
+   * Snapshot the scene with the animating nodes omitted, so each animation frame
+   * can blit it instead of redrawing every node and glow. Leaves the canvas
+   * holding a correct frame for the current state.
+   */
+  function buildSelectionFxBg(dynamicSet) {
+    const canvas = canvasRef.current;
+    const bg = selFxBgRef.current;
+    bg.valid = false;
+    if (!canvas || !dynamicSet || !dynamicSet.size) return;
+
+    selFxDynamicRef.current = dynamicSet;
+    selFxCapturingRef.current = true;
+    draw(); // full scene minus the animating nodes
+    selFxCapturingRef.current = false;
+
+    const dpr = resolveCanvasDpr(window.devicePixelRatio || 1);
+    const cw = Math.max(1, w);
+    const ch = Math.max(1, h);
+    const bw = Math.floor(cw * dpr);
+    const bh = Math.floor(ch * dpr);
+    if (!bg.canvas) bg.canvas = document.createElement("canvas");
+    if (bg.canvas.width !== bw || bg.canvas.height !== bh) {
+      bg.canvas.width = bw;
+      bg.canvas.height = bh;
+    }
+    const bctx = bg.canvas.getContext("2d");
+    if (!bctx) return;
+    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    bctx.clearRect(0, 0, bw, bh);
+    bctx.drawImage(canvas, 0, 0);
+    bg.dpr = dpr;
+    bg.cw = cw;
+    bg.ch = ch;
+    bg.valid = true;
+    if (isPerfDebugEnabled()) perfInc("worldLayerBuilds");
+    draw(); // restore a complete frame (snapshot + animating nodes)
+  }
+
+  /** Tear down the click-animation fast path and return to normal full draws. */
+  function endSelectionFxFastPath() {
+    selFxDynamicRef.current = null;
+    selFxCapturingRef.current = false;
+    selFxBgRef.current.valid = false;
   }
 
   function beginCameraInteraction() {
@@ -4716,21 +4820,46 @@ export default function App() {
       return;
     }
 
+    // Click-animation fast path: everything except the animating nodes is
+    // already in selFxBg, so blit it and draw only those nodes below. The
+    // capture pass itself must take the full path (minus the animating nodes).
+    const selFxDynamic = selFxDynamicRef.current;
+    const selFxBg = selFxBgRef.current;
+    const selFxCapturing = selFxCapturingRef.current;
+    const fastSelFx =
+      !selFxCapturing &&
+      Boolean(selFxDynamic) &&
+      selFxBg.valid &&
+      selFxBg.dpr === dpr &&
+      selFxBg.cw === cw &&
+      selFxBg.ch === ch &&
+      !suppressStarfieldRef.current &&
+      !cameraInteractingRef.current;
+    // Only split the scene while capturing the snapshot or blitting it. Any
+    // other draw during the animation (pan-layer build, resize) must still
+    // render every node, or the animating ones would go missing from it.
+    const selFxPartition = selFxCapturing || fastSelFx ? selFxDynamic : null;
+
     // Full-bitmap clear in device pixels (identity transform). Avoids Chrome
     // HiDPI trails when the ambient transform is identity or a leftover world
     // scale — CSS-pixel clearRect would only wipe a fraction of the canvas.
     clearCanvasBitmap(ctx, canvas);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Cached starfield (screen space) — skipped when capturing the pan layer.
-    if (!suppressStarfieldRef.current) {
+    if (fastSelFx) {
+      // Starfield, halos and every static node in one blit.
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(selFxBg.canvas, 0, 0);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    } else if (!suppressStarfieldRef.current) {
+      // Cached starfield (screen space) — skipped when capturing the pan layer.
       const starfield = getStarfieldCanvas(cw, ch, dpr);
       if (starfield) ctx.drawImage(starfield, 0, 0, cw, ch);
       if (isPerfDebugEnabled()) {
         perfSetMs("firstBackgroundPaintMs", perfNowSinceNav());
       }
     }
-    if (isPerfDebugEnabled()) perfInc("fullDrawCalls");
+    if (isPerfDebugEnabled()) perfInc(fastSelFx ? "fastPanDrawCalls" : "fullDrawCalls");
 
     const nodes = nodesRef.current || [];
     const qset = filteredHandlesSet;
@@ -4841,7 +4970,7 @@ export default function App() {
     // Ambient cluster halos — world-space pass before avatars.
     // During filter enter/exit, freeze halo geometry so translucent backgrounds
     // stay in stable positions while avatars fly (avoids Chrome ring trails).
-    if (showClusterHalo) {
+    if (showClusterHalo && !fastSelFx) {
       const resolveClusterStance = (n) => getNodeStance(n, labels);
       if (clusterHaloResumeSnapRef.current) {
         clusterHaloSmoothRef.current = snapClusterHaloState(nodes, resolveClusterStance);
@@ -4872,7 +5001,7 @@ export default function App() {
     ctx.restore();
 
     // Legacy stance anchor zones (production default when cluster halos are off).
-    if (!showClusterHalo) {
+    if (!showClusterHalo && !fastSelFx) {
       const r = regionRef.current;
       const againstCx = r?.stanceCenterX?.[STANCE.AGAINST] ?? (w * 0.33);
       const neutralCx = r?.stanceCenterX?.[STANCE.NEUTRAL] ?? (w * 0.5);
@@ -5058,6 +5187,9 @@ export default function App() {
       const breathingReducedMotion = readReducedMotionPreference();
       const breathNowMs = performance.now();
       for (const n of nodes) {
+        // Snapshot holds the static nodes; a fast frame holds the animating
+        // ones. Same partition as the node pass below, so halos stay in sync.
+        if (selFxPartition && selFxPartition.has(n) !== fastSelFx) continue;
         const handleKey = normalizeHandle(n.handle);
         if (!breathingHaloHandlesRef.current.has(handleKey)) continue;
         if (!playbackShowsWorldNode(n)) continue;
@@ -5109,6 +5241,10 @@ export default function App() {
     const selFx = selectionFxRef.current;
     const adminSelFxOn = selFx.handle != null;
     for (const n of nodes) {
+      // Fast frame draws only the animating nodes; the snapshot capture draws
+      // only the rest. Iterating `nodes` in order either way keeps the relative
+      // paint order inside each group identical to a normal full draw.
+      if (selFxPartition && selFxPartition.has(n) !== fastSelFx) continue;
       if (!playbackShowsWorldNode(n)) continue;
       if (!introShowsWorldNode(n)) continue;
       if (curSelected && n.handle === curSelected) {
