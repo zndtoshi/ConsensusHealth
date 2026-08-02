@@ -21,6 +21,7 @@ import { isChromium, isFirefox } from "./utils/browser";
 import { clearCanvasBitmap } from "./utils/canvasClear";
 import { resolveCanvasDpr } from "./utils/canvasDpr";
 import { createGraphIdleScheduler } from "./utils/graphIdleScheduler";
+import { zoomBlitFactor, zoomBlitTransform } from "./utils/zoomBlitTransform";
 import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./utils/glowRendering";
 import { fetchCommunityUsersResult } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor, removeAccountFromList } from "./utils/manualEditState";
@@ -622,6 +623,15 @@ const SELECTED_TARGET_SIDE = 70;
 const SELECTED_GAP_PX = 8;
 const SELECTED_FX_GROW_MS = 280;
 const SELECTED_FX_SHRINK_MS = 240;
+
+// Zoom reuses the cached content bitmap instead of re-rendering every node. The
+// bounds cap how far that bitmap is stretched before it is re-captured: past
+// MAX it visibly softens, below MIN the snapshot stops covering the viewport
+// edges. Crossing either costs one full draw, versus one per input event.
+const ZOOM_BLIT_MIN_K = 0.8;
+const ZOOM_BLIT_MAX_K = 1.8;
+// Quiet period after the last wheel event that counts as "zoom finished".
+const ZOOM_SETTLE_MS = 160;
 
 function parseCsv(url) {
   return new Promise((resolve, reject) => {
@@ -2384,6 +2394,7 @@ export default function App() {
   const fitRef = useRef({ scale: 1, tx: 0, ty: 0 });
   const viewRef = useRef({ scale: 1, tx: 0, ty: 0 });
   const isPanningRef = useRef(false);
+  const zoomSettleTimerRef = useRef(0);
   const zoomCuePlayedRef = useRef(false);
   const zoomCueRafRef = useRef(0);
   // Async layout settle bookkeeping. While `layoutSettlingRef` is true the graph
@@ -2450,6 +2461,18 @@ export default function App() {
     rafId: 0,
     displaced: [],
   });
+  // Click-animation fast path. The selection FX only moves the selected node and
+  // a small ring of neighbors, but every frame re-drew all ~1000 nodes (and their
+  // glows — the dominant per-frame cost). Instead we snapshot the static part of
+  // the scene once when the animation starts, then each frame blit it and redraw
+  // only the animating nodes.
+  const selFxBgRef = useRef({ canvas: null, valid: false, dpr: 1, cw: 0, ch: 0 });
+  // The node objects the FX animates. The snapshot omits exactly this set and
+  // each fast frame draws exactly this set, so together they partition the scene
+  // with no node drawn twice or dropped.
+  const selFxDynamicRef = useRef(null);
+  // True only while capturing the snapshot (forces the full path, minus dynamics).
+  const selFxCapturingRef = useRef(false);
   // Cached fit transform, frozen while the selection FX runs so the whole graph
   // does not visibly rescale as neighbors are nudged.
   const frozenFitRef = useRef(null);
@@ -2550,14 +2573,16 @@ export default function App() {
     drawRef.current();
     if (t >= 1) {
       fx.rafId = 0;
+      // Animation over: drop the snapshot so later frames redraw everything.
+      endSelectionFxFastPath();
       if (fx.toU <= 0) {
         restoreSelectionDisplacementImmediate();
         fx.handle = null;
         fx.node = null;
         fx.scale = 1;
         fx.u = 0;
-        drawRef.current();
       }
+      drawRef.current();
       return;
     }
     fx.rafId = requestAnimationFrame(selectionFxTick);
@@ -2570,6 +2595,10 @@ export default function App() {
     fx.toU = toU;
     fx.dur = durMs;
     fx.startAt = performance.now();
+    // Snapshot the static scene once so the ~300ms of frames below each redraw
+    // only the handful of animating nodes instead of all ~1000.
+    endSelectionFxFastPath();
+    buildSelectionFxBg(computeSelectionFxDynamicSet(fx));
     fx.rafId = requestAnimationFrame(selectionFxTick);
   }
 
@@ -2599,6 +2628,8 @@ export default function App() {
       cancelAnimationFrame(fx.rafId);
       fx.rafId = 0;
     }
+    // Node array/positions are about to change; any snapshot is stale.
+    endSelectionFxFastPath();
     restoreSelectionDisplacementImmediate();
     const handle = selectedHandleRef.current;
     if (!handle) {
@@ -2641,6 +2672,7 @@ export default function App() {
       cancelAnimationFrame(fx.rafId);
       fx.rafId = 0;
     }
+    endSelectionFxFastPath();
     if (fx.handle || fx.displaced.length) {
       restoreSelectionDisplacementImmediate();
       fx.handle = null;
@@ -3194,6 +3226,7 @@ export default function App() {
       if (zoomCueRafRef.current) cancelAnimationFrame(zoomCueRafRef.current);
       if (drawRafRef.current) cancelAnimationFrame(drawRafRef.current);
       if (settleRafRef.current) cancelAnimationFrame(settleRafRef.current);
+      if (zoomSettleTimerRef.current) clearTimeout(zoomSettleTimerRef.current);
       const intro = newStancesIntroRef.current;
       if (intro.rafId) cancelAnimationFrame(intro.rafId);
       intro.rafId = 0;
@@ -3846,6 +3879,9 @@ export default function App() {
 
   function invalidatePanLayer() {
     panLayerRef.current.valid = false;
+    // The click-animation snapshot bakes the same scene, so it goes stale with
+    // the pan layer (pan/zoom, avatar loads, label edits, resize, relayout).
+    selFxBgRef.current.valid = false;
     worldLayerVersionRef.current += 1;
   }
 
@@ -3909,6 +3945,133 @@ export default function App() {
     draw(); // restore starfield under the current view
   }
 
+  /**
+   * The set of nodes a fast selection-FX frame must redraw: the selected node,
+   * the neighbors it displaces, and any node close enough to overlap one of
+   * them. The overlap expansion matters because the snapshot freezes draw order
+   * — without it a static avatar that currently paints *over* a moving one would
+   * end up underneath. Distances use each node's largest drawn size.
+   */
+  function computeSelectionFxDynamicSet(fx) {
+    const moving = [];
+    if (fx.node) moving.push(fx.node);
+    for (const d of fx.displaced) moving.push(d.node);
+    if (!moving.length) return null;
+
+    const set = new Set(moving);
+    // The selected node grows to SELECTED_TARGET_SIDE; others draw at their own
+    // size. Pad generously so near-misses are included rather than excluded.
+    const reachOf = (n) =>
+      (n === fx.node ? Math.max(n.side || 0, SELECTED_TARGET_SIDE) : n.side || 0) * 0.75 + 24;
+    const nodes = nodesRef.current || [];
+    for (const m of nodes) {
+      if (set.has(m)) continue;
+      const mReach = (m.side || 0) * 0.75 + 24;
+      for (const a of moving) {
+        const limit = reachOf(a) + mReach;
+        if (Math.abs(m.x - a.x) > limit || Math.abs(m.y - a.y) > limit) continue;
+        if (Math.hypot(m.x - a.x, m.y - a.y) <= limit) {
+          set.add(m);
+          break;
+        }
+      }
+    }
+    return set;
+  }
+
+  /**
+   * Snapshot the scene with the animating nodes omitted, so each animation frame
+   * can blit it instead of redrawing every node and glow. Leaves the canvas
+   * holding a correct frame for the current state.
+   */
+  function buildSelectionFxBg(dynamicSet) {
+    const canvas = canvasRef.current;
+    const bg = selFxBgRef.current;
+    bg.valid = false;
+    if (!canvas || !dynamicSet || !dynamicSet.size) return;
+
+    selFxDynamicRef.current = dynamicSet;
+    selFxCapturingRef.current = true;
+    draw(); // full scene minus the animating nodes
+    selFxCapturingRef.current = false;
+
+    const dpr = resolveCanvasDpr(window.devicePixelRatio || 1);
+    const cw = Math.max(1, w);
+    const ch = Math.max(1, h);
+    const bw = Math.floor(cw * dpr);
+    const bh = Math.floor(ch * dpr);
+    if (!bg.canvas) bg.canvas = document.createElement("canvas");
+    if (bg.canvas.width !== bw || bg.canvas.height !== bh) {
+      bg.canvas.width = bw;
+      bg.canvas.height = bh;
+    }
+    const bctx = bg.canvas.getContext("2d");
+    if (!bctx) return;
+    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    bctx.clearRect(0, 0, bw, bh);
+    bctx.drawImage(canvas, 0, 0);
+    bg.dpr = dpr;
+    bg.cw = cw;
+    bg.ch = ch;
+    bg.valid = true;
+    if (isPerfDebugEnabled()) perfInc("worldLayerBuilds");
+    draw(); // restore a complete frame (snapshot + animating nodes)
+  }
+
+  /** Tear down the click-animation fast path and return to normal full draws. */
+  function endSelectionFxFastPath() {
+    selFxDynamicRef.current = null;
+    selFxCapturingRef.current = false;
+    selFxBgRef.current.valid = false;
+  }
+
+  /**
+   * Scale factor from the pan-layer snapshot to the current camera, or null when
+   * the snapshot can't stand in for a real render. Resampling stays convincing
+   * over a limited range: too far in goes soft, too far out uncovers the edges
+   * (the snapshot only holds what was on screen when it was taken).
+   */
+  function panLayerZoomFactor() {
+    const layer = panLayerRef.current;
+    if (!layer.valid) return null;
+    return zoomBlitFactor(
+      layer.scaleMul,
+      camRef.current.scaleMul,
+      ZOOM_BLIT_MIN_K,
+      ZOOM_BLIT_MAX_K
+    );
+  }
+
+  /**
+   * Re-snapshot mid-gesture once the zoom has drifted past what the current
+   * bitmap can cover. Costs one full draw, but only every ~octave of zoom
+   * instead of on every wheel tick or touch move.
+   */
+  function refreshZoomLayerIfDrifted() {
+    if (!cameraInteractingRef.current) return;
+    if (panLayerZoomFactor() === null) buildPanLayer();
+  }
+
+  /**
+   * Desktop wheel zoom has no natural end event, so treat a pause as the end of
+   * the gesture: drop back to a crisp full render once the wheel goes quiet.
+   */
+  /** Drop a pending settle so it can't end a gesture that has since started. */
+  function cancelZoomSettle() {
+    if (zoomSettleTimerRef.current) {
+      clearTimeout(zoomSettleTimerRef.current);
+      zoomSettleTimerRef.current = 0;
+    }
+  }
+
+  function scheduleZoomSettle() {
+    if (zoomSettleTimerRef.current) clearTimeout(zoomSettleTimerRef.current);
+    zoomSettleTimerRef.current = setTimeout(() => {
+      zoomSettleTimerRef.current = 0;
+      endCameraInteraction(); // invalidates the layer and repaints sharp
+    }, ZOOM_SETTLE_MS);
+  }
+
   function beginCameraInteraction() {
     if (cameraInteractingRef.current) return;
     refreshCanvasRect();
@@ -3920,6 +4083,7 @@ export default function App() {
   }
 
   function endCameraInteraction() {
+    cancelZoomSettle();
     if (!cameraInteractingRef.current) return;
     cameraInteractingRef.current = false;
     invalidatePanLayer();
@@ -3931,6 +4095,8 @@ export default function App() {
     end: endCameraInteraction,
     scheduleDraw,
     invalidatePanLayer,
+    refreshZoomLayerIfDrifted,
+    cancelZoomSettle,
   };
 
   function resolveDrawAvatarUrl(n) {
@@ -4680,10 +4846,14 @@ export default function App() {
       return;
     }
 
-    // Fast pan/pinch path: blit a screen-space content snapshot with the pan
-    // delta and redraw only the fixed starfield. No node/halo recompute.
+    // Fast pan/pinch/zoom path: blit the screen-space content snapshot through a
+    // scale+translate transform and redraw only the fixed starfield. No node or
+    // halo recompute. Pure panning gives zoomK === 1 (a plain translation);
+    // zooming reuses the same bitmap resampled, which is why zoom no longer
+    // costs a full ~1000-node glow redraw per wheel tick / touch move.
     const panLayer = panLayerRef.current;
     const camUser = camRef.current;
+    const zoomK = panLayerZoomFactor();
     if (
       cameraInteractingRef.current &&
       panLayer.valid &&
@@ -4691,16 +4861,18 @@ export default function App() {
       panLayer.dpr === dpr &&
       panLayer.cw === cw &&
       panLayer.ch === ch &&
-      panLayer.scaleMul === camUser.scaleMul
+      zoomK !== null
     ) {
       clearCanvasBitmap(ctx, canvas);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       const starfieldFast = getStarfieldCanvas(cw, ch, dpr);
       if (starfieldFast) ctx.drawImage(starfieldFast, 0, 0, cw, ch);
-      const dx = camUser.panX - panLayer.panX;
-      const dy = camUser.panY - panLayer.panY;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.drawImage(panLayer.canvas, dx * dpr, dy * dpr);
+      // Map the snapshot's frozen world transform onto the current one (see
+      // zoomBlitTransform: the frozen fit cancels, leaving scale + translate).
+      const fitNow = fitRef.current;
+      const blit = zoomBlitTransform(fitNow.tx, fitNow.ty, panLayer, camUser, zoomK, dpr);
+      ctx.setTransform(blit.k, 0, 0, blit.k, blit.tXDev, blit.tYDev);
+      ctx.drawImage(panLayer.canvas, 0, 0);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       // Keep viewRef in sync for hit-testing after drag ends.
       const fit = fitRef.current;
@@ -4716,21 +4888,46 @@ export default function App() {
       return;
     }
 
+    // Click-animation fast path: everything except the animating nodes is
+    // already in selFxBg, so blit it and draw only those nodes below. The
+    // capture pass itself must take the full path (minus the animating nodes).
+    const selFxDynamic = selFxDynamicRef.current;
+    const selFxBg = selFxBgRef.current;
+    const selFxCapturing = selFxCapturingRef.current;
+    const fastSelFx =
+      !selFxCapturing &&
+      Boolean(selFxDynamic) &&
+      selFxBg.valid &&
+      selFxBg.dpr === dpr &&
+      selFxBg.cw === cw &&
+      selFxBg.ch === ch &&
+      !suppressStarfieldRef.current &&
+      !cameraInteractingRef.current;
+    // Only split the scene while capturing the snapshot or blitting it. Any
+    // other draw during the animation (pan-layer build, resize) must still
+    // render every node, or the animating ones would go missing from it.
+    const selFxPartition = selFxCapturing || fastSelFx ? selFxDynamic : null;
+
     // Full-bitmap clear in device pixels (identity transform). Avoids Chrome
     // HiDPI trails when the ambient transform is identity or a leftover world
     // scale — CSS-pixel clearRect would only wipe a fraction of the canvas.
     clearCanvasBitmap(ctx, canvas);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Cached starfield (screen space) — skipped when capturing the pan layer.
-    if (!suppressStarfieldRef.current) {
+    if (fastSelFx) {
+      // Starfield, halos and every static node in one blit.
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(selFxBg.canvas, 0, 0);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    } else if (!suppressStarfieldRef.current) {
+      // Cached starfield (screen space) — skipped when capturing the pan layer.
       const starfield = getStarfieldCanvas(cw, ch, dpr);
       if (starfield) ctx.drawImage(starfield, 0, 0, cw, ch);
       if (isPerfDebugEnabled()) {
         perfSetMs("firstBackgroundPaintMs", perfNowSinceNav());
       }
     }
-    if (isPerfDebugEnabled()) perfInc("fullDrawCalls");
+    if (isPerfDebugEnabled()) perfInc(fastSelFx ? "fastPanDrawCalls" : "fullDrawCalls");
 
     const nodes = nodesRef.current || [];
     const qset = filteredHandlesSet;
@@ -4841,7 +5038,7 @@ export default function App() {
     // Ambient cluster halos — world-space pass before avatars.
     // During filter enter/exit, freeze halo geometry so translucent backgrounds
     // stay in stable positions while avatars fly (avoids Chrome ring trails).
-    if (showClusterHalo) {
+    if (showClusterHalo && !fastSelFx) {
       const resolveClusterStance = (n) => getNodeStance(n, labels);
       if (clusterHaloResumeSnapRef.current) {
         clusterHaloSmoothRef.current = snapClusterHaloState(nodes, resolveClusterStance);
@@ -4872,7 +5069,7 @@ export default function App() {
     ctx.restore();
 
     // Legacy stance anchor zones (production default when cluster halos are off).
-    if (!showClusterHalo) {
+    if (!showClusterHalo && !fastSelFx) {
       const r = regionRef.current;
       const againstCx = r?.stanceCenterX?.[STANCE.AGAINST] ?? (w * 0.33);
       const neutralCx = r?.stanceCenterX?.[STANCE.NEUTRAL] ?? (w * 0.5);
@@ -5058,6 +5255,9 @@ export default function App() {
       const breathingReducedMotion = readReducedMotionPreference();
       const breathNowMs = performance.now();
       for (const n of nodes) {
+        // Snapshot holds the static nodes; a fast frame holds the animating
+        // ones. Same partition as the node pass below, so halos stay in sync.
+        if (selFxPartition && selFxPartition.has(n) !== fastSelFx) continue;
         const handleKey = normalizeHandle(n.handle);
         if (!breathingHaloHandlesRef.current.has(handleKey)) continue;
         if (!playbackShowsWorldNode(n)) continue;
@@ -5109,6 +5309,10 @@ export default function App() {
     const selFx = selectionFxRef.current;
     const adminSelFxOn = selFx.handle != null;
     for (const n of nodes) {
+      // Fast frame draws only the animating nodes; the snapshot capture draws
+      // only the rest. Iterating `nodes` in order either way keeps the relative
+      // paint order inside each group identical to a normal full draw.
+      if (selFxPartition && selFxPartition.has(n) !== fastSelFx) continue;
       if (!playbackShowsWorldNode(n)) continue;
       if (!introShowsWorldNode(n)) continue;
       if (curSelected && n.handle === curSelected) {
@@ -5411,6 +5615,16 @@ export default function App() {
 
   function onMouseDown(e) {
     if (e.button !== 0) return;
+    // Drop a full redraw already queued by the idle halo tick so it cannot land
+    // while the drag is spinning up. Safe to discard: draw() always renders
+    // current state, and the idle scheduler re-queues within ~66ms (as does the
+    // drag itself), so at worst an ambient halo frame is one tick late.
+    if (drawRafRef.current) {
+      cancelAnimationFrame(drawRafRef.current);
+      drawRafRef.current = 0;
+    }
+    // A wheel-zoom settle must not fire mid-drag and tear down the pan layer.
+    cancelZoomSettle();
     isPanningRef.current = true;
     panStartRef.current = {
       x: e.clientX,
@@ -5433,8 +5647,10 @@ export default function App() {
 
   function onWheel(e) {
     e.preventDefault();
-    // Zoom invalidates the pan-layer blit (scaleMul changes).
-    invalidatePanLayer();
+    // Treat a wheel burst as a camera gesture: snapshot the scene on the first
+    // tick, then ride that bitmap for the rest of the burst instead of doing a
+    // full ~1000-node glow redraw per tick.
+    if (!cameraInteractingRef.current) beginCameraInteraction();
     const rect = canvasRectRef.current || e.currentTarget.getBoundingClientRect();
     const mx = e.clientX - rect.left;
     const my = e.clientY - rect.top;
@@ -5450,14 +5666,22 @@ export default function App() {
     user.panX = mx - fit.tx - wx * newScale;
     user.panY = my - fit.ty - wy * newScale;
     camRef.current = user;
+    refreshZoomLayerIfDrifted();
     scheduleDraw();
+    scheduleZoomSettle();
   }
 
   function onMouseMove(e) {
     if (isPanningRef.current) {
       const dx = e.clientX - panStartRef.current.x;
       const dy = e.clientY - panStartRef.current.y;
-      if (!cameraInteractingRef.current && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
+      if (!cameraInteractingRef.current) {
+        // Below the drag threshold, ignore the movement entirely. Panning the
+        // camera here would repaint through the slow path (the pan layer only
+        // exists once beginCameraInteraction runs), so a few pixels of jitter
+        // between press and drag used to cost full ~1000-node glow redraws —
+        // the stall you feel just before a drag starts.
+        if (Math.abs(dx) <= 2 && Math.abs(dy) <= 2) return;
         beginCameraInteraction();
       }
       camRef.current = {
@@ -5582,8 +5806,6 @@ export default function App() {
         st.startScaleMul = camRef.current.scaleMul;
         st.midWorldX = (midX - v.tx) / v.scale;
         st.midWorldY = (midY - v.ty) / v.scale;
-        // Pinch changes scaleMul — use full draws, not the pan-layer blit.
-        cameraInteractApiRef.current.invalidatePanLayer();
       } else if (touches.length === 1) {
         const t = touches[0];
         st.mode = "pan";
@@ -5599,11 +5821,13 @@ export default function App() {
     function onTouchStart(e) {
       e.preventDefault();
       st.moved = false;
+      cameraInteractApiRef.current.cancelZoomSettle();
       beginGesture(e.touches);
       if (e.touches.length >= 2) {
-        // Pinch uses full redraws (scale changes); mark interacting to pause halo RAF.
-        cameraInteractingRef.current = true;
-        cameraInteractApiRef.current.invalidatePanLayer();
+        // Snapshot once, then pinch resamples that bitmap. Previously every
+        // touch move forced a full redraw, which is what made pinch-zoom crawl
+        // on mobile.
+        cameraInteractApiRef.current.begin();
       }
     }
 
@@ -5628,7 +5852,9 @@ export default function App() {
           panY: midY - fit.ty - st.midWorldY * newScale,
         };
         st.moved = true;
-        cameraInteractApiRef.current.invalidatePanLayer();
+        // Re-snapshot only once the pinch outruns the cached bitmap, instead of
+        // discarding it (and forcing a full redraw) on every move.
+        cameraInteractApiRef.current.refreshZoomLayerIfDrifted();
         cameraInteractApiRef.current.scheduleDraw();
       } else if (st.mode === "pan" && e.touches.length === 1) {
         const t = e.touches[0];
@@ -5639,6 +5865,11 @@ export default function App() {
           if (!cameraInteractingRef.current) {
             cameraInteractApiRef.current.begin();
           }
+        } else if (!cameraInteractingRef.current) {
+          // Still within tap tolerance: this is a tap, not a pan. Repainting now
+          // would take the slow path (no pan layer yet) — a full ~1000-node glow
+          // redraw per wobbling finger frame, right as a drag would begin.
+          return;
         }
         // Panning preserves the current zoom level (scaleMul untouched).
         camRef.current = {
