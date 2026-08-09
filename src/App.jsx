@@ -5847,7 +5847,7 @@ export default function App() {
                 >
                   <span
                     className={`stanceSeg stanceSeg--solo stanceSeg--locked ${meStanceToolbar.className} is-active`}
-                    title={`Your final BIP-110 position: ${meStanceToolbar.label}. Voting is closed.`}
+                    title={`Your final BIP-110 position: ${meStanceToolbar.label}. Positions are now final.`}
                   >
                     <span aria-hidden="true">🔒</span>
                     {meStanceToolbar.label}
@@ -5856,7 +5856,7 @@ export default function App() {
               ) : (
                 <span
                   className="stanceArchiveEmpty"
-                  title="BIP-110 voting is closed. No position was recorded for this account."
+                  title="BIP-110 has concluded. No position was recorded for this account."
                 >
                   No final position
                 </span>
@@ -5964,7 +5964,7 @@ export default function App() {
         <span className="archiveBanner__lock" aria-hidden="true">🔒</span>
         <div className="archiveBanner__copy">
           <strong>BIP-110 has concluded</strong>
-          <span>The proposal did not achieve consensus. Voting is closed, and all positions are preserved as a historical snapshot.</span>
+          <span>The proposal did not achieve consensus. All positions are now final and preserved as a historical snapshot.</span>
         </div>
         <span className="archiveBanner__badge">FINAL SNAPSHOT</span>
       </section>

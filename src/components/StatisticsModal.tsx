@@ -71,7 +71,7 @@ export function StatisticsModal({
         >
           <div>
             <div style={{ fontSize: 18, fontWeight: 900, color: "rgba(255,255,255,0.95)" }}>BIP-110 Final Results</div>
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.60)" }}>Voting closed · preserved historical snapshot</div>
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.60)" }}>Final positions · preserved historical snapshot</div>
           </div>
 
           <button

@@ -57,7 +57,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET || "";
 const STATS_CACHE_TTL_MS = 45_000;
 // BIP-110 has concluded. Keep identity/session infrastructure active for future BIPs,
 // while making this proposal's final positions immutable at the API boundary.
-const BIP_110_VOTING_CLOSED: boolean = true;
+const BIP_110_STANCES_FROZEN: boolean = true;
 let statsResponseCache: { expiresAt: number; payload: Record<string, unknown> } | null = null;
 
 function invalidateStatsCache(): void {
@@ -1433,9 +1433,9 @@ app.post("/api/me/preferences", async (req, res, next) => {
 
 app.post("/api/stance", async (req, res, next) => {
   try {
-    if (BIP_110_VOTING_CLOSED) {
+    if (BIP_110_STANCES_FROZEN) {
       res.status(409).json({
-        error: "bip110_voting_closed",
+        error: "bip110_stances_frozen",
         message: "BIP-110 has concluded. Final positions are read-only.",
       });
       return;
@@ -1622,9 +1622,9 @@ app.post("/api/admin/remove-user", async (req, res, next) => {
 
 app.post("/api/admin/stance", async (req, res, next) => {
   try {
-    if (BIP_110_VOTING_CLOSED) {
+    if (BIP_110_STANCES_FROZEN) {
       res.status(409).json({
-        error: "bip110_voting_closed",
+        error: "bip110_stances_frozen",
         message: "BIP-110 has concluded. Final positions are read-only.",
       });
       return;

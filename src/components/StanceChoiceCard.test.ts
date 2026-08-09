@@ -37,5 +37,5 @@ test("both user and admin BIP-110 stance writes are frozen server-side", () => {
   assert.ok(adminRoute >= 0);
   assert.match(serverSrc.slice(userRoute, userRoute + 400), /status\(409\)/);
   assert.match(serverSrc.slice(adminRoute, adminRoute + 400), /status\(409\)/);
-  assert.match(serverSrc, /bip110_voting_closed/g);
+  assert.match(serverSrc, /bip110_stances_frozen/g);
 });
