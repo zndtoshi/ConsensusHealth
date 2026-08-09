@@ -67,8 +67,8 @@ function sampleEvent(id: number, xUserId: string, stance: "against" | "neutral" 
   };
 }
 
-test("feature flag true enables intro for all visitors", () => {
-  assert.equal(NEW_STANCES_PUBLIC_ENABLED, true);
+test("archived BIP disables the public new-stances intro", () => {
+  assert.equal(NEW_STANCES_PUBLIC_ENABLED, false);
   const d = resolveShowIntroDecision({ publicEnabled: true });
   assert.equal(d.show, true);
   assert.equal(d.publicEnabled, true);

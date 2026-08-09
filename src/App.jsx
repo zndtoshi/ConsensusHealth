@@ -60,7 +60,6 @@ import {
   parseJsonPreservingSnowflakeIds,
 } from "./utils/xUserId";
 import { XJoinDateRangeSlider } from "./components/XJoinDateRangeSlider";
-import { StanceChoiceCard } from "./components/StanceChoiceCard";
 import { CuratedStanceInfo } from "./components/CuratedStanceInfo";
 import { fetchAvatarStanceHistory } from "./api/avatarStanceHistory";
 import {
@@ -68,8 +67,6 @@ import {
   historyCacheKey,
 } from "./utils/avatarStanceHistoryPanel";
 import {
-  shouldAutoOpenStanceChoice,
-  stanceChoiceMode,
   toolbarStanceMeta,
   userHasChosenStance,
 } from "./utils/stanceChoice";
@@ -673,30 +670,6 @@ function consumeLoginReturnSnapshot() {
   }
 }
 
-/**
- * Merge the current user's persisted stance row into the loaded accounts so their
- * node updates (or appears, for a first-time stance) without refetching the graph.
- */
-function upsertSelfAccountLocally(prev, row) {
-  if (!row || typeof row !== "object") return prev;
-  const handleNorm = normalizeHandle(row.handle);
-  const xId = String(row.x_user_id ?? "").trim();
-  if (!handleNorm && !xId) return prev;
-  const stance = normalizedStance(row.stance);
-  let found = false;
-  const next = prev.map((a) => {
-    const ah = normalizeHandle(a?.handle);
-    const ax = String(a?.x_user_id ?? "").trim();
-    if ((handleNorm && ah === handleNorm) || (xId && ax && ax === xId)) {
-      found = true;
-      return { ...a, ...row, handle: ah || handleNorm, stance, position: stance };
-    }
-    return a;
-  });
-  if (found) return next;
-  return [...next, { ...row, handle: handleNorm, x_user_id: xId, stance, position: stance }];
-}
-
 /** Load canonical seeded accounts + community accounts and merge by handle. */
 async function loadAccounts() {
   const base = getBase();
@@ -1002,11 +975,6 @@ export default function App() {
   // Avatar profile dropdown (holds Log out), toggled by clicking the avatar.
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [haloAvatarOpen, setHaloAvatarOpen] = useState(false);
-  // Transient "just selected" marker (ui stance key) that drives the stance
-  // segmented control's brief pop animation; cleared shortly after selection.
-  const [stancePop, setStancePop] = useState(null);
-  const stancePopTimerRef = useRef(0);
-  const [stanceChoiceOpen, setStanceChoiceOpen] = useState(false);
   /** Three scrollable stance columns (avatars + names) instead of force graph; mutually exclusive with Plebs / equal size / manual edit. */
   const [stanceListsViewEnabled, setStanceListsViewEnabled] = useState(false);
   const [plebsMode, setPlebsMode] = useState(false);
@@ -1227,53 +1195,6 @@ export default function App() {
       setEqualAvatarSizeEnabled(false);
     }
   }
-
-  async function setMyStance(stance) {
-    if (!me?.authenticated) return false;
-    try {
-      setAuthBusy(true);
-      const res = await fetch(`${API_BASE}/api/stance`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ stance }),
-      });
-      if (!res.ok) return false;
-      const data = await res.json();
-      if (data?.handle && data?.stance) {
-        setLabels((prev) => ({ ...prev, [String(data.handle).toLowerCase()]: normalizedStance(data.stance) }));
-        // Update only this user's node locally; never reload or refetch the graph.
-        setAccounts((prev) => upsertSelfAccountLocally(prev, data));
-      }
-      await loadMe();
-      return true;
-    } finally {
-      setAuthBusy(false);
-    }
-  }
-
-  async function chooseStanceFromCard(uiStance, apiStance) {
-    setStancePop(uiStance);
-    if (stancePopTimerRef.current) clearTimeout(stancePopTimerRef.current);
-    stancePopTimerRef.current = setTimeout(() => setStancePop(null), 240);
-    const ok = await setMyStance(apiStance);
-    if (ok) setStanceChoiceOpen(false);
-  }
-
-  useEffect(() => {
-    if (!me?.authenticated) {
-      setStanceChoiceOpen(false);
-      return;
-    }
-    if (shouldAutoOpenStanceChoice(me)) {
-      setStanceChoiceOpen(true);
-    }
-  }, [me?.authenticated, me?.stance, me?.x_user_id]);
-
-  useEffect(() => () => {
-    if (stancePopTimerRef.current) clearTimeout(stancePopTimerRef.current);
-  }, []);
-
 
   async function setEqualAvatarSizePreference(nextValue) {
     setEqualAvatarSizeEnabled(Boolean(nextValue));
@@ -5845,23 +5766,6 @@ export default function App() {
                   <span>Equal avatar size</span>
                   <span style={styles.optionsState}>{equalAvatarSizeEnabled ? "ON" : "OFF"}</span>
                 </label>
-                {isPrivilegedEditor && (
-                  <label style={styles.optionsItem}>
-                    <input
-                      type="checkbox"
-                      checked={manualEditMode}
-                      onChange={(e) => {
-                        const v = e.target.checked;
-                        if (v) {
-                          stopHistoryPlayback();
-                        }
-                        setManualEditMode(v);
-                      }}
-                    />
-                    <span>Edit stances</span>
-                    <span style={styles.optionsState}>{manualEditMode ? "ON" : "OFF"}</span>
-                  </label>
-                )}
                 <label style={styles.optionsItem}>
                   <input
                     type="checkbox"
@@ -5939,33 +5843,23 @@ export default function App() {
               {meHasStance && meStanceToolbar ? (
                 <div
                   style={{ ...styles.stanceSegment, gridTemplateColumns: "1fr" }}
-                  role="group"
-                  aria-label="Your stance"
+                  aria-label={`Your final BIP-110 position: ${meStanceToolbar.label}`}
                 >
-                  <button
-                    type="button"
-                    className={`stanceSeg stanceSeg--solo ${meStanceToolbar.className} is-active ${stancePop === meStance ? "just-selected" : ""}`}
-                    onClick={() => setStanceChoiceOpen(true)}
-                    disabled={authBusy}
-                    aria-haspopup="dialog"
-                    aria-expanded={stanceChoiceOpen}
-                    title={`Your stance: ${meStanceToolbar.label}. Click to change.`}
+                  <span
+                    className={`stanceSeg stanceSeg--solo stanceSeg--locked ${meStanceToolbar.className} is-active`}
+                    title={`Your final BIP-110 position: ${meStanceToolbar.label}. Voting is closed.`}
                   >
+                    <span aria-hidden="true">🔒</span>
                     {meStanceToolbar.label}
-                  </button>
+                  </span>
                 </div>
               ) : (
-                <button
-                  type="button"
-                  className="toolbarBtn toolbarBtn--primary"
-                  onClick={() => setStanceChoiceOpen(true)}
-                  disabled={authBusy}
-                  aria-haspopup="dialog"
-                  aria-expanded={stanceChoiceOpen}
-                  title="Choose your stance"
+                <span
+                  className="stanceArchiveEmpty"
+                  title="BIP-110 voting is closed. No position was recorded for this account."
                 >
-                  Choose stance
-                </button>
+                  No final position
+                </span>
               )}
               <div style={styles.barDivider} aria-hidden="true" />
               <div ref={profileMenuRef} style={styles.profileWrap}>
@@ -6065,6 +5959,15 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      <section className="archiveBanner" aria-label="BIP-110 status">
+        <span className="archiveBanner__lock" aria-hidden="true">🔒</span>
+        <div className="archiveBanner__copy">
+          <strong>BIP-110 has concluded</strong>
+          <span>The proposal did not achieve consensus. Voting is closed, and all positions are preserved as a historical snapshot.</span>
+        </div>
+        <span className="archiveBanner__badge">FINAL SNAPSHOT</span>
+      </section>
 
       <div style={styles.main}>
         <div ref={(el) => { containerRef.current = el; canvasWrapPulseRef.current = el; }} style={styles.canvasWrap}>
@@ -6277,7 +6180,7 @@ export default function App() {
       </div>
       <div style={styles.footerNote}>
         <div style={styles.footerNoteLine}>
-          <span>Stances are self-reported or curated.</span>
+          <span>Final positions are self-reported or curated and are now read-only.</span>
           <CuratedStanceInfo />
         </div>
         {stanceListsViewEnabled ? (
@@ -6293,7 +6196,7 @@ export default function App() {
       </div>
       <div style={styles.bottomControls}>
         <button type="button" className="toolbarBtn" onClick={openStatsModal}>
-          Stats
+          Final Results
         </button>
         <div style={styles.barDivider} aria-hidden="true" />
         <button type="button" className="toolbarBtn" onClick={() => setShowDonateModal(true)}>
@@ -6328,14 +6231,6 @@ export default function App() {
           />
         </Suspense>
       )}
-      <StanceChoiceCard
-        open={Boolean(me?.authenticated) && stanceChoiceOpen}
-        mode={stanceChoiceMode(me)}
-        currentStance={meStance}
-        busy={authBusy}
-        onSelect={chooseStanceFromCard}
-        onDismiss={() => setStanceChoiceOpen(false)}
-      />
       {manualEditMode && isPrivilegedEditor && manualEditTarget && (
         <div style={styles.modalBackdrop} onClick={() => setManualEditTarget(null)}>
           <div style={styles.manualEditCard} onClick={(e) => e.stopPropagation()}>
