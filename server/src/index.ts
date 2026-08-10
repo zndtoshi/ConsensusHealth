@@ -1828,11 +1828,6 @@ app.post("/api/admin/stance", async (req, res, next) => {
       res.status(400).json({ error: "target_required" });
       return;
     }
-    if (reqHandle && reqHandle === normalizeHandle(user.handle)) {
-      res.status(400).json({ error: "cannot_edit_self" });
-      return;
-    }
-
     const access = await resolveProposalAccessAsync(pool, {
       rawProposal: req.body?.proposal ?? req.body?.proposal_id,
       sessionHandle: user.handle,
@@ -1843,6 +1838,17 @@ app.post("/api/admin/stance", async (req, res, next) => {
     }
     if (!access.allowed) {
       res.status(403).json({ error: "forbidden_proposal" });
+      return;
+    }
+
+    const editingSelf =
+      (reqHandle && reqHandle === normalizeHandle(user.handle)) ||
+      (reqXUserId && reqXUserId === String(user.x_user_id));
+    if (editingSelf && access.proposalId === DEFAULT_PROPOSAL_ID) {
+      res.status(409).json({
+        error: "bip110_stances_frozen",
+        message: "BIP-110 positions remain preserved as a final snapshot.",
+      });
       return;
     }
 

@@ -37,7 +37,7 @@ test("resolveProposalAccess allows bip110 for everyone; other BIPs admin-only", 
   assert.equal(resolveProposalAccess({ rawProposal: "bip110", sessionHandle: "alice" }).allowed, true);
   assert.equal(resolveProposalAccess({ rawProposal: "bip54", sessionHandle: "alice" }).allowed, false);
   assert.equal(resolveProposalAccess({ rawProposal: "bip54", sessionHandle: "zndtoshi" }).allowed, true);
-  assert.equal(resolveProposalAccess({ rawProposal: "119", sessionHandle: "@ZndToshi" }).allowed, true);
+  assert.equal(resolveProposalAccess({ rawProposal: "448", sessionHandle: "@ZndToshi" }).allowed, true);
   assert.equal(resolveProposalAccess({ rawProposal: "bip448", sessionHandle: null }).allowed, false);
 });
 

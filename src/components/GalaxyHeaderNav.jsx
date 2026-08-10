@@ -25,15 +25,17 @@ export function GalaxyHeaderNav({
       >
         {prev.shortName}
       </button>
-      <div
-        className="galaxyHeaderNav__current"
-        style={{
-          color: theme?.accent,
-          textShadow: theme ? `0 0 18px ${theme.accentSoft}` : undefined,
-        }}
-        aria-current="page"
-      >
-        {current.shortName}
+      <div className="galaxyHeaderNav__identity" aria-current="page">
+        <div
+          className="galaxyHeaderNav__current"
+          style={{
+            color: theme?.accent,
+            textShadow: theme ? `0 0 18px ${theme.accentSoft}` : undefined,
+          }}
+        >
+          {current.title}
+        </div>
+        <div className="galaxyHeaderNav__description">{current.description}</div>
       </div>
       <button
         type="button"

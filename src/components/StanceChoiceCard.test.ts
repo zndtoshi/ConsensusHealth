@@ -42,3 +42,15 @@ test("self-service writes are restricted while admin stance editing remains avai
   assert.match(appSrc, /Set user position/);
   assert.match(appSrc, /Edit positions on graph/);
 });
+
+test("admin can choose their own position only outside frozen BIP-110", () => {
+  const adminRoute = serverSrc.indexOf('app.post("/api/admin/stance"');
+  const routeSrc = serverSrc.slice(adminRoute, adminRoute + 2200);
+  assert.match(routeSrc, /editingSelf/);
+  assert.match(routeSrc, /access\.proposalId === DEFAULT_PROPOSAL_ID/);
+  assert.match(routeSrc, /bip110_stances_frozen/);
+  assert.match(appSrc, /activeProposalId !== DEFAULT_PROPOSAL_ID/);
+  assert.match(appSrc, /openOwnStanceChoice/);
+  assert.match(appSrc, /Choose your position/);
+  assert.match(appSrc, /allowAbsentFromGalaxy/);
+});
