@@ -970,6 +970,9 @@ export default function App() {
   const [mentions, setMentions] = useState([]); // tweet rows
   const [selectedHandle, setSelectedHandle] = useState(null);
   const [search, setSearch] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchWrapRef = useRef(null);
+  const searchInputRef = useRef(null);
   const [me, setMe] = useState(null);
   const [activeProposalId, setActiveProposalId] = useState(() => readProposalIdFromLocation());
   const [galaxyTravel, setGalaxyTravel] = useState(null); // { from, to, progress } | null
@@ -2068,6 +2071,31 @@ export default function App() {
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [adminOptionsOpen]);
+
+  useEffect(() => {
+    if (!searchOpen) return undefined;
+    const id = window.requestAnimationFrame(() => searchInputRef.current?.focus());
+    const onDocMouseDown = (e) => {
+      const root = searchWrapRef.current;
+      if (!root || root.contains(e.target)) return;
+      setSearchOpen(false);
+      setSearch("");
+      setDropdownHoverHandle(null);
+    };
+    const onKeyDown = (e) => {
+      if (e.key !== "Escape") return;
+      setSearchOpen(false);
+      setSearch("");
+      setDropdownHoverHandle(null);
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.cancelAnimationFrame(id);
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [searchOpen]);
 
   useEffect(() => {
     if (!joinDateFilterActive) return;
@@ -6008,35 +6036,67 @@ export default function App() {
             </svg>
           </a>
         </div>
-        <div className="appHeader__search" style={styles.searchWrap}>
-          <input
-            className="appInput appHeader__searchInput"
-            style={styles.search}
-            placeholder="Search @handle..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          {search.trim() !== "" && searchDropdownResults.length > 0 && (
-            <div style={styles.searchDropdown}>
-              {searchDropdownResults.map((handle) => (
-                <button
-                  key={handle}
-                  type="button"
-                  style={{
-                    ...styles.searchDropdownItem,
-                    background: dropdownHoverHandle === handle ? "rgba(255,255,255,0.1)" : undefined,
-                  }}
-                  onClick={() => {
-                    setSelectedHandle(handle);
-                    setSearch("");
-                  }}
-                  onMouseEnter={() => setDropdownHoverHandle(handle)}
-                  onMouseLeave={() => setDropdownHoverHandle(null)}
-                >
-                  @{handle}
-                </button>
-              ))}
-            </div>
+        <div
+          ref={searchWrapRef}
+          className={`appHeader__search${searchOpen ? " is-open" : ""}`}
+          style={styles.searchWrap}
+        >
+          {searchOpen ? (
+            <>
+              <input
+                ref={searchInputRef}
+                className="appInput appHeader__searchInput"
+                style={styles.search}
+                placeholder="Search @handle..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                aria-label="Search @handle"
+              />
+              {search.trim() !== "" && searchDropdownResults.length > 0 && (
+                <div style={styles.searchDropdown}>
+                  {searchDropdownResults.map((handle) => (
+                    <button
+                      key={handle}
+                      type="button"
+                      style={{
+                        ...styles.searchDropdownItem,
+                        background: dropdownHoverHandle === handle ? "rgba(255,255,255,0.1)" : undefined,
+                      }}
+                      onClick={() => {
+                        setSelectedHandle(handle);
+                        setSearch("");
+                        setSearchOpen(false);
+                        setDropdownHoverHandle(null);
+                      }}
+                      onMouseEnter={() => setDropdownHoverHandle(handle)}
+                      onMouseLeave={() => setDropdownHoverHandle(null)}
+                    >
+                      @{handle}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <button
+              type="button"
+              className="searchToggleBtn"
+              onClick={() => setSearchOpen(true)}
+              title="Search @handle"
+              aria-label="Search @handle"
+              aria-expanded={false}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="m21 21-4.3-4.3M11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14Z"
+                />
+              </svg>
+            </button>
           )}
         </div>
         <div className="appHeader__center" style={styles.headerCenter}>
@@ -6052,52 +6112,48 @@ export default function App() {
               />
             </Suspense>
           ) : null}
-          {selectedHandle && (
-            <>
-              <div
-                className="appHeader__selected"
-                style={{
-                  ...styles.selectedMetaBlock,
-                  ...(adminGalaxiesEnabled ? { marginTop: 6 } : null),
+          {selectedHandle ? (
+            <div className="selectedUserCard" role="status" aria-live="polite">
+              <img
+                src={selectedHeaderAvatarSrc}
+                alt=""
+                loading="eager"
+                decoding="async"
+                referrerPolicy="no-referrer"
+                onError={(e) => {
+                  const fallback = missingAvatarSrcUrl();
+                  if (canonicalAvatarSrc(e.currentTarget.src) !== fallback) e.currentTarget.src = fallback;
                 }}
-              >
-                <img
-                  src={selectedHeaderAvatarSrc}
-                  alt={selectedHandle ? `@${selectedHandle}` : "selected user"}
-                  loading="eager"
-                  decoding="async"
-                  referrerPolicy="no-referrer"
-                  onError={(e) => {
-                    const fallback = missingAvatarSrcUrl();
-                    if (canonicalAvatarSrc(e.currentTarget.src) !== fallback) e.currentTarget.src = fallback;
-                  }}
-                  style={styles.selectedHeaderAvatar}
-                />
-                <span
-                  style={{ pointerEvents: "auto", userSelect: "text" }}
+                className="selectedUserCard__avatar"
+              />
+              <div className="selectedUserCard__meta">
+                <a
+                  href={`https://x.com/${encodeURIComponent(selectedHandle)}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="selectedUserCard__handle"
                   title="Open profile on X"
                 >
-                  <a
-                    href={`https://x.com/${encodeURIComponent(selectedHandle)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    style={styles.selectedHandleLink}
-                  >
-                    @{selectedHandle}
-                  </a>
-                </span>
+                  @{selectedHandle}
+                </a>
                 <span
-                  style={{
-                    ...styles.selectedStanceBadge,
-                    color: stanceHeaderColor(selectedHeaderStance),
-                    textShadow: `0 1px 0 rgba(0,0,0,0.9), 0 0 8px ${stanceHeaderColor(selectedHeaderStance)}, 0 0 18px ${stanceHeaderColor(selectedHeaderStance)}`,
-                  }}
+                  className="selectedUserCard__stance"
+                  style={{ color: stanceHeaderColor(selectedHeaderStance) }}
                 >
                   {selectedHeaderStance || "unlabeled"}
                 </span>
               </div>
-            </>
-          )}
+              <button
+                type="button"
+                className="selectedUserCard__close"
+                onClick={() => setSelectedHandle(null)}
+                title="Clear selection"
+                aria-label="Clear selected user"
+              >
+                ×
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="appHeader__controls" style={styles.controls}>
           <div style={styles.accountBar}>
@@ -6920,9 +6976,12 @@ const styles = {
     left: "50%",
     transform: "translateX(-50%)",
     display: "flex",
+    flexDirection: "column",
     alignItems: "center",
-    gap: 10,
+    justifyContent: "center",
+    gap: 0,
     pointerEvents: "none",
+    zIndex: 20,
   },
   selectedMetaBlock: {
     display: "flex",
