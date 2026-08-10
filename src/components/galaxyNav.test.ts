@@ -25,6 +25,21 @@ test("non-admin path keeps BIP-110 badge link", () => {
   assert.match(appSrc, /title="View the official BIP-110 proposal on GitHub"/);
 });
 
+test("mobile header stacks brand, galaxy title, and search without absolute overlap", () => {
+  const appSrc = fs.readFileSync(path.join(here, "..", "App.jsx"), "utf8");
+  const cssSrc = fs.readFileSync(path.join(here, "..", "index.css"), "utf8");
+  assert.match(appSrc, /className="appHeader"/);
+  assert.match(appSrc, /appHeader__brand/);
+  assert.match(appSrc, /appHeader__search/);
+  assert.match(appSrc, /appHeader__center/);
+  assert.match(appSrc, /appHeader__controls/);
+  assert.match(cssSrc, /@media \(max-width: 720px\)/);
+  assert.match(cssSrc, /grid-template-areas:/);
+  assert.match(cssSrc, /"brand controls"/);
+  assert.match(cssSrc, /\.appHeader__center\s*\{[\s\S]*position:\s*static/);
+  assert.match(cssSrc, /\.galaxyHeaderNav__description,\s*\n\s*\.galaxyHeaderNav__tooltip\s*\{[\s\S]*display:\s*none/);
+});
+
 test("distant proposals render as labeled galaxies flanking the center mass", () => {
   const distantSrc = fs.readFileSync(path.join(here, "DistantGalaxies.jsx"), "utf8");
   const headerSrc = fs.readFileSync(path.join(here, "GalaxyHeaderNav.jsx"), "utf8");

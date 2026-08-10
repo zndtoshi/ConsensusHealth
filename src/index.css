@@ -129,6 +129,144 @@ button:focus-visible {
   }
 }
 
+/* Desktop keeps inline flex + absolute center/controls from App styles.
+   Brand + search are separate in-flow children, so keep them left-grouped. */
+.appHeader__search {
+  position: relative;
+}
+
+@media (min-width: 721px) {
+  .appHeader {
+    justify-content: flex-start !important;
+    gap: 16px !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .appHeader {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "brand controls"
+      "center center"
+      "search search";
+    align-items: center;
+    column-gap: 10px;
+    row-gap: 8px;
+    padding: 10px 12px !important;
+    min-height: 0 !important;
+    flex-wrap: nowrap !important;
+  }
+
+  .appHeader__brand {
+    grid-area: brand;
+    min-width: 0;
+    gap: 6px;
+  }
+
+  .appHeader__brand > div:first-child {
+    font-size: 14px !important;
+    letter-spacing: 0 !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Active galaxy header already links the current BIP; free horizontal space. */
+  .appHeader__brand .bipTagLink {
+    display: none;
+  }
+
+  .appHeader__search {
+    grid-area: search;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .appHeader__searchInput {
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  .appHeader__center {
+    grid-area: center;
+    position: static !important;
+    left: auto !important;
+    transform: none !important;
+    width: 100%;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 6px !important;
+    pointer-events: auto;
+  }
+
+  .appHeader__selected {
+    margin-top: 0 !important;
+    max-width: 100%;
+  }
+
+  .appHeader__controls {
+    grid-area: controls;
+    position: static !important;
+    right: auto !important;
+    top: auto !important;
+    transform: none !important;
+    max-width: none !important;
+  }
+
+  .appHeader__controls .accountBar,
+  .appHeader .accountBar {
+    max-width: none;
+  }
+
+  /* Compact galaxy title row — description/tooltip were colliding on phones. */
+  .galaxyHeaderNav {
+    width: 100%;
+    gap: 6px;
+    justify-content: space-between;
+  }
+
+  .galaxyHeaderNav__identity {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .galaxyHeaderNav__description,
+  .galaxyHeaderNav__tooltip {
+    display: none;
+  }
+
+  .galaxyHeaderNav__current {
+    font-size: 17px;
+  }
+
+  .galaxyHeaderNav__side {
+    font-size: 11px;
+    padding: 4px 2px;
+    transform: none;
+    flex: 0 0 auto;
+  }
+
+  .galaxyHeaderNav__titleRow {
+    gap: 5px;
+  }
+
+  .galaxyHeaderNav__lock {
+    width: 11px;
+    height: 11px;
+  }
+
+  .galaxyHeaderNav__github {
+    width: 16px;
+    height: 16px;
+  }
+
+  .galaxyHeaderNav__github svg {
+    width: 12px;
+    height: 12px;
+  }
+}
+
 /* Low-emphasis ghost button used by Options / Login / menu actions. */
 .toolbarBtn {
   appearance: none;
@@ -1502,43 +1640,6 @@ html[data-browser="firefox"] .stanceGlow {
 }
 
 @media (max-width: 720px) {
-  .galaxyHeaderNav__current {
-    font-size: 16px;
-  }
-
-  .galaxyHeaderNav {
-    gap: 7px;
-  }
-
-  .galaxyHeaderNav__identity {
-    min-width: min(230px, 52vw);
-  }
-
-  .galaxyHeaderNav__description {
-    max-width: min(230px, 52vw);
-    font-size: 8px;
-  }
-
-  .galaxyHeaderNav__side {
-    font-size: 10px;
-    padding-inline: 3px;
-  }
-
-  .galaxyHeaderNav__lock {
-    width: 11px;
-    height: 11px;
-  }
-
-  .galaxyHeaderNav__github {
-    width: 16px;
-    height: 16px;
-  }
-
-  .galaxyHeaderNav__github svg {
-    width: 12px;
-    height: 12px;
-  }
-
   .distantGalaxy {
     transform: scale(0.82);
   }
