@@ -111,9 +111,11 @@ test("OPTIONS_MENU_JOIN_DATE_LABEL is last option contract", () => {
   // Documented Options order contract used by UI tests.
   const OPTIONS_ORDER = [
     "Equal avatar size",
-    "Edit stances",
+    "Edit positions on graph",
     "Plebs (<3k followers)",
     "Influencers (>3k followers)",
+    "Seeded only (never self-set)",
+    "Self-set stances only",
     "X join date",
   ];
   assert.equal(OPTIONS_ORDER[OPTIONS_ORDER.length - 1], "X join date");
