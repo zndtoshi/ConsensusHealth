@@ -76,12 +76,14 @@ test("normalizeHistoryStance accepts support as approve", () => {
   assert.equal(normalizeHistoryStance("support"), "approve");
 });
 
-test("App gates delayed avatar stance history to authenticated zndtoshi", () => {
+test("App gates delayed avatar stance history to stance analysts", () => {
   const appSrc = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
   assert.match(appSrc, /canViewAvatarStanceHistory/);
-  assert.match(appSrc, /isPrivilegedManualEditor\(me\?\.handle\)/);
-  assert.match(appSrc, /me\?\.authenticated === true/);
+  assert.match(appSrc, /isStanceAnalyst/);
+  assert.match(appSrc, /isStanceAnalystUser/);
   assert.match(appSrc, /syncHistoryHoverDelay/);
   assert.match(appSrc, /avatarHistoryCard/);
   assert.match(appSrc, /700/);
+  assert.match(appSrc, /Seeded only \(never self-set\)/);
+  assert.match(appSrc, /Self-set stances only/);
 });

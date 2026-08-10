@@ -24,6 +24,11 @@ import { createGraphIdleScheduler } from "./utils/graphIdleScheduler";
 import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./utils/glowRendering";
 import { fetchCommunityUsersResult } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor, removeAccountFromList } from "./utils/manualEditState";
+import {
+  filterSeedOnlyAccounts,
+  filterSelfReportedAccounts,
+  isStanceAnalyst,
+} from "./utils/stanceAnalyst";
 import { assertHaloAvatarAdmin, isHaloAvatarAdmin } from "./utils/haloAvatarAdmin";
 import { HaloAvatarModal } from "./components/HaloAvatarModal";
 import {
@@ -1009,6 +1014,8 @@ export default function App() {
   /** Three scrollable stance columns (avatars + names) instead of force graph; mutually exclusive with Plebs / equal size / manual edit. */
   const [stanceListsViewEnabled, setStanceListsViewEnabled] = useState(false);
   const [plebsMode, setPlebsMode] = useState(false);
+  const [seedOnlyMode, setSeedOnlyMode] = useState(false);
+  const [selfReportedMode, setSelfReportedMode] = useState(false);
   const [influencersMode, setInfluencersMode] = useState(false);
   const [joinDateFilterEnabled, setJoinDateFilterEnabled] = useState(false);
   // Draft years drive slider UI during drag; committed years drive graph membership.
@@ -1375,6 +1382,10 @@ export default function App() {
   const meStanceToolbar = toolbarStanceMeta(meStance);
   const meHandleLower = safeLower(me?.handle);
   const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
+  const isStanceAnalystUser = useMemo(
+    () => me?.authenticated === true && isStanceAnalyst(me?.handle),
+    [me?.authenticated, me?.handle]
+  );
   const adminGalaxiesEnabled = useMemo(
     () =>
       me?.authenticated === true &&
@@ -1456,11 +1467,8 @@ export default function App() {
     historyCacheRef.current?.clear?.();
   }, [activeProposalId]);
 
-  // Delayed avatar stance-history panel: authenticated admin (zndtoshi) only.
-  const canViewAvatarStanceHistory = useMemo(
-    () => me?.authenticated === true && isPrivilegedManualEditor(me?.handle),
-    [me?.authenticated, me?.handle]
-  );
+  // Delayed avatar stance-history panel: stance analysts (zndtoshi, tonevays).
+  const canViewAvatarStanceHistory = isStanceAnalystUser;
   const canViewAvatarStanceHistoryRef = useRef(false);
   canViewAvatarStanceHistoryRef.current = canViewAvatarStanceHistory;
 
@@ -1522,19 +1530,26 @@ export default function App() {
     return accounts;
   }, [accounts, plebsMode, influencersMode]);
 
+  const provenanceFilteredAccounts = useMemo(() => {
+    if (!isStanceAnalystUser) return followerFilteredAccounts;
+    if (seedOnlyMode) return filterSeedOnlyAccounts(followerFilteredAccounts);
+    if (selfReportedMode) return filterSelfReportedAccounts(followerFilteredAccounts);
+    return followerFilteredAccounts;
+  }, [followerFilteredAccounts, isStanceAnalystUser, seedOnlyMode, selfReportedMode]);
+
   const joinDateFilterActive =
     joinDateFilterEnabled && joinDateCommittedMin != null && joinDateCommittedMax != null;
 
   const visibleAccounts = useMemo(() => {
-    if (!joinDateFilterActive) return followerFilteredAccounts;
+    if (!joinDateFilterActive) return provenanceFilteredAccounts;
     return filterAccountsByJoinDate(
-      followerFilteredAccounts,
+      provenanceFilteredAccounts,
       true,
       joinDateCommittedMin,
       joinDateCommittedMax
     );
   }, [
-    followerFilteredAccounts,
+    provenanceFilteredAccounts,
     joinDateFilterActive,
     joinDateCommittedMin,
     joinDateCommittedMax,
@@ -1545,9 +1560,9 @@ export default function App() {
     if (!joinDateFilterEnabled || joinDateMinYear == null || joinDateMaxYear == null) {
       return { unknownHiddenCount: 0, showingCount: visibleAccounts.length, totalCount: accounts.length };
     }
-    const summary = summarizeJoinDateYears(followerFilteredAccounts);
+    const summary = summarizeJoinDateYears(provenanceFilteredAccounts);
     const preview = filterAccountsByJoinDate(
-      followerFilteredAccounts,
+      provenanceFilteredAccounts,
       true,
       joinDateMinYear,
       joinDateMaxYear
@@ -1555,13 +1570,13 @@ export default function App() {
     return {
       unknownHiddenCount: summary.unknownCount,
       showingCount: preview.length,
-      totalCount: followerFilteredAccounts.length,
+      totalCount: provenanceFilteredAccounts.length,
     };
   }, [
     joinDateFilterEnabled,
     joinDateMinYear,
     joinDateMaxYear,
-    followerFilteredAccounts,
+    provenanceFilteredAccounts,
     visibleAccounts.length,
     accounts.length,
   ]);
@@ -1575,8 +1590,9 @@ export default function App() {
     return membershipSignatureFromKeys(keys);
   }, [visibleAccounts]);
 
-  // A follower-filtered subset is active; dataset-wide change stats don't match it.
-  const followerFilterActive = plebsMode || influencersMode || joinDateFilterActive;
+  // A filtered subset is active; dataset-wide change stats don't match it.
+  const followerFilterActive =
+    plebsMode || influencersMode || joinDateFilterActive || seedOnlyMode || selfReportedMode;
 
   const accountByHandle = useMemo(() => {
     const m = new Map();
@@ -2026,6 +2042,13 @@ export default function App() {
     setManualEditChoice("neutral");
     setManualEditError("");
   }, [isPrivilegedEditor]);
+
+  useEffect(() => {
+    if (isStanceAnalystUser) return;
+    setSeedOnlyMode(false);
+    setSelfReportedMode(false);
+    setHistoryPanel(null);
+  }, [isStanceAnalystUser]);
 
   useEffect(() => {
     if (manualEditMode) return;
@@ -6163,6 +6186,42 @@ export default function App() {
                   <span>Influencers (&gt;3k followers)</span>
                   <span style={styles.optionsState}>{influencersMode ? "ON" : "OFF"}</span>
                 </label>
+                {isStanceAnalystUser ? (
+                  <>
+                    <label style={styles.optionsItem}>
+                      <input
+                        type="checkbox"
+                        checked={seedOnlyMode}
+                        onChange={(e) => {
+                          const v = e.target.checked;
+                          if (v) {
+                            stopHistoryPlayback();
+                            setSelfReportedMode(false);
+                          }
+                          setSeedOnlyMode(v);
+                        }}
+                      />
+                      <span>Seeded only (never self-set)</span>
+                      <span style={styles.optionsState}>{seedOnlyMode ? "ON" : "OFF"}</span>
+                    </label>
+                    <label style={styles.optionsItem}>
+                      <input
+                        type="checkbox"
+                        checked={selfReportedMode}
+                        onChange={(e) => {
+                          const v = e.target.checked;
+                          if (v) {
+                            stopHistoryPlayback();
+                            setSeedOnlyMode(false);
+                          }
+                          setSelfReportedMode(v);
+                        }}
+                      />
+                      <span>Self-set stances only</span>
+                      <span style={styles.optionsState}>{selfReportedMode ? "ON" : "OFF"}</span>
+                    </label>
+                  </>
+                ) : null}
                 <label style={styles.optionsItem}>
                   <input
                     type="checkbox"
