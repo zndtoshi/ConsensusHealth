@@ -1125,7 +1125,10 @@ export default function App() {
   async function loadMe() {
     try {
       const res = await fetch(`${API_BASE}/api/me`, { credentials: "include" });
-      if (!res.ok) return;
+      if (!res.ok) {
+        setMe({ authenticated: false });
+        return;
+      }
       const data = await res.json();
       const authenticated = Boolean(data && data.x_user_id);
       setMe(authenticated ? { authenticated: true, ...data } : { authenticated: false });
@@ -1142,7 +1145,7 @@ export default function App() {
         }
       }
     } catch {
-      // ignore auth failures in local dev
+      setMe({ authenticated: false });
     }
   }
 
@@ -1380,10 +1383,18 @@ export default function App() {
       proposalCatalog.filter((p) => p.enabled).length > 1,
     [me?.authenticated, me?.handle, proposalCatalog, proposalCatalogReady]
   );
+  const proposalAccessReady = me !== null && proposalCatalogReady;
   const activeProposal = useMemo(
     () => getProposalById(activeProposalId, proposalCatalog),
     [activeProposalId, proposalCatalog]
   );
+  const canChooseOwnStance =
+    me?.authenticated === true && isPrivilegedEditor && activeProposalId !== DEFAULT_PROPOSAL_ID;
+  const manualEditTargetIsSelf =
+    Boolean(manualEditTarget) &&
+    ((String(manualEditTarget?.x_user_id ?? "").trim() &&
+      String(manualEditTarget?.x_user_id ?? "").trim() === String(me?.x_user_id ?? "").trim()) ||
+      normalizeHandle(manualEditTarget?.handle) === normalizeHandle(me?.handle));
   const manualUserPickerResults = useMemo(() => {
     const query = manualUserQuery.trim().toLowerCase().replace(/^@+/, "");
     return adminUserDirectory
@@ -1399,7 +1410,9 @@ export default function App() {
   }, [adminUserDirectory, manualUserQuery, me?.handle]);
 
   useEffect(() => {
+    if (me === null) return undefined;
     let cancelled = false;
+    setProposalCatalogReady(false);
     (async () => {
       try {
         const { items } = await fetchAccessibleProposals({ apiBase: API_BASE });
@@ -1409,7 +1422,11 @@ export default function App() {
         setProposalCatalogReady(true);
       } catch {
         if (!cancelled) {
-          setProposalCatalog(FALLBACK_PROPOSALS.filter((p) => !p.adminOnly));
+          const canUseAdminFallback =
+            me?.authenticated === true && isPrivilegedManualEditor(me?.handle);
+          setProposalCatalog(
+            canUseAdminFallback ? FALLBACK_PROPOSALS : FALLBACK_PROPOSALS.filter((p) => !p.adminOnly)
+          );
           setProposalCatalogReady(true);
         }
       }
@@ -1827,9 +1844,8 @@ export default function App() {
       const accountId = String(account?.x_user_id ?? "").trim();
       return (xUserId && accountId === xUserId) || normalizeHandle(account?.handle) === handle;
     });
-    const currentStance = activeRow
-      ? normalizedStance(activeRow.stance ?? activeRow.position ?? "neutral")
-      : "";
+    const rawCurrentStance = activeRow?.stance ?? activeRow?.position ?? user?.stance ?? "";
+    const currentStance = rawCurrentStance ? normalizedStance(rawCurrentStance) : "";
     const baseNoSlash = getBase().replace(/\/$/, "");
     setManualEditTarget({
       ...user,
@@ -1838,10 +1854,19 @@ export default function App() {
       x_user_id: xUserId || activeRow?.x_user_id || null,
       currentStance,
       avatarSrc: resolveAvatarUrlForAccount(activeRow || user, baseNoSlash, missingAvatarSrcUrl()),
+      allowAbsentFromGalaxy: true,
     });
     setManualEditChoice(currentStance || "neutral");
     setManualEditError("");
     setManualUserPickerOpen(false);
+  }
+
+  function openOwnStanceChoice() {
+    if (!canChooseOwnStance) return;
+    selectManualUser({
+      ...me,
+      stance: meForActiveProposal?.stance || null,
+    });
   }
 
   async function saveManualStanceEdit() {
@@ -1893,6 +1918,15 @@ export default function App() {
           },
         ];
       });
+      if (manualEditTargetIsSelf) {
+        setMe((prev) => ({
+          ...prev,
+          proposal_stances: {
+            ...(prev?.proposal_stances || {}),
+            [activeProposalId]: next,
+          },
+        }));
+      }
       await refreshStatsNow();
       setManualEditTarget(null);
       if (!import.meta.env.PROD) {
@@ -2098,6 +2132,7 @@ export default function App() {
 
   useEffect(() => {
     if (!manualEditTarget) return;
+    if (manualEditTarget.allowAbsentFromGalaxy) return;
     const targetNorm = normalizeHandle(manualEditTarget.handle);
     const visible = visibleAccounts.some((a) => normalizeHandle(a.handle) === targetNorm);
     if (!visible) setManualEditTarget(null);
@@ -2159,6 +2194,7 @@ export default function App() {
   // Both sources are awaited before the first paint so the graph does not
   // briefly show seed-only accounts and then expand to the full live set.
   useEffect(() => {
+    if (!proposalAccessReady) return undefined;
     let dead = false;
     const proposalId = normalizeIncomingProposalId(activeProposalId, adminGalaxiesEnabled, proposalCatalog);
     if (proposalId !== activeProposalId) {
@@ -2201,7 +2237,7 @@ export default function App() {
       dead = true;
       controller.abort();
     };
-  }, [activeProposalId, adminGalaxiesEnabled, proposalCatalog]);
+  }, [activeProposalId, adminGalaxiesEnabled, proposalAccessReady, proposalCatalog]);
 
   useEffect(() => {
     function onPopState() {
@@ -6169,7 +6205,27 @@ export default function App() {
           ) : (
             <>
               <div style={styles.barDivider} aria-hidden="true" />
-              {meHasStance && meStanceToolbar ? (
+              {canChooseOwnStance ? (
+                <div
+                  style={{ ...styles.stanceSegment, gridTemplateColumns: "1fr" }}
+                  aria-label={
+                    meHasStance && meStanceToolbar
+                      ? `Your ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}`
+                      : `Choose your ${activeProposal?.title || "proposal"} position`
+                  }
+                >
+                  <button
+                    type="button"
+                    className={`stanceSeg stanceSeg--solo ${meStanceToolbar?.className || ""} ${
+                      meHasStance ? "is-active" : ""
+                    }`}
+                    title={meHasStance ? "Change your position" : "Choose your position"}
+                    onClick={openOwnStanceChoice}
+                  >
+                    {meHasStance && meStanceToolbar ? meStanceToolbar.label : "Choose position"}
+                  </button>
+                </div>
+              ) : meHasStance && meStanceToolbar ? (
                 <div
                   style={{ ...styles.stanceSegment, gridTemplateColumns: "1fr" }}
                   aria-label={`Your recorded ${activeProposal?.title || "BIP-110"} position: ${meStanceToolbar.label}`}
@@ -6538,8 +6594,12 @@ export default function App() {
       </div>
       <div style={styles.footerNote}>
         <div style={styles.footerNoteLine}>
-          <span>Final positions are self-reported or curated and are now read-only.</span>
-          <CuratedStanceInfo />
+          <span>
+            {activeProposalId === DEFAULT_PROPOSAL_ID
+              ? "Final positions are self-reported or curated and are now read-only."
+              : "Positions in this preview galaxy are managed by @zndtoshi."}
+          </span>
+          {activeProposalId === DEFAULT_PROPOSAL_ID ? <CuratedStanceInfo /> : null}
         </div>
         {stanceListsViewEnabled ? (
           <div>Within each stance: avatar + @username, multi-column grid, followers (highest first).</div>
@@ -6636,7 +6696,9 @@ export default function App() {
       {isPrivilegedEditor && manualEditTarget && (
         <div style={styles.modalBackdrop} onClick={() => setManualEditTarget(null)}>
           <div style={styles.manualEditCard} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.manualEditTitle}>Set user position · {activeProposal?.title || "BIP-110"}</div>
+            <div style={styles.manualEditTitle}>
+              {manualEditTargetIsSelf ? "Choose your position" : "Set user position"} · {activeProposal?.title || "BIP-110"}
+            </div>
             <div style={styles.manualEditRow}>
               <img
                 src={manualEditTarget.avatarSrc}
@@ -6684,13 +6746,15 @@ export default function App() {
                 {manualEditBusy ? "Saving..." : "Save"}
               </button>
             </div>
-            <button
-              style={styles.manualEditRemoveBtn}
-              onClick={removeManualEditUser}
-              disabled={manualEditBusy}
-            >
-              Remove from website
-            </button>
+            {!manualEditTargetIsSelf ? (
+              <button
+                style={styles.manualEditRemoveBtn}
+                onClick={removeManualEditUser}
+                disabled={manualEditBusy}
+              >
+                Remove from website
+              </button>
+            ) : null}
           </div>
         </div>
       )}
@@ -7229,7 +7293,9 @@ const styles = {
   pill: {
     padding: "6px 10px",
     borderRadius: 999,
-    border: "1px solid rgba(255,255,255,0.2)",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "rgba(255,255,255,0.2)",
     background: "rgba(30,41,59,0.8)",
     color: "#e2e8f0",
     cursor: "pointer",

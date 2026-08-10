@@ -74,6 +74,12 @@ test("distant galaxies are every accessible non-active proposal", () => {
   assert.deepEqual(distant, ["bip110", "bip448"]);
 });
 
+test("proposal subtitles explain what each galaxy covers", () => {
+  assert.equal(FALLBACK_PROPOSALS.find((p) => p.id === "bip110")?.description, "Reduced Data Temporary Softfork");
+  assert.match(FALLBACK_PROPOSALS.find((p) => p.id === "bip54")?.description || "", /Consensus Cleanup/);
+  assert.match(FALLBACK_PROPOSALS.find((p) => p.id === "bip448")?.description || "", /rebindable transactions/i);
+});
+
 test("reduced-motion hook subscribes to matchMedia change events", () => {
   const src = fs.readFileSync(
     path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "hooks", "usePrefersReducedMotion.js"),

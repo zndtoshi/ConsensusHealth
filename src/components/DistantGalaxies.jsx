@@ -1,14 +1,14 @@
 import React, { useMemo, useState } from "react";
 import { listEnabledProposals } from "../config/proposals";
 
-/** Deterministic distant positions so galaxies don't jump on rerender. */
-function distantLayout(id, index) {
-  const seeds = {
-    bip110: { x: 12, y: 28 },
-    bip54: { x: 86, y: 22 },
-    bip448: { x: 78, y: 72 },
+/** Keep inactive galaxies flanking the center mass on one horizontal band. */
+function distantLayout(index) {
+  const sideIndex = index % 2;
+  const row = Math.floor(index / 2);
+  return {
+    x: sideIndex === 0 ? 14 : 86,
+    y: Math.max(30, 45 - row * 8),
   };
-  return seeds[id] || { x: 20 + ((index * 37) % 60), y: 24 + ((index * 29) % 50) };
 }
 
 /**
@@ -31,7 +31,7 @@ export function DistantGalaxies({
   return (
     <div className="distantGalaxies" aria-hidden={false}>
       {others.map((p, i) => {
-        const pos = distantLayout(p.id, i);
+        const pos = distantLayout(i);
         const theme = p.visualTheme;
         const showTip = tipId === p.id;
         return (
@@ -54,7 +54,14 @@ export function DistantGalaxies({
             aria-label={`${p.shortName}: ${p.description}`}
             title={p.shortName}
           >
-            <span className="distantGalaxy__core" />
+            <span className="distantGalaxy__label" aria-hidden="true">
+              <strong>{p.title}</strong>
+              <span>consensus galaxy</span>
+            </span>
+            <span className="distantGalaxy__core" aria-hidden="true">
+              <span className="distantGalaxy__arms" />
+              <span className="distantGalaxy__bulge" />
+            </span>
             {showTip ? (
               <span className="distantGalaxy__tip" role="tooltip">
                 <strong>{p.shortName}</strong>
