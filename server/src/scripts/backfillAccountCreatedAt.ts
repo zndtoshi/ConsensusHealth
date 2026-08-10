@@ -179,7 +179,7 @@ async function repairRoundedIdAndJoinDate(
       return "skipped";
     }
 
-    // Child tables that key by x_user_id (stance_history has FK ON DELETE CASCADE).
+    // Child tables that key by x_user_id (canonical + legacy compatibility mirrors).
     await client.query(`UPDATE stance_history SET x_user_id = $2 WHERE x_user_id = $1`, [
       fromId,
       newId,
@@ -188,6 +188,14 @@ async function repairRoundedIdAndJoinDate(
       fromId,
       newId,
     ]);
+    await client.query(
+      `UPDATE user_proposal_stances SET x_user_id = $2 WHERE x_user_id = $1`,
+      [fromId, newId]
+    );
+    await client.query(
+      `UPDATE user_proposal_stance_history SET x_user_id = $2 WHERE x_user_id = $1`,
+      [fromId, newId]
+    );
     await client.query(`UPDATE sessions SET x_user_id = $2 WHERE x_user_id = $1`, [fromId, newId]);
 
     await client.query(

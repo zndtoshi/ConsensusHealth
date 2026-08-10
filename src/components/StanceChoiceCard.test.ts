@@ -26,16 +26,19 @@ test("App presents BIP-110 as a locked final snapshot", () => {
   assert.match(appSrc, /BIP-110 has concluded/);
   assert.match(appSrc, /FINAL SNAPSHOT/);
   assert.match(appSrc, /meHasStance && meStanceToolbar/);
-  assert.match(appSrc, /Your final BIP-110 position/);
+  assert.match(appSrc, /Your recorded.*BIP-110.*position/);
   assert.doesNotMatch(appSrc, /onClick=\{\(\) => setStanceChoiceOpen/);
 });
 
-test("both user and admin BIP-110 stance writes are frozen server-side", () => {
+test("self-service writes are restricted while admin stance editing remains available", () => {
   const userRoute = serverSrc.indexOf('app.post("/api/stance"');
   const adminRoute = serverSrc.indexOf('app.post("/api/admin/stance"');
   assert.ok(userRoute >= 0);
   assert.ok(adminRoute >= 0);
   assert.match(serverSrc.slice(userRoute, userRoute + 400), /status\(409\)/);
-  assert.match(serverSrc.slice(adminRoute, adminRoute + 400), /status\(409\)/);
-  assert.match(serverSrc, /bip110_stances_frozen/g);
+  assert.match(serverSrc.slice(userRoute, userRoute + 400), /stance_updates_restricted/);
+  assert.doesNotMatch(serverSrc.slice(adminRoute, adminRoute + 400), /status\(409\)/);
+  assert.match(serverSrc.slice(adminRoute, adminRoute + 700), /isPrivilegedManualEditorHandle/);
+  assert.match(appSrc, /Set user position/);
+  assert.match(appSrc, /Edit positions on graph/);
 });

@@ -11,22 +11,35 @@ export type CommunityUser = {
   hasUserStanceChange?: boolean;
 };
 
-export async function fetchCommunityUsers(): Promise<CommunityUser[]> {
-  const { users } = await fetchCommunityUsersResult();
+export type FetchCommunityUsersOptions = {
+  proposal?: string;
+  signal?: AbortSignal;
+};
+
+export async function fetchCommunityUsers(opts?: FetchCommunityUsersOptions): Promise<CommunityUser[]> {
+  const { users } = await fetchCommunityUsersResult(opts);
   return users;
 }
 
-export async function fetchCommunityUsersResult(): Promise<{
+export async function fetchCommunityUsersResult(opts?: FetchCommunityUsersOptions): Promise<{
   ok: boolean;
   users: CommunityUser[];
 }> {
   try {
     const base = ((import.meta as any).env?.VITE_API_BASE || "").replace(/\/$/, "");
-    const res = await fetch(`${base}/api/community`, { credentials: "include" });
+    const params = new URLSearchParams();
+    if (opts?.proposal) params.set("proposal", opts.proposal);
+    const qs = params.toString();
+    const res = await fetch(`${base}/api/community${qs ? `?${qs}` : ""}`, {
+      credentials: "include",
+      signal: opts?.signal,
+    });
     if (!res.ok) return { ok: false, users: [] };
     const data = await res.json();
-    return { ok: true, users: Array.isArray(data) ? data : [] };
+    const users = Array.isArray(data) ? data : Array.isArray(data?.accounts) ? data.accounts : [];
+    return { ok: true, users };
   } catch (err) {
+    if ((err as { name?: string })?.name === "AbortError") return { ok: false, users: [] };
     console.warn("[ConsensusHealth] failed to load community users:", err);
     return { ok: false, users: [] };
   }

@@ -71,7 +71,7 @@ const exportButtonStyle: React.CSSProperties = {
   width: "100%",
 };
 
-export function StanceCsvExportSection() {
+export function StanceCsvExportSection({ proposalId = "bip110" }: { proposalId?: string }) {
   const [downloading, setDownloading] = useState<StanceExportKey | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -79,7 +79,9 @@ export function StanceCsvExportSection() {
     setError(null);
     setDownloading(stance);
     try {
-      await downloadStanceCsv(EXPORT_ROUTES[stance].path);
+      const base = EXPORT_ROUTES[stance].path;
+      const sep = base.includes("?") ? "&" : "?";
+      await downloadStanceCsv(`${base}${sep}proposal=${encodeURIComponent(proposalId)}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Download failed.");
     } finally {

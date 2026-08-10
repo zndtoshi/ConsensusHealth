@@ -1,5 +1,6 @@
 import type { Pool } from "pg";
 import { normalizeStanceValue } from "./stanceHistory.js";
+import { DEFAULT_PROPOSAL_ID, type ProposalId } from "./proposalCatalog.js";
 
 export const NEW_STANCES_MAX_LIMIT = 9;
 
@@ -43,15 +44,15 @@ export function mapNewStanceEventRow(r: Record<string, unknown>): NewStanceEvent
 }
 
 /**
- * Latest-per-user stance events, optionally filtered to events newer than
- * `afterEventId`. Prefers user-initiated changes; excludes pure seed/backfill noise.
+ * Latest-per-user stance events from canonical user_proposal_stance_history.
  */
 export async function queryNewStanceEvents(
   pool: Pool,
-  opts: { afterEventId?: number | null; limit: number }
+  opts: { afterEventId?: number | null; limit: number; proposalId?: ProposalId }
 ): Promise<NewStanceEventRow[]> {
   const limit = clampNewStancesLimit(opts.limit);
-  const params: Array<number> = [];
+  const proposalId = opts.proposalId || DEFAULT_PROPOSAL_ID;
+  const params: Array<string | number> = [proposalId];
   let afterSql = "";
 
   if (opts.afterEventId != null && Number.isFinite(opts.afterEventId) && opts.afterEventId > 0) {
@@ -59,7 +60,7 @@ export async function queryNewStanceEvents(
     afterSql = `
       AND (l.changed_at, l.id) > (
         SELECT sh.changed_at, sh.id
-        FROM stance_history sh
+        FROM user_proposal_stance_history sh
         WHERE sh.id = $${params.length}
       )`;
   }
@@ -80,8 +81,9 @@ export async function queryNewStanceEvents(
           PARTITION BY sh.x_user_id
           ORDER BY sh.changed_at DESC, sh.id DESC
         ) AS rn
-      FROM stance_history sh
-      WHERE sh.changed_by IN ('user', 'admin')
+      FROM user_proposal_stance_history sh
+      WHERE sh.proposal_id = $1
+        AND sh.changed_by IN ('user', 'admin')
     )
     SELECT
       l.id,
@@ -93,9 +95,10 @@ export async function queryNewStanceEvents(
       cu.avatar_path
     FROM latest l
     INNER JOIN community_users cu ON cu.x_user_id = l.x_user_id
+    INNER JOIN user_proposal_stances ups
+      ON ups.x_user_id = cu.x_user_id AND ups.proposal_id = $1
     WHERE l.rn = 1
       AND trim(coalesce(cu.handle, '')) <> ''
-      AND cu.stance IS NOT NULL
       ${afterSql}
     ORDER BY l.changed_at DESC, l.id DESC
     LIMIT ${limitParam}

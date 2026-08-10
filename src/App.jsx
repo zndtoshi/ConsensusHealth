@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { forceCollide, forceManyBody, forceCenter, forceSimulation, forceX, forceY } from "d3-force";
 import {
   canonicalAvatarSrc,
@@ -26,6 +26,19 @@ import { fetchCommunityUsersResult } from "./api/community";
 import { applyManualStanceUpdate, isPrivilegedManualEditor, removeAccountFromList } from "./utils/manualEditState";
 import { assertHaloAvatarAdmin, isHaloAvatarAdmin } from "./utils/haloAvatarAdmin";
 import { HaloAvatarModal } from "./components/HaloAvatarModal";
+import {
+  DEFAULT_PROPOSAL_ID,
+  FALLBACK_PROPOSALS,
+  getProposalById,
+} from "./config/proposals";
+import {
+  normalizeIncomingProposalId,
+  readProposalIdFromLocation,
+  writeProposalIdToLocation,
+  getAdjacent,
+} from "./utils/proposalNavigation";
+import { fetchAccessibleProposals } from "./api/proposals";
+import { usePrefersReducedMotion } from "./hooks/usePrefersReducedMotion";
 import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
 import { followersForAvatarSize } from "./utils/avatarSize";
 import { formatXJoinDate } from "./utils/xJoinDate";
@@ -148,6 +161,9 @@ const StatisticsModal = lazy(() =>
 );
 const BitcoinQr = lazy(() =>
   import("./components/BitcoinQr").then((m) => ({ default: m.BitcoinQr }))
+);
+const ConsensusUniverseChrome = lazy(() =>
+  import("./features/consensusUniverse/ConsensusUniverseChrome")
 );
 
 function toInt(v) {
@@ -671,19 +687,25 @@ function consumeLoginReturnSnapshot() {
 }
 
 /** Load canonical seeded accounts + community accounts and merge by handle. */
-async function loadAccounts() {
+async function loadAccounts(proposalId = DEFAULT_PROPOSAL_ID, signal) {
   const base = getBase();
-  const seededPromise = fetch(`${base}/data/accounts_stanced.json?v=${DATA_REV}`).then(async (r) => {
-    if (!r.ok) return [];
-    const text = await r.text();
-    try {
-      const data = parseJsonPreservingSnowflakeIds(text);
-      return Array.isArray(data) ? data : [];
-    } catch {
-      return [];
-    }
-  });
-  const communityPromise = fetchCommunityUsersResult().catch(() => ({ ok: false, users: [] }));
+  const isBip110 = proposalId === DEFAULT_PROPOSAL_ID;
+  const seededPromise = isBip110
+    ? fetch(`${base}/data/accounts_stanced.json?v=${DATA_REV}`, { signal }).then(async (r) => {
+        if (!r.ok) return [];
+        const text = await r.text();
+        try {
+          const data = parseJsonPreservingSnowflakeIds(text);
+          return Array.isArray(data) ? data : [];
+        } catch {
+          return [];
+        }
+      })
+    : Promise.resolve([]);
+  const communityPromise = fetchCommunityUsersResult({ proposal: proposalId, signal }).catch(() => ({
+    ok: false,
+    users: [],
+  }));
 
   // Wait for both sources before first paint so the graph does not briefly show
   // seed-only (~150) accounts and then jump to the full live community set.
@@ -944,6 +966,15 @@ export default function App() {
   const [selectedHandle, setSelectedHandle] = useState(null);
   const [search, setSearch] = useState("");
   const [me, setMe] = useState(null);
+  const [activeProposalId, setActiveProposalId] = useState(() => readProposalIdFromLocation());
+  const [galaxyTravel, setGalaxyTravel] = useState(null); // { from, to, progress } | null
+  const galaxyTravelLockRef = useRef(false);
+  const proposalReloadAbortRef = useRef(null);
+  const parallaxLayerRef = useRef(null);
+  const travelCleanupRef = useRef(null);
+  const prefersGalaxyReducedMotion = usePrefersReducedMotion();
+  const [proposalCatalog, setProposalCatalog] = useState(FALLBACK_PROPOSALS.filter((p) => !p.adminOnly));
+  const [proposalCatalogReady, setProposalCatalogReady] = useState(false);
   const showClusterHalo = useMemo(
     () =>
       shouldShowClusterHalo({
@@ -1002,6 +1033,10 @@ export default function App() {
   const [manualEditChoice, setManualEditChoice] = useState("neutral");
   const [manualEditBusy, setManualEditBusy] = useState(false);
   const [manualEditError, setManualEditError] = useState("");
+  const [manualUserPickerOpen, setManualUserPickerOpen] = useState(false);
+  const [manualUserQuery, setManualUserQuery] = useState("");
+  const [adminUserDirectory, setAdminUserDirectory] = useState([]);
+  const [adminUserDirectoryLoading, setAdminUserDirectoryLoading] = useState(false);
   const [labels, setLabels] = useState(() => ({}));
   const [dropdownHoverHandle, setDropdownHoverHandle] = useState(null);
   const adminOptionsRef = useRef(null);
@@ -1095,8 +1130,16 @@ export default function App() {
       const authenticated = Boolean(data && data.x_user_id);
       setMe(authenticated ? { authenticated: true, ...data } : { authenticated: false });
       setEqualAvatarSizeEnabled(authenticated ? Boolean(data?.equal_avatar_size) : false);
-      if (authenticated && data?.handle && data?.stance) {
-        setLabels((prev) => ({ ...prev, [String(data.handle).toLowerCase()]: normalizedStance(data.stance) }));
+      if (authenticated && data?.handle) {
+        const stanceForActive =
+          data?.proposal_stances?.[activeProposalId] ??
+          (activeProposalId === DEFAULT_PROPOSAL_ID ? data?.stance : null);
+        if (stanceForActive) {
+          setLabels((prev) => ({
+            ...prev,
+            [String(data.handle).toLowerCase()]: normalizedStance(stanceForActive),
+          }));
+        }
       }
     } catch {
       // ignore auth failures in local dev
@@ -1224,7 +1267,10 @@ export default function App() {
     try {
       if (forceLoading || !statsDataRef.current) setStatsLoading(true);
       setStatsError("");
-      const res = await fetch(`${API_BASE}/api/stats`, { credentials: "include" });
+      const res = await fetch(
+        `${API_BASE}/api/stats?proposal=${encodeURIComponent(activeProposalId)}`,
+        { credentials: "include" }
+      );
       if (!res.ok) throw new Error(`Failed to load stats (${res.status})`);
       const data = await res.json();
       if (isCancelled()) return;
@@ -1251,14 +1297,19 @@ export default function App() {
     if (!showStatsModal) return;
     let dead = false;
     fetchStats({
-      forceLoading: !statsDataRef.current,
+      forceLoading: true,
       cancelled: () => dead,
     });
     return () => {
       dead = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showStatsModal]);
+  }, [showStatsModal, activeProposalId]);
+
+  useEffect(() => {
+    // Drop stale stats when switching galaxies so the modal never shows wrong BIP.
+    setStatsData(null);
+  }, [activeProposalId]);
 
   function openStatsModal() {
     statsFetchStartedAtRef.current = performance.now();
@@ -1310,11 +1361,84 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const meStance = me?.stance ? normalizedStance(me.stance) : "";
-  const meHasStance = userHasChosenStance(me);
+  const meForActiveProposal = useMemo(() => {
+    if (!me?.authenticated) return me;
+    const fromMap = me?.proposal_stances?.[activeProposalId];
+    const stance = fromMap != null && fromMap !== "" ? fromMap : null;
+    return { ...me, stance };
+  }, [me, activeProposalId]);
+  const meStance = meForActiveProposal?.stance ? normalizedStance(meForActiveProposal.stance) : "";
+  const meHasStance = userHasChosenStance(meForActiveProposal);
   const meStanceToolbar = toolbarStanceMeta(meStance);
   const meHandleLower = safeLower(me?.handle);
   const isPrivilegedEditor = useMemo(() => isPrivilegedManualEditor(me?.handle), [me?.handle]);
+  const adminGalaxiesEnabled = useMemo(
+    () =>
+      me?.authenticated === true &&
+      isPrivilegedManualEditor(me?.handle) &&
+      proposalCatalogReady &&
+      proposalCatalog.filter((p) => p.enabled).length > 1,
+    [me?.authenticated, me?.handle, proposalCatalog, proposalCatalogReady]
+  );
+  const activeProposal = useMemo(
+    () => getProposalById(activeProposalId, proposalCatalog),
+    [activeProposalId, proposalCatalog]
+  );
+  const manualUserPickerResults = useMemo(() => {
+    const query = manualUserQuery.trim().toLowerCase().replace(/^@+/, "");
+    return adminUserDirectory
+      .filter((user) => normalizeHandle(user?.handle) !== normalizeHandle(me?.handle))
+      .filter((user) => {
+        if (!query) return true;
+        const handle = normalizeHandle(user?.handle);
+        const name = String(user?.name || "").toLowerCase();
+        return handle.includes(query) || name.includes(query);
+      })
+      .sort((a, b) => Number(b?.followers_count || 0) - Number(a?.followers_count || 0))
+      .slice(0, 30);
+  }, [adminUserDirectory, manualUserQuery, me?.handle]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { items } = await fetchAccessibleProposals({ apiBase: API_BASE });
+        if (cancelled) return;
+        const next = items.length ? items : FALLBACK_PROPOSALS.filter((p) => !p.adminOnly);
+        setProposalCatalog(next);
+        setProposalCatalogReady(true);
+      } catch {
+        if (!cancelled) {
+          setProposalCatalog(FALLBACK_PROPOSALS.filter((p) => !p.adminOnly));
+          setProposalCatalogReady(true);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [me?.authenticated, me?.handle]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const theme = activeProposal?.visualTheme;
+    if (adminGalaxiesEnabled && theme) {
+      document.documentElement.style.setProperty("--galaxy-nebula-from", theme.nebulaFrom);
+      document.documentElement.style.setProperty("--galaxy-nebula-to", theme.nebulaTo);
+      document.documentElement.style.setProperty("--galaxy-accent", theme.accent);
+      document.title = `Consensus Health · ${activeProposal.shortName}`;
+    } else {
+      document.documentElement.style.removeProperty("--galaxy-nebula-from");
+      document.documentElement.style.removeProperty("--galaxy-nebula-to");
+      document.documentElement.style.removeProperty("--galaxy-accent");
+      document.title = "Consensus Health";
+    }
+  }, [adminGalaxiesEnabled, activeProposal]);
+
+  useEffect(() => {
+    historyCacheRef.current?.clear?.();
+  }, [activeProposalId]);
+
   // Delayed avatar stance-history panel: authenticated admin (zndtoshi) only.
   const canViewAvatarStanceHistory = useMemo(
     () => me?.authenticated === true && isPrivilegedManualEditor(me?.handle),
@@ -1680,6 +1804,46 @@ export default function App() {
     await fetchStats({ forceLoading: false });
   }
 
+  async function openManualUserPicker() {
+    if (!isPrivilegedEditor) return;
+    setAdminOptionsOpen(false);
+    setManualUserPickerOpen(true);
+    setManualUserQuery("");
+    if (adminUserDirectory.length || adminUserDirectoryLoading) return;
+    setAdminUserDirectoryLoading(true);
+    try {
+      const result = await fetchCommunityUsersResult({ proposal: DEFAULT_PROPOSAL_ID });
+      if (result.ok) setAdminUserDirectory(result.users);
+    } finally {
+      setAdminUserDirectoryLoading(false);
+    }
+  }
+
+  function selectManualUser(user) {
+    const handle = normalizeHandle(user?.handle);
+    if (!handle) return;
+    const xUserId = String(user?.x_user_id ?? "").trim();
+    const activeRow = accounts.find((account) => {
+      const accountId = String(account?.x_user_id ?? "").trim();
+      return (xUserId && accountId === xUserId) || normalizeHandle(account?.handle) === handle;
+    });
+    const currentStance = activeRow
+      ? normalizedStance(activeRow.stance ?? activeRow.position ?? "neutral")
+      : "";
+    const baseNoSlash = getBase().replace(/\/$/, "");
+    setManualEditTarget({
+      ...user,
+      ...(activeRow || {}),
+      handle,
+      x_user_id: xUserId || activeRow?.x_user_id || null,
+      currentStance,
+      avatarSrc: resolveAvatarUrlForAccount(activeRow || user, baseNoSlash, missingAvatarSrcUrl()),
+    });
+    setManualEditChoice(currentStance || "neutral");
+    setManualEditError("");
+    setManualUserPickerOpen(false);
+  }
+
   async function saveManualStanceEdit() {
     if (!isPrivilegedEditor || !manualEditTarget || manualEditBusy) return;
     setManualEditBusy(true);
@@ -1693,6 +1857,7 @@ export default function App() {
           handle: manualEditTarget.handle,
           x_user_id: manualEditTarget.x_user_id || null,
           stance: manualEditChoice,
+          proposal: activeProposalId,
         }),
       });
       if (!res.ok) {
@@ -1709,7 +1874,25 @@ export default function App() {
       const targetHandleNorm = normalizeHandle(data?.handle || manualEditTarget.handle);
       const next = normalizedStance(data?.stance || manualEditChoice);
       setLabels((prev) => ({ ...prev, [targetHandleNorm]: next }));
-      setAccounts((prev) => applyManualStanceUpdate(prev, targetHandleNorm, next));
+      setAccounts((prev) => {
+        const exists = prev.some((account) => {
+          const accountId = String(account?.x_user_id ?? "").trim();
+          const targetId = String(data?.x_user_id ?? manualEditTarget.x_user_id ?? "").trim();
+          return (targetId && accountId === targetId) || normalizeHandle(account?.handle) === targetHandleNorm;
+        });
+        const updated = applyManualStanceUpdate(prev, targetHandleNorm, next);
+        if (exists) return updated;
+        return [
+          ...updated,
+          {
+            ...manualEditTarget,
+            ...data,
+            handle: targetHandleNorm,
+            stance: next,
+            position: next,
+          },
+        ];
+      });
       await refreshStatsNow();
       setManualEditTarget(null);
       if (!import.meta.env.PROD) {
@@ -1977,6 +2160,15 @@ export default function App() {
   // briefly show seed-only accounts and then expand to the full live set.
   useEffect(() => {
     let dead = false;
+    const proposalId = normalizeIncomingProposalId(activeProposalId, adminGalaxiesEnabled, proposalCatalog);
+    if (proposalId !== activeProposalId) {
+      setActiveProposalId(proposalId);
+      writeProposalIdToLocation(proposalId, true, proposalCatalog);
+      return undefined;
+    }
+    if (proposalReloadAbortRef.current) proposalReloadAbortRef.current.abort();
+    const controller = new AbortController();
+    proposalReloadAbortRef.current = controller;
     (async () => {
       try {
         setLoading(true);
@@ -1985,7 +2177,7 @@ export default function App() {
         // OAuth redirect, restore the previously loaded dataset instead of
         // refetching the whole graph.
         const restored = consumeLoginReturnSnapshot();
-        if (restored) {
+        if (restored && proposalId === DEFAULT_PROPOSAL_ID) {
           if (dead) return;
           setAccounts(restored.accounts);
           if (restored.selectedHandle) setSelectedHandle(restored.selectedHandle);
@@ -1993,21 +2185,96 @@ export default function App() {
         }
         const apiStarted = performance.now();
         perfMark("accounts-load-start");
-        const cleanedAccounts = await loadAccounts();
-        if (dead) return;
+        const cleanedAccounts = await loadAccounts(proposalId, controller.signal);
+        if (dead || controller.signal.aborted) return;
         const accountsFiltered = cleanedAccounts.filter((r) => (r.handle ?? "").toString().trim().length > 0);
         perfSetMs("lastApiMs", performance.now() - apiStarted);
         setAccounts(accountsFiltered);
+        setLabels({});
       } catch (e) {
-        if (!dead) setErr(String(e?.message || e));
+        if (!dead && !controller.signal.aborted) setErr(String(e?.message || e));
       } finally {
-        if (!dead) setLoading(false);
+        if (!dead && !controller.signal.aborted) setLoading(false);
       }
     })();
     return () => {
       dead = true;
+      controller.abort();
     };
+  }, [activeProposalId, adminGalaxiesEnabled, proposalCatalog]);
+
+  useEffect(() => {
+    function onPopState() {
+      const next = normalizeIncomingProposalId(
+        readProposalIdFromLocation(proposalCatalog),
+        adminGalaxiesEnabled,
+        proposalCatalog
+      );
+      setActiveProposalId(next);
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [adminGalaxiesEnabled, proposalCatalog]);
+
+  const travelToGalaxy = useCallback((nextId) => {
+    if (!adminGalaxiesEnabled) return;
+    const target = normalizeIncomingProposalId(nextId, true, proposalCatalog);
+    if (target === activeProposalId) return;
+    if (galaxyTravelLockRef.current) return;
+    galaxyTravelLockRef.current = true;
+    const from = activeProposalId;
+    const duration = prefersGalaxyReducedMotion ? 280 : 900;
+    const t0 = performance.now();
+    setGalaxyTravel({ from, to: target, progress: 0 });
+    let midSwapped = false;
+    let rafId = 0;
+    const tick = (now) => {
+      const p = Math.min(1, (now - t0) / duration);
+      setGalaxyTravel({ from, to: target, progress: p });
+      if (!midSwapped && p >= 0.45) {
+        midSwapped = true;
+        writeProposalIdToLocation(target, false, proposalCatalog);
+        setActiveProposalId(target);
+        setSelectedHandle(null);
+      }
+      if (p < 1) {
+        rafId = requestAnimationFrame(tick);
+      } else {
+        setGalaxyTravel(null);
+        galaxyTravelLockRef.current = false;
+      }
+    };
+    rafId = requestAnimationFrame(tick);
+    // Ensure lock releases if component unmounts mid-travel.
+    travelCleanupRef.current = () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      galaxyTravelLockRef.current = false;
+      setGalaxyTravel(null);
+    };
+  }, [activeProposalId, adminGalaxiesEnabled, prefersGalaxyReducedMotion, proposalCatalog]);
+
+  useEffect(() => () => {
+    if (travelCleanupRef.current) travelCleanupRef.current();
   }, []);
+
+  useEffect(() => {
+    if (!adminGalaxiesEnabled) return undefined;
+    function onKey(e) {
+      if (e.defaultPrevented) return;
+      const tag = String(e.target?.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || e.target?.isContentEditable) return;
+      if (galaxyTravelLockRef.current) return;
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        travelToGalaxy(getAdjacent(activeProposalId, proposalCatalog).prev.id);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        travelToGalaxy(getAdjacent(activeProposalId, proposalCatalog).next.id);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [adminGalaxiesEnabled, activeProposalId, proposalCatalog, travelToGalaxy]);
 
   // Defer the mentions CSV (462 KB) + PapaParse: it is only needed to show a
   // selected user's tweets, not for first paint. Dynamically import PapaParse so
@@ -3286,6 +3553,7 @@ export default function App() {
         apiBase: API_BASE,
         handle: hover.handle,
         xUserId: hover.xUserId,
+        proposalId: activeProposalId,
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
@@ -5639,7 +5907,28 @@ export default function App() {
   }
 
   return (
-    <div style={styles.page}>
+    <div
+      style={{
+        ...styles.page,
+        ...(adminGalaxiesEnabled && activeProposal?.visualTheme
+          ? {
+              background: `radial-gradient(ellipse 120% 100% at 50% 0%, ${activeProposal.visualTheme.nebulaFrom} 0%, ${activeProposal.visualTheme.nebulaTo} 55%, #000 100%)`,
+            }
+          : null),
+      }}
+      onPointerMove={
+        adminGalaxiesEnabled && !prefersGalaxyReducedMotion
+          ? (e) => {
+              const layer = parallaxLayerRef.current;
+              if (!layer || e.pointerType === "touch") return;
+              if (cameraInteractingRef.current) return;
+              const nx = (e.clientX / window.innerWidth - 0.5) * 2;
+              const ny = (e.clientY / window.innerHeight - 0.5) * 2;
+              layer.style.transform = `translate3d(${(-nx * 6).toFixed(2)}px, ${(-ny * 4).toFixed(2)}px, 0)`;
+            }
+          : undefined
+      }
+    >
       <div ref={headerRef} style={styles.header}>
         <div style={styles.headerLeft}>
           <div style={styles.brandWrap}>
@@ -5694,9 +5983,25 @@ export default function App() {
           </div>
         </div>
         <div style={styles.headerCenter}>
+          {adminGalaxiesEnabled ? (
+            <Suspense fallback={<div className="galaxyHeaderNav" aria-hidden="true" />}>
+              <ConsensusUniverseChrome
+                slot="header"
+                proposalId={activeProposalId}
+                catalog={proposalCatalog}
+                disabled={Boolean(galaxyTravel)}
+                onNavigate={travelToGalaxy}
+              />
+            </Suspense>
+          ) : null}
           {selectedHandle && (
             <>
-              <div style={styles.selectedMetaBlock}>
+              <div
+                style={{
+                  ...styles.selectedMetaBlock,
+                  ...(adminGalaxiesEnabled ? { marginTop: 6 } : null),
+                }}
+              >
                 <img
                   src={selectedHeaderAvatarSrc}
                   alt={selectedHandle ? `@${selectedHandle}` : "selected user"}
@@ -5766,6 +6071,30 @@ export default function App() {
                   <span>Equal avatar size</span>
                   <span style={styles.optionsState}>{equalAvatarSizeEnabled ? "ON" : "OFF"}</span>
                 </label>
+                {isPrivilegedEditor ? (
+                  <>
+                    <label style={styles.optionsItem}>
+                      <input
+                        type="checkbox"
+                        checked={manualEditMode}
+                        onChange={(e) => {
+                          const enabled = e.target.checked;
+                          if (enabled) stopHistoryPlayback();
+                          setManualEditMode(enabled);
+                        }}
+                      />
+                      <span>Edit positions on graph</span>
+                      <span style={styles.optionsState}>{manualEditMode ? "ON" : "OFF"}</span>
+                    </label>
+                    <button
+                      type="button"
+                      className="optionsMenuAction"
+                      onClick={openManualUserPicker}
+                    >
+                      <span>Set user position…</span>
+                    </button>
+                  </>
+                ) : null}
                 <label style={styles.optionsItem}>
                   <input
                     type="checkbox"
@@ -5843,11 +6172,11 @@ export default function App() {
               {meHasStance && meStanceToolbar ? (
                 <div
                   style={{ ...styles.stanceSegment, gridTemplateColumns: "1fr" }}
-                  aria-label={`Your final BIP-110 position: ${meStanceToolbar.label}`}
+                  aria-label={`Your recorded ${activeProposal?.title || "BIP-110"} position: ${meStanceToolbar.label}`}
                 >
                   <span
                     className={`stanceSeg stanceSeg--solo stanceSeg--locked ${meStanceToolbar.className} is-active`}
-                    title={`Your final BIP-110 position: ${meStanceToolbar.label}. Positions are now final.`}
+                    title={`Your recorded ${activeProposal?.title || "BIP-110"} position: ${meStanceToolbar.label}. Position updates are admin-managed.`}
                   >
                     <span aria-hidden="true">🔒</span>
                     {meStanceToolbar.label}
@@ -5856,9 +6185,9 @@ export default function App() {
               ) : (
                 <span
                   className="stanceArchiveEmpty"
-                  title="BIP-110 has concluded. No position was recorded for this account."
+                  title={`No ${activeProposal?.title || "BIP-110"} position was recorded for this account.`}
                 >
-                  No final position
+                  No position recorded
                 </span>
               )}
               <div style={styles.barDivider} aria-hidden="true" />
@@ -5960,14 +6289,16 @@ export default function App() {
         </div>
       </div>
 
-      <section className="archiveBanner" aria-label="BIP-110 status">
-        <span className="archiveBanner__lock" aria-hidden="true">🔒</span>
-        <div className="archiveBanner__copy">
-          <strong>BIP-110 has concluded</strong>
-          <span>The proposal did not achieve consensus. All positions are now final and preserved as a historical snapshot.</span>
-        </div>
-        <span className="archiveBanner__badge">FINAL SNAPSHOT</span>
-      </section>
+      {activeProposalId === DEFAULT_PROPOSAL_ID ? (
+        <section className="archiveBanner" aria-label="BIP-110 status">
+          <span className="archiveBanner__lock" aria-hidden="true">🔒</span>
+          <div className="archiveBanner__copy">
+            <strong>BIP-110 has concluded</strong>
+            <span>The proposal did not achieve consensus. All positions are now final and preserved as a historical snapshot.</span>
+          </div>
+          <span className="archiveBanner__badge">FINAL SNAPSHOT</span>
+        </section>
+      ) : null}
 
       <div style={styles.main}>
         <div ref={(el) => { containerRef.current = el; canvasWrapPulseRef.current = el; }} style={styles.canvasWrap}>
@@ -5995,6 +6326,33 @@ export default function App() {
                 <div className="joinDateEmptyMsg" role="status">
                   No accounts joined X in this range.
                 </div>
+              ) : null}
+              {!loading &&
+              !joinDateFilterActive &&
+              visibleAccounts.length === 0 &&
+              activeProposalId !== DEFAULT_PROPOSAL_ID ? (
+                <div className="galaxyEmptyState" role="status">
+                  <div className="galaxyEmptyState__title">{activeProposal?.shortName || "Galaxy"}</div>
+                  <div className="galaxyEmptyState__msg">
+                    {activeProposal?.emptyMessage || "Be the first to map this consensus galaxy."}
+                  </div>
+                </div>
+              ) : null}
+              {adminGalaxiesEnabled ? (
+                <Suspense fallback={null}>
+                  <ConsensusUniverseChrome
+                    slot="overlays"
+                    proposalId={activeProposalId}
+                    catalog={proposalCatalog}
+                    disabled={Boolean(galaxyTravel)}
+                    onNavigate={travelToGalaxy}
+                    reducedMotion={prefersGalaxyReducedMotion}
+                    parallaxRef={parallaxLayerRef}
+                    travel={galaxyTravel}
+                    fromProposal={getProposalById(galaxyTravel?.from, proposalCatalog)}
+                    toProposal={getProposalById(galaxyTravel?.to, proposalCatalog)}
+                  />
+                </Suspense>
               ) : null}
               <div className="sr-only" aria-live="polite">
                 {filterAriaStatus}
@@ -6224,6 +6582,7 @@ export default function App() {
             loading={statsLoading && !statisticsData}
             error={statsError}
             apiBase={API_BASE}
+            proposalId={activeProposalId}
             onRetryHistory={() => {
               statsFetchStartedAtRef.current = performance.now();
               fetchStats({ forceLoading: true });
@@ -6231,10 +6590,53 @@ export default function App() {
           />
         </Suspense>
       )}
-      {manualEditMode && isPrivilegedEditor && manualEditTarget && (
+      {manualUserPickerOpen && isPrivilegedEditor ? (
+        <div style={styles.modalBackdrop} onClick={() => setManualUserPickerOpen(false)}>
+          <div style={{ ...styles.manualEditCard, width: "min(440px, calc(100vw - 32px))" }} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.manualEditTitle}>
+              Set user position · {activeProposal?.title || "BIP-110"}
+            </div>
+            <input
+              className="appInput"
+              style={{ ...styles.search, width: "100%" }}
+              autoFocus
+              placeholder="Search @handle or name…"
+              value={manualUserQuery}
+              onChange={(e) => setManualUserQuery(e.target.value)}
+            />
+            <div style={styles.manualUserPickerList}>
+              {adminUserDirectoryLoading ? (
+                <div style={styles.manualUserPickerStatus}>Loading users…</div>
+              ) : manualUserPickerResults.length ? (
+                manualUserPickerResults.map((user) => {
+                  const handle = normalizeHandle(user?.handle);
+                  return (
+                    <button
+                      key={String(user?.x_user_id || handle)}
+                      type="button"
+                      className="optionsMenuAction"
+                      style={styles.manualUserPickerRow}
+                      onClick={() => selectManualUser(user)}
+                    >
+                      <span style={{ fontWeight: 850 }}>@{handle}</span>
+                      <span style={styles.manualUserPickerName}>{String(user?.name || "")}</span>
+                    </button>
+                  );
+                })
+              ) : (
+                <div style={styles.manualUserPickerStatus}>No matching users.</div>
+              )}
+            </div>
+            <button type="button" className="toolbarBtn" onClick={() => setManualUserPickerOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {isPrivilegedEditor && manualEditTarget && (
         <div style={styles.modalBackdrop} onClick={() => setManualEditTarget(null)}>
           <div style={styles.manualEditCard} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.manualEditTitle}>Manual stance edit</div>
+            <div style={styles.manualEditTitle}>Set user position · {activeProposal?.title || "BIP-110"}</div>
             <div style={styles.manualEditRow}>
               <img
                 src={manualEditTarget.avatarSrc}
@@ -6250,7 +6652,7 @@ export default function App() {
               />
               <div style={{ minWidth: 0 }}>
                 <div style={styles.manualEditHandle}>@{manualEditTarget.handle}</div>
-                <div style={styles.manualEditMeta}>Current: {manualEditTarget.currentStance || "neutral"}</div>
+                <div style={styles.manualEditMeta}>Current: {manualEditTarget.currentStance || "Not set"}</div>
                 <div style={styles.manualEditMeta}>Followers: {formatNum(manualEditTarget.followers_count || 0)}</div>
               </div>
             </div>
@@ -6935,6 +7337,37 @@ const styles = {
   manualEditMeta: {
     fontSize: 12,
     color: "rgba(255,255,255,0.76)",
+  },
+  manualUserPickerList: {
+    maxHeight: 320,
+    overflowY: "auto",
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    padding: 4,
+    borderRadius: 8,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(2,6,23,0.55)",
+  },
+  manualUserPickerRow: {
+    display: "grid",
+    gridTemplateColumns: "minmax(110px, auto) 1fr",
+    gap: 10,
+    alignItems: "center",
+    textAlign: "left",
+  },
+  manualUserPickerName: {
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    color: "rgba(226,232,240,0.68)",
+  },
+  manualUserPickerStatus: {
+    padding: "18px 10px",
+    textAlign: "center",
+    color: "rgba(226,232,240,0.68)",
+    fontSize: 12,
   },
   manualEditChoices: {
     display: "flex",
