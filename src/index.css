@@ -231,9 +231,18 @@ button:focus-visible {
     flex: 1 1 auto;
   }
 
-  .galaxyHeaderNav__description,
   .galaxyHeaderNav__tooltip {
     display: none;
+  }
+
+  .galaxyHeaderNav__description {
+    display: block;
+    max-width: min(280px, 72vw);
+    margin: 0 auto;
+    font-size: 10px;
+    line-height: 1.3;
+    letter-spacing: 0.01em;
+    color: rgba(226, 232, 240, 0.68);
   }
 
   .galaxyHeaderNav__current {
