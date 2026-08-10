@@ -23,11 +23,17 @@ test("card visual tone reuses new-stances-like glass panel classes", () => {
 });
 
 test("App presents BIP-110 as a locked final snapshot", () => {
-  assert.match(appSrc, /BIP-110 has concluded/);
-  assert.match(appSrc, /FINAL SNAPSHOT/);
+  assert.doesNotMatch(appSrc, /archiveBanner/);
+  assert.doesNotMatch(appSrc, /FINAL SNAPSHOT/);
   assert.match(appSrc, /meHasStance && meStanceToolbar/);
   assert.match(appSrc, /Your recorded.*BIP-110.*position/);
   assert.doesNotMatch(appSrc, /onClick=\{\(\) => setStanceChoiceOpen/);
+});
+
+test("BIP-110 concluded copy lives in the galaxy header hover tooltip", () => {
+  const headerSrc = readFileSync(join(root, "src", "components", "GalaxyHeaderNav.jsx"), "utf8");
+  assert.match(headerSrc, /Concluded without consensus/);
+  assert.match(headerSrc, /galaxyHeaderNav__tooltip/);
 });
 
 test("self-service writes are restricted while admin stance editing remains available", () => {
