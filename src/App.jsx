@@ -6345,17 +6345,6 @@ export default function App() {
         </div>
       </div>
 
-      {activeProposalId === DEFAULT_PROPOSAL_ID ? (
-        <section className="archiveBanner" aria-label="BIP-110 status">
-          <span className="archiveBanner__lock" aria-hidden="true">🔒</span>
-          <div className="archiveBanner__copy">
-            <strong>BIP-110 has concluded</strong>
-            <span>The proposal did not achieve consensus. All positions are now final and preserved as a historical snapshot.</span>
-          </div>
-          <span className="archiveBanner__badge">FINAL SNAPSHOT</span>
-        </section>
-      ) : null}
-
       <div style={styles.main}>
         <div ref={(el) => { containerRef.current = el; canvasWrapPulseRef.current = el; }} style={styles.canvasWrap}>
           {!stanceListsViewEnabled ? (
