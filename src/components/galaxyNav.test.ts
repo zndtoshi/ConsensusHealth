@@ -37,7 +37,8 @@ test("mobile header stacks brand, galaxy title, and search without absolute over
   assert.match(cssSrc, /grid-template-areas:/);
   assert.match(cssSrc, /"brand controls"/);
   assert.match(cssSrc, /\.appHeader__center\s*\{[\s\S]*position:\s*static/);
-  assert.match(cssSrc, /\.galaxyHeaderNav__description,\s*\n\s*\.galaxyHeaderNav__tooltip\s*\{[\s\S]*display:\s*none/);
+  assert.match(cssSrc, /\.galaxyHeaderNav__tooltip\s*\{[\s\S]*display:\s*none/);
+  assert.match(cssSrc, /\.galaxyHeaderNav__description\s*\{[\s\S]*display:\s*block/);
 });
 
 test("distant proposals render as labeled galaxies flanking the center mass", () => {
