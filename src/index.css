@@ -133,6 +133,138 @@ button:focus-visible {
    Brand + search are separate in-flow children, so keep them left-grouped. */
 .appHeader__search {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  z-index: 35;
+}
+
+.appHeader__search.is-open {
+  z-index: 60;
+}
+
+.searchToggleBtn {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(17, 24, 39, 0.72);
+  color: #e2e8f0;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.searchToggleBtn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.searchToggleBtn:hover,
+.searchToggleBtn:focus-visible {
+  background: rgba(51, 65, 85, 0.88);
+  border-color: rgba(226, 232, 240, 0.28);
+  color: #f8fafc;
+  outline: none;
+}
+
+.appHeader__center {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0 !important;
+}
+
+.appHeader__center > .galaxyHeaderNav,
+.appHeader__center > .selectedUserCard {
+  pointer-events: auto;
+}
+
+.selectedUserCard {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 190px;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 8px 10px 8px 8px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(15, 23, 42, 0.96);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.selectedUserCard__avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  flex: 0 0 auto;
+}
+
+.selectedUserCard__meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.selectedUserCard__handle {
+  color: #f1f5f9;
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.selectedUserCard__handle:hover,
+.selectedUserCard__handle:focus-visible {
+  color: #fff;
+  outline: none;
+}
+
+.selectedUserCard__stance {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: capitalize;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.75);
+}
+
+.selectedUserCard__close {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(226, 232, 240, 0.78);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.selectedUserCard__close:hover,
+.selectedUserCard__close:focus-visible {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  outline: none;
 }
 
 @media (min-width: 721px) {
@@ -140,18 +272,21 @@ button:focus-visible {
     justify-content: flex-start !important;
     gap: 16px !important;
   }
+
+  .appHeader__search.is-open .appHeader__searchInput {
+    width: 220px !important;
+  }
 }
 
 @media (max-width: 720px) {
   .appHeader {
     display: grid !important;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     grid-template-areas:
-      "brand controls"
-      "center center"
-      "search search";
+      "brand search controls"
+      "center center center";
     align-items: center;
-    column-gap: 10px;
+    column-gap: 8px;
     row-gap: 8px;
     padding: 10px 12px !important;
     min-height: 0 !important;
@@ -179,30 +314,37 @@ button:focus-visible {
 
   .appHeader__search {
     grid-area: search;
-    width: 100%;
+    width: auto;
     min-width: 0;
+    justify-self: end;
   }
 
-  .appHeader__searchInput {
+  .appHeader__search.is-open {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    width: 100%;
+  }
+
+  .appHeader__search.is-open .appHeader__searchInput {
     width: 100% !important;
     max-width: none !important;
   }
 
   .appHeader__center {
     grid-area: center;
-    position: static !important;
+    position: relative !important;
     left: auto !important;
     transform: none !important;
     width: 100%;
     justify-content: center;
-    flex-wrap: wrap;
-    gap: 6px !important;
-    pointer-events: auto;
+    flex-wrap: nowrap;
+    gap: 0 !important;
+    pointer-events: none;
   }
 
-  .appHeader__selected {
-    margin-top: 0 !important;
-    max-width: 100%;
+  .selectedUserCard {
+    position: absolute;
+    top: calc(100% + 6px);
   }
 
   .appHeader__controls {

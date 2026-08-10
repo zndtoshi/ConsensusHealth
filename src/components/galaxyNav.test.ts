@@ -33,10 +33,14 @@ test("mobile header stacks brand, galaxy title, and search without absolute over
   assert.match(appSrc, /appHeader__search/);
   assert.match(appSrc, /appHeader__center/);
   assert.match(appSrc, /appHeader__controls/);
+  assert.match(appSrc, /searchToggleBtn/);
+  assert.match(appSrc, /selectedUserCard/);
+  assert.match(appSrc, /searchOpen/);
   assert.match(cssSrc, /@media \(max-width: 720px\)/);
   assert.match(cssSrc, /grid-template-areas:/);
-  assert.match(cssSrc, /"brand controls"/);
-  assert.match(cssSrc, /\.appHeader__center\s*\{[\s\S]*position:\s*static/);
+  assert.match(cssSrc, /"brand search controls"/);
+  assert.match(cssSrc, /\.selectedUserCard\s*\{/);
+  assert.match(cssSrc, /\.searchToggleBtn\s*\{/);
   assert.match(cssSrc, /\.galaxyHeaderNav__tooltip\s*\{[\s\S]*display:\s*none/);
   assert.match(cssSrc, /\.galaxyHeaderNav__description\s*\{[\s\S]*display:\s*block/);
 });
