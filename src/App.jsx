@@ -5965,60 +5965,58 @@ export default function App() {
           : undefined
       }
     >
-      <div ref={headerRef} style={styles.header}>
-        <div style={styles.headerLeft}>
-          <div style={styles.brandWrap}>
-            <div style={styles.title}>Consensus Health</div>
-            <a
-              className="bipTagLink"
-              href="https://github.com/bitcoin/bips/blob/master/bip-0110.mediawiki"
-              target="_blank"
-              rel="noopener noreferrer"
-              title="View the official BIP-110 proposal on GitHub"
-              aria-label="Open official BIP-110 proposal on GitHub"
-            >
-              <span>bip110</span>
-              <svg className="bipTagLink__icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-                <path
-                  fill="currentColor"
-                  d="M6.75 2a.75.75 0 0 0 0 1.5h4.69L3.22 11.72a.75.75 0 1 0 1.06 1.06L12.5 4.56v4.69a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 13.25 2H6.75Z"
-                />
-              </svg>
-            </a>
-          </div>
-          <div style={styles.searchWrap}>
-            <input
-              className="appInput"
-              style={styles.search}
-              placeholder="Search @handle..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            {search.trim() !== "" && searchDropdownResults.length > 0 && (
-              <div style={styles.searchDropdown}>
-                {searchDropdownResults.map((handle) => (
-                  <button
-                    key={handle}
-                    type="button"
-                    style={{
-                      ...styles.searchDropdownItem,
-                      background: dropdownHoverHandle === handle ? "rgba(255,255,255,0.1)" : undefined,
-                    }}
-                    onClick={() => {
-                      setSelectedHandle(handle);
-                      setSearch("");
-                    }}
-                    onMouseEnter={() => setDropdownHoverHandle(handle)}
-                    onMouseLeave={() => setDropdownHoverHandle(null)}
-                  >
-                    @{handle}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+      <div ref={headerRef} className="appHeader" style={styles.header}>
+        <div className="appHeader__brand" style={styles.brandWrap}>
+          <div style={styles.title}>Consensus Health</div>
+          <a
+            className="bipTagLink"
+            href="https://github.com/bitcoin/bips/blob/master/bip-0110.mediawiki"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="View the official BIP-110 proposal on GitHub"
+            aria-label="Open official BIP-110 proposal on GitHub"
+          >
+            <span>bip110</span>
+            <svg className="bipTagLink__icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path
+                fill="currentColor"
+                d="M6.75 2a.75.75 0 0 0 0 1.5h4.69L3.22 11.72a.75.75 0 1 0 1.06 1.06L12.5 4.56v4.69a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 13.25 2H6.75Z"
+              />
+            </svg>
+          </a>
         </div>
-        <div style={styles.headerCenter}>
+        <div className="appHeader__search" style={styles.searchWrap}>
+          <input
+            className="appInput appHeader__searchInput"
+            style={styles.search}
+            placeholder="Search @handle..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {search.trim() !== "" && searchDropdownResults.length > 0 && (
+            <div style={styles.searchDropdown}>
+              {searchDropdownResults.map((handle) => (
+                <button
+                  key={handle}
+                  type="button"
+                  style={{
+                    ...styles.searchDropdownItem,
+                    background: dropdownHoverHandle === handle ? "rgba(255,255,255,0.1)" : undefined,
+                  }}
+                  onClick={() => {
+                    setSelectedHandle(handle);
+                    setSearch("");
+                  }}
+                  onMouseEnter={() => setDropdownHoverHandle(handle)}
+                  onMouseLeave={() => setDropdownHoverHandle(null)}
+                >
+                  @{handle}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="appHeader__center" style={styles.headerCenter}>
           {adminGalaxiesEnabled ? (
             <Suspense fallback={<div className="galaxyHeaderNav" aria-hidden="true" />}>
               <ConsensusUniverseChrome
@@ -6034,6 +6032,7 @@ export default function App() {
           {selectedHandle && (
             <>
               <div
+                className="appHeader__selected"
                 style={{
                   ...styles.selectedMetaBlock,
                   ...(adminGalaxiesEnabled ? { marginTop: 6 } : null),
@@ -6077,7 +6076,7 @@ export default function App() {
             </>
           )}
         </div>
-        <div style={styles.controls}>
+        <div className="appHeader__controls" style={styles.controls}>
           <div style={styles.accountBar}>
           <div ref={adminOptionsRef} style={styles.optionsWrap}>
             <button
