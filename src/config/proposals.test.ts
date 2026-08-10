@@ -8,6 +8,7 @@ import {
   FALLBACK_PROPOSALS,
   mapApiProposal,
   parseProposalFromPathname,
+  proposalGithubUrl,
   resolveProposalId,
   adjacentProposals,
 } from "./proposals.js";
@@ -78,6 +79,13 @@ test("proposal subtitles explain what each galaxy covers", () => {
   assert.equal(FALLBACK_PROPOSALS.find((p) => p.id === "bip110")?.description, "Reduced Data Temporary Softfork");
   assert.match(FALLBACK_PROPOSALS.find((p) => p.id === "bip54")?.description || "", /Consensus Cleanup/);
   assert.match(FALLBACK_PROPOSALS.find((p) => p.id === "bip448")?.description || "", /rebindable transactions/i);
+});
+
+test("proposalGithubUrl maps known BIPs and rejects unknowns", () => {
+  assert.match(proposalGithubUrl("bip110") || "", /bip-0110\.mediawiki/);
+  assert.match(proposalGithubUrl("BIP54") || "", /bip-0054\.md/);
+  assert.match(proposalGithubUrl("bip448") || "", /bip-0448\.md/);
+  assert.equal(proposalGithubUrl("bip999"), null);
 });
 
 test("reduced-motion hook subscribes to matchMedia change events", () => {

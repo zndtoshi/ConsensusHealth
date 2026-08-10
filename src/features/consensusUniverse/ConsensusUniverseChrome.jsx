@@ -1,7 +1,6 @@
 import React from "react";
 import { GalaxyHeaderNav } from "../../components/GalaxyHeaderNav";
 import { DistantGalaxies } from "../../components/DistantGalaxies";
-import { EdgeGalaxyNav } from "../../components/EdgeGalaxyNav";
 import { GalaxyTravelOverlay } from "../../components/GalaxyTravelOverlay";
 
 /** Lazy-loaded admin-only galaxy chrome (header + overlays). */
@@ -16,6 +15,7 @@ export default function ConsensusUniverseChrome({
   travel,
   fromProposal,
   toProposal,
+  showNavigation = true,
 }) {
   if (slot === "header") {
     return (
@@ -24,6 +24,7 @@ export default function ConsensusUniverseChrome({
         catalog={catalog}
         disabled={disabled}
         onNavigate={onNavigate}
+        showNavigation={showNavigation}
       />
     );
   }
@@ -37,12 +38,6 @@ export default function ConsensusUniverseChrome({
         disabled={disabled}
         onNavigate={onNavigate}
         reducedMotion={reducedMotion}
-      />
-      <EdgeGalaxyNav
-        proposalId={proposalId}
-        catalog={catalog}
-        disabled={disabled}
-        onNavigate={onNavigate}
       />
       <GalaxyTravelOverlay
         active={Boolean(travel)}

@@ -24,6 +24,17 @@ export type ProposalConfig = {
 
 export const DEFAULT_PROPOSAL_ID: ProposalId = "bip110";
 
+const PROPOSAL_GITHUB_URLS: Record<string, string> = {
+  bip54: "https://github.com/bitcoin/bips/blob/master/bip-0054.md",
+  bip110: "https://github.com/bitcoin/bips/blob/master/bip-0110.mediawiki",
+  bip448: "https://github.com/bitcoin/bips/blob/master/bip-0448.md",
+};
+
+export function proposalGithubUrl(id: unknown): string | null {
+  const key = String(id ?? "").trim().toLowerCase();
+  return PROPOSAL_GITHUB_URLS[key] ?? null;
+}
+
 /** Offline / pre-fetch fallback — keep in sync with server seed catalog. */
 export const FALLBACK_PROPOSALS: ProposalConfig[] = [
   {
