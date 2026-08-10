@@ -6027,6 +6027,7 @@ export default function App() {
                 catalog={proposalCatalog}
                 disabled={Boolean(galaxyTravel)}
                 onNavigate={travelToGalaxy}
+                showNavigation={proposalCatalog.filter((p) => p.enabled).length > 1}
               />
             </Suspense>
           ) : null}
