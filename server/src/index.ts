@@ -23,6 +23,7 @@ import {
 import {
   DEFAULT_PROPOSAL_ID,
   ensureProposalSchema,
+  listEnabledProposals,
   loadAccessibleProposals,
   resolveProposalAccessAsync,
   type ProposalId,
@@ -65,7 +66,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET || "";
 const STATS_CACHE_TTL_MS = 45_000;
 // BIP-110 has concluded. Keep identity/session infrastructure active for future BIPs,
 // while making this proposal's final positions immutable at the API boundary.
-const BIP_110_STANCES_FROZEN: boolean = true;
+const SELF_STANCE_UPDATES_ENABLED: boolean = false;
 const statsResponseCacheByProposal = new Map<
   string,
   { expiresAt: number; payload: Record<string, unknown> }
@@ -694,7 +695,7 @@ async function loadMergedCommunityUsersWithStance(
   const dbRows = (rows as Record<string, unknown>[]).filter((r) => hasStanceValue(r.stance));
 
   // BIP110 only: union seed JSON accounts that are not already present as canonical
-  // proposal stances. Seeds are never copied into BIP54/BIP119.
+  // proposal stances. Seeds are never copied into BIP54/BIP448.
   if (proposalId !== DEFAULT_PROPOSAL_ID) {
     const removed = await loadRemovedCommunityUserKeys();
     return filterOutRemovedCommunityUsers(dbRows, removed);
@@ -1556,11 +1557,9 @@ app.get("/api/me", async (req, res, next) => {
       `SELECT proposal_id, stance FROM user_proposal_stances WHERE x_user_id = $1`,
       [user.x_user_id]
     );
-    const proposal_stances: Record<string, string | null> = {
-      bip110: null,
-      bip54: null,
-      bip119: null,
-    };
+    const proposal_stances: Record<string, string | null> = Object.fromEntries(
+      listEnabledProposals().map((proposal) => [proposal.id, null])
+    );
     for (const r of stancesRes.rows) {
       const pid = String(r.proposal_id || "");
       const st = normalizeStanceValue(r.stance);
@@ -1605,10 +1604,10 @@ app.post("/api/me/preferences", async (req, res, next) => {
 
 app.post("/api/stance", async (req, res, next) => {
   try {
-    if (BIP_110_STANCES_FROZEN) {
+    if (!SELF_STANCE_UPDATES_ENABLED) {
       res.status(409).json({
-        error: "bip110_stances_frozen",
-        message: "BIP-110 has concluded. Final positions are read-only.",
+        error: "stance_updates_restricted",
+        message: "Position updates are currently managed by the site administrator.",
       });
       return;
     }
@@ -1809,14 +1808,6 @@ app.post("/api/admin/remove-user", async (req, res, next) => {
 
 app.post("/api/admin/stance", async (req, res, next) => {
   try {
-    if (BIP_110_STANCES_FROZEN) {
-      res.status(409).json({
-        error: "bip110_stances_frozen",
-        message: "BIP-110 has concluded. Final positions are read-only.",
-      });
-      return;
-    }
-
     const user = getSessionUser(req);
     if (!user || !isPrivilegedManualEditorHandle(user.handle)) {
       if (process.env.NODE_ENV !== "production") {

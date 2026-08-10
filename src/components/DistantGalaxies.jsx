@@ -6,7 +6,7 @@ function distantLayout(id, index) {
   const seeds = {
     bip110: { x: 12, y: 28 },
     bip54: { x: 86, y: 22 },
-    bip119: { x: 78, y: 72 },
+    bip448: { x: 78, y: 72 },
   };
   return seeds[id] || { x: 20 + ((index * 37) % 60), y: 24 + ((index * 29) % 50) };
 }

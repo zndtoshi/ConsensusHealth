@@ -57,11 +57,13 @@ function makeMiniApp(mode: "sync" | "async", pool?: { query: Function }) {
     res.json({
       admin_galaxies: isAdmin,
       items: isAdmin
-        ? [{ id: "bip110" }, { id: "bip54" }, { id: "bip119" }]
+        ? [{ id: "bip110" }, { id: "bip54" }, { id: "bip448" }]
         : [{ id: "bip110" }],
     });
   });
-  app.post("/api/stance", gate);
+  app.post("/api/stance", (_req, res) => {
+    res.status(409).json({ error: "stance_updates_restricted" });
+  });
   app.get("/api/stances/export-against.csv", gate);
   app.get("/api/stance-history", gate);
   app.get("/api/stances/new", gate);
@@ -82,7 +84,7 @@ async function withServer(app: express.Express, fn: (base: string) => Promise<vo
   }
 }
 
-test("HTTP: ordinary user blocked from bip54/bip119; bip110 allowed", async () => {
+test("HTTP: ordinary user blocked from bip54/bip448; bip110 allowed", async () => {
   const app = makeMiniApp("sync");
   await withServer(app, async (base) => {
     const h = { "x-test-handle": "alice", "content-type": "application/json" };
@@ -90,14 +92,14 @@ test("HTTP: ordinary user blocked from bip54/bip119; bip110 allowed", async () =
     assert.equal(ok110.status, 200);
     const deny54 = await fetch(`${base}/api/stats?proposal=bip54`, { headers: h });
     assert.equal(deny54.status, 403);
-    const deny119 = await fetch(`${base}/api/stance-history?proposal=119`, { headers: h });
-    assert.equal(deny119.status, 403);
+    const deny448 = await fetch(`${base}/api/stance-history?proposal=448`, { headers: h });
+    assert.equal(deny448.status, 403);
     const denyWrite = await fetch(`${base}/api/stance`, {
       method: "POST",
       headers: h,
       body: JSON.stringify({ stance: "against", proposal: "bip54" }),
     });
-    assert.equal(denyWrite.status, 403);
+    assert.equal(denyWrite.status, 409);
     const proposals = await fetch(`${base}/api/proposals`, { headers: h }).then((r) => r.json());
     assert.deepEqual(
       proposals.items.map((i: { id: string }) => i.id),
@@ -118,7 +120,7 @@ test("HTTP: zndtoshi (mixed case) can access all three", async () => {
   const app = makeMiniApp("sync");
   await withServer(app, async (base) => {
     const h = { "x-test-handle": "@ZndToshi" };
-    for (const p of ["bip110", "bip54", "bip119"]) {
+    for (const p of ["bip110", "bip54", "bip448"]) {
       const res = await fetch(`${base}/api/community?proposal=${p}`, { headers: h });
       assert.equal(res.status, 200, p);
     }

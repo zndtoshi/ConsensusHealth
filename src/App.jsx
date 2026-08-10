@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { forceCollide, forceManyBody, forceCenter, forceSimulation, forceX, forceY } from "d3-force";
 import {
   canonicalAvatarSrc,
@@ -1033,6 +1033,10 @@ export default function App() {
   const [manualEditChoice, setManualEditChoice] = useState("neutral");
   const [manualEditBusy, setManualEditBusy] = useState(false);
   const [manualEditError, setManualEditError] = useState("");
+  const [manualUserPickerOpen, setManualUserPickerOpen] = useState(false);
+  const [manualUserQuery, setManualUserQuery] = useState("");
+  const [adminUserDirectory, setAdminUserDirectory] = useState([]);
+  const [adminUserDirectoryLoading, setAdminUserDirectoryLoading] = useState(false);
   const [labels, setLabels] = useState(() => ({}));
   const [dropdownHoverHandle, setDropdownHoverHandle] = useState(null);
   const adminOptionsRef = useRef(null);
@@ -1380,6 +1384,19 @@ export default function App() {
     () => getProposalById(activeProposalId, proposalCatalog),
     [activeProposalId, proposalCatalog]
   );
+  const manualUserPickerResults = useMemo(() => {
+    const query = manualUserQuery.trim().toLowerCase().replace(/^@+/, "");
+    return adminUserDirectory
+      .filter((user) => normalizeHandle(user?.handle) !== normalizeHandle(me?.handle))
+      .filter((user) => {
+        if (!query) return true;
+        const handle = normalizeHandle(user?.handle);
+        const name = String(user?.name || "").toLowerCase();
+        return handle.includes(query) || name.includes(query);
+      })
+      .sort((a, b) => Number(b?.followers_count || 0) - Number(a?.followers_count || 0))
+      .slice(0, 30);
+  }, [adminUserDirectory, manualUserQuery, me?.handle]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1401,16 +1418,6 @@ export default function App() {
       cancelled = true;
     };
   }, [me?.authenticated, me?.handle]);
-
-  useEffect(() => {
-    if (!meForActiveProposal?.authenticated) {
-      setStanceChoiceOpen(false);
-      return;
-    }
-    if (shouldAutoOpenStanceChoice(meForActiveProposal)) {
-      setStanceChoiceOpen(true);
-    }
-  }, [meForActiveProposal?.authenticated, meForActiveProposal?.stance, meForActiveProposal?.x_user_id, activeProposalId]);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -1797,6 +1804,46 @@ export default function App() {
     await fetchStats({ forceLoading: false });
   }
 
+  async function openManualUserPicker() {
+    if (!isPrivilegedEditor) return;
+    setAdminOptionsOpen(false);
+    setManualUserPickerOpen(true);
+    setManualUserQuery("");
+    if (adminUserDirectory.length || adminUserDirectoryLoading) return;
+    setAdminUserDirectoryLoading(true);
+    try {
+      const result = await fetchCommunityUsersResult({ proposal: DEFAULT_PROPOSAL_ID });
+      if (result.ok) setAdminUserDirectory(result.users);
+    } finally {
+      setAdminUserDirectoryLoading(false);
+    }
+  }
+
+  function selectManualUser(user) {
+    const handle = normalizeHandle(user?.handle);
+    if (!handle) return;
+    const xUserId = String(user?.x_user_id ?? "").trim();
+    const activeRow = accounts.find((account) => {
+      const accountId = String(account?.x_user_id ?? "").trim();
+      return (xUserId && accountId === xUserId) || normalizeHandle(account?.handle) === handle;
+    });
+    const currentStance = activeRow
+      ? normalizedStance(activeRow.stance ?? activeRow.position ?? "neutral")
+      : "";
+    const baseNoSlash = getBase().replace(/\/$/, "");
+    setManualEditTarget({
+      ...user,
+      ...(activeRow || {}),
+      handle,
+      x_user_id: xUserId || activeRow?.x_user_id || null,
+      currentStance,
+      avatarSrc: resolveAvatarUrlForAccount(activeRow || user, baseNoSlash, missingAvatarSrcUrl()),
+    });
+    setManualEditChoice(currentStance || "neutral");
+    setManualEditError("");
+    setManualUserPickerOpen(false);
+  }
+
   async function saveManualStanceEdit() {
     if (!isPrivilegedEditor || !manualEditTarget || manualEditBusy) return;
     setManualEditBusy(true);
@@ -1827,7 +1874,25 @@ export default function App() {
       const targetHandleNorm = normalizeHandle(data?.handle || manualEditTarget.handle);
       const next = normalizedStance(data?.stance || manualEditChoice);
       setLabels((prev) => ({ ...prev, [targetHandleNorm]: next }));
-      setAccounts((prev) => applyManualStanceUpdate(prev, targetHandleNorm, next));
+      setAccounts((prev) => {
+        const exists = prev.some((account) => {
+          const accountId = String(account?.x_user_id ?? "").trim();
+          const targetId = String(data?.x_user_id ?? manualEditTarget.x_user_id ?? "").trim();
+          return (targetId && accountId === targetId) || normalizeHandle(account?.handle) === targetHandleNorm;
+        });
+        const updated = applyManualStanceUpdate(prev, targetHandleNorm, next);
+        if (exists) return updated;
+        return [
+          ...updated,
+          {
+            ...manualEditTarget,
+            ...data,
+            handle: targetHandleNorm,
+            stance: next,
+            position: next,
+          },
+        ];
+      });
       await refreshStatsNow();
       setManualEditTarget(null);
       if (!import.meta.env.PROD) {
@@ -2151,7 +2216,7 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, [adminGalaxiesEnabled, proposalCatalog]);
 
-  function travelToGalaxy(nextId) {
+  const travelToGalaxy = useCallback((nextId) => {
     if (!adminGalaxiesEnabled) return;
     const target = normalizeIncomingProposalId(nextId, true, proposalCatalog);
     if (target === activeProposalId) return;
@@ -2186,7 +2251,7 @@ export default function App() {
       galaxyTravelLockRef.current = false;
       setGalaxyTravel(null);
     };
-  }
+  }, [activeProposalId, adminGalaxiesEnabled, prefersGalaxyReducedMotion, proposalCatalog]);
 
   useEffect(() => () => {
     if (travelCleanupRef.current) travelCleanupRef.current();
@@ -2209,7 +2274,7 @@ export default function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [adminGalaxiesEnabled, activeProposalId, proposalCatalog]);
+  }, [adminGalaxiesEnabled, activeProposalId, proposalCatalog, travelToGalaxy]);
 
   // Defer the mentions CSV (462 KB) + PapaParse: it is only needed to show a
   // selected user's tweets, not for first paint. Dynamically import PapaParse so
@@ -6006,6 +6071,30 @@ export default function App() {
                   <span>Equal avatar size</span>
                   <span style={styles.optionsState}>{equalAvatarSizeEnabled ? "ON" : "OFF"}</span>
                 </label>
+                {isPrivilegedEditor ? (
+                  <>
+                    <label style={styles.optionsItem}>
+                      <input
+                        type="checkbox"
+                        checked={manualEditMode}
+                        onChange={(e) => {
+                          const enabled = e.target.checked;
+                          if (enabled) stopHistoryPlayback();
+                          setManualEditMode(enabled);
+                        }}
+                      />
+                      <span>Edit positions on graph</span>
+                      <span style={styles.optionsState}>{manualEditMode ? "ON" : "OFF"}</span>
+                    </label>
+                    <button
+                      type="button"
+                      className="optionsMenuAction"
+                      onClick={openManualUserPicker}
+                    >
+                      <span>Set user position…</span>
+                    </button>
+                  </>
+                ) : null}
                 <label style={styles.optionsItem}>
                   <input
                     type="checkbox"
@@ -6083,11 +6172,11 @@ export default function App() {
               {meHasStance && meStanceToolbar ? (
                 <div
                   style={{ ...styles.stanceSegment, gridTemplateColumns: "1fr" }}
-                  aria-label={`Your final BIP-110 position: ${meStanceToolbar.label}`}
+                  aria-label={`Your recorded ${activeProposal?.title || "BIP-110"} position: ${meStanceToolbar.label}`}
                 >
                   <span
                     className={`stanceSeg stanceSeg--solo stanceSeg--locked ${meStanceToolbar.className} is-active`}
-                    title={`Your final BIP-110 position: ${meStanceToolbar.label}. Positions are now final.`}
+                    title={`Your recorded ${activeProposal?.title || "BIP-110"} position: ${meStanceToolbar.label}. Position updates are admin-managed.`}
                   >
                     <span aria-hidden="true">🔒</span>
                     {meStanceToolbar.label}
@@ -6096,9 +6185,9 @@ export default function App() {
               ) : (
                 <span
                   className="stanceArchiveEmpty"
-                  title="BIP-110 has concluded. No position was recorded for this account."
+                  title={`No ${activeProposal?.title || "BIP-110"} position was recorded for this account.`}
                 >
-                  No final position
+                  No position recorded
                 </span>
               )}
               <div style={styles.barDivider} aria-hidden="true" />
@@ -6200,14 +6289,16 @@ export default function App() {
         </div>
       </div>
 
-      <section className="archiveBanner" aria-label="BIP-110 status">
-        <span className="archiveBanner__lock" aria-hidden="true">🔒</span>
-        <div className="archiveBanner__copy">
-          <strong>BIP-110 has concluded</strong>
-          <span>The proposal did not achieve consensus. All positions are now final and preserved as a historical snapshot.</span>
-        </div>
-        <span className="archiveBanner__badge">FINAL SNAPSHOT</span>
-      </section>
+      {activeProposalId === DEFAULT_PROPOSAL_ID ? (
+        <section className="archiveBanner" aria-label="BIP-110 status">
+          <span className="archiveBanner__lock" aria-hidden="true">🔒</span>
+          <div className="archiveBanner__copy">
+            <strong>BIP-110 has concluded</strong>
+            <span>The proposal did not achieve consensus. All positions are now final and preserved as a historical snapshot.</span>
+          </div>
+          <span className="archiveBanner__badge">FINAL SNAPSHOT</span>
+        </section>
+      ) : null}
 
       <div style={styles.main}>
         <div ref={(el) => { containerRef.current = el; canvasWrapPulseRef.current = el; }} style={styles.canvasWrap}>
@@ -6499,10 +6590,53 @@ export default function App() {
           />
         </Suspense>
       )}
-      {manualEditMode && isPrivilegedEditor && manualEditTarget && (
+      {manualUserPickerOpen && isPrivilegedEditor ? (
+        <div style={styles.modalBackdrop} onClick={() => setManualUserPickerOpen(false)}>
+          <div style={{ ...styles.manualEditCard, width: "min(440px, calc(100vw - 32px))" }} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.manualEditTitle}>
+              Set user position · {activeProposal?.title || "BIP-110"}
+            </div>
+            <input
+              className="appInput"
+              style={{ ...styles.search, width: "100%" }}
+              autoFocus
+              placeholder="Search @handle or name…"
+              value={manualUserQuery}
+              onChange={(e) => setManualUserQuery(e.target.value)}
+            />
+            <div style={styles.manualUserPickerList}>
+              {adminUserDirectoryLoading ? (
+                <div style={styles.manualUserPickerStatus}>Loading users…</div>
+              ) : manualUserPickerResults.length ? (
+                manualUserPickerResults.map((user) => {
+                  const handle = normalizeHandle(user?.handle);
+                  return (
+                    <button
+                      key={String(user?.x_user_id || handle)}
+                      type="button"
+                      className="optionsMenuAction"
+                      style={styles.manualUserPickerRow}
+                      onClick={() => selectManualUser(user)}
+                    >
+                      <span style={{ fontWeight: 850 }}>@{handle}</span>
+                      <span style={styles.manualUserPickerName}>{String(user?.name || "")}</span>
+                    </button>
+                  );
+                })
+              ) : (
+                <div style={styles.manualUserPickerStatus}>No matching users.</div>
+              )}
+            </div>
+            <button type="button" className="toolbarBtn" onClick={() => setManualUserPickerOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {isPrivilegedEditor && manualEditTarget && (
         <div style={styles.modalBackdrop} onClick={() => setManualEditTarget(null)}>
           <div style={styles.manualEditCard} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.manualEditTitle}>Manual stance edit</div>
+            <div style={styles.manualEditTitle}>Set user position · {activeProposal?.title || "BIP-110"}</div>
             <div style={styles.manualEditRow}>
               <img
                 src={manualEditTarget.avatarSrc}
@@ -6518,7 +6652,7 @@ export default function App() {
               />
               <div style={{ minWidth: 0 }}>
                 <div style={styles.manualEditHandle}>@{manualEditTarget.handle}</div>
-                <div style={styles.manualEditMeta}>Current: {manualEditTarget.currentStance || "neutral"}</div>
+                <div style={styles.manualEditMeta}>Current: {manualEditTarget.currentStance || "Not set"}</div>
                 <div style={styles.manualEditMeta}>Followers: {formatNum(manualEditTarget.followers_count || 0)}</div>
               </div>
             </div>
@@ -7203,6 +7337,37 @@ const styles = {
   manualEditMeta: {
     fontSize: 12,
     color: "rgba(255,255,255,0.76)",
+  },
+  manualUserPickerList: {
+    maxHeight: 320,
+    overflowY: "auto",
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    padding: 4,
+    borderRadius: 8,
+    border: "1px solid rgba(255,255,255,0.08)",
+    background: "rgba(2,6,23,0.55)",
+  },
+  manualUserPickerRow: {
+    display: "grid",
+    gridTemplateColumns: "minmax(110px, auto) 1fr",
+    gap: 10,
+    alignItems: "center",
+    textAlign: "left",
+  },
+  manualUserPickerName: {
+    minWidth: 0,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    color: "rgba(226,232,240,0.68)",
+  },
+  manualUserPickerStatus: {
+    padding: "18px 10px",
+    textAlign: "center",
+    color: "rgba(226,232,240,0.68)",
+    fontSize: 12,
   },
   manualEditChoices: {
     display: "flex",

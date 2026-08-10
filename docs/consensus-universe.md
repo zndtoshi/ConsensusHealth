@@ -40,7 +40,7 @@ Internal notes for the multi-proposal (galaxy) data model and migrations.
 ## BIP110 seed accounts
 
 - Seed accounts are associated with BIP110 at the **query layer** via a clearly scoped `UNION` for graph/CSV.
-- Seeds are **not** copied into BIP54/BIP119 and do not create duplicate `community_users` rows.
+- Seeds are **not** copied into BIP54/BIP448 and do not create duplicate `community_users` rows.
 
 ## Adding another proposal
 
@@ -55,8 +55,8 @@ Frontend navigation, adjacent wrapping, distant galaxies, header labels, URL par
 ## Staging and rollback
 
 - Prefer a **copied database** on a temporary Render service before production.
-- Safe code rollback: redeploy previous commit / check out `main`. Does not destroy votes.
-- Destructive data rollback: dropping `user_proposal_*` tables **destroys** BIP54/BIP119 votes and canonical BIP110 history. Do **not** drop after collecting production votes.
+- Safe code rollback: redeploy previous commit / check out `main`. Does not destroy recorded positions.
+- Destructive data rollback: dropping `user_proposal_*` tables **destroys** BIP54/BIP448 positions and canonical BIP110 history. Do **not** drop after collecting production positions.
 
 ## Local integration tests
 

@@ -76,7 +76,7 @@ test("integration: ensureProposalSchema is idempotent and records version", asyn
     );
     await pool.query(
       `INSERT INTO stance_history (x_user_id, previous_stance, new_stance, changed_by)
-       VALUES ('u1', NULL, 'against', 'user')`
+       VALUES ('u1', NULL, 'against', 'user'), ('u1', 'against', 'support', 'user')`
     );
 
     await ensureProposalSchema(pool);
@@ -98,6 +98,19 @@ test("integration: ensureProposalSchema is idempotent and records version", asyn
     );
     assert.ok((hist.rowCount ?? 0) >= 1);
     assert.ok(hist.rows.every((r) => r.legacy_stance_history_id != null));
+    const normalizedHistory = await pool.query(
+      `SELECT previous_stance, new_stance
+       FROM user_proposal_stance_history
+       WHERE proposal_id = 'bip110' AND x_user_id = 'u1'
+       ORDER BY legacy_stance_history_id`
+    );
+    assert.deepEqual(
+      normalizedHistory.rows.map((r) => [r.previous_stance, r.new_stance]),
+      [
+        [null, "against"],
+        ["against", "approve"],
+      ]
+    );
 
     const hist2count = await pool.query(
       `SELECT COUNT(*)::int AS c FROM user_proposal_stance_history WHERE proposal_id = 'bip110'`
@@ -152,7 +165,7 @@ test("integration: concurrent migrations do not duplicate history", async (t) =>
   }
 });
 
-test("integration: independent proposal stances + first vote scoping", async (t) => {
+test("integration: independent proposal stances + first-position scoping", async (t) => {
   const pool = requirePool();
   if (!pool) {
     t.skip("TEST_DATABASE_URL not set");
@@ -180,10 +193,10 @@ test("integration: independent proposal stances + first vote scoping", async (t)
         ["bip54", "approve"],
       ]
     );
-    const bip119 = await pool.query(
-      `SELECT 1 FROM user_proposal_stances WHERE proposal_id = 'bip119'`
+    const bip448 = await pool.query(
+      `SELECT 1 FROM user_proposal_stances WHERE proposal_id = 'bip448'`
     );
-    assert.equal(bip119.rowCount, 0);
+    assert.equal(bip448.rowCount, 0);
 
     // Genuine repeated transitions at different times are preserved.
     await pool.query(

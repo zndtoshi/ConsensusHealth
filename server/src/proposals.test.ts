@@ -15,7 +15,7 @@ test("resolveProposalId accepts bip ids and numbers; invalid falls back to bip11
   assert.equal(resolveProposalId("bip110"), "bip110");
   assert.equal(resolveProposalId("110"), "bip110");
   assert.equal(resolveProposalId("BIP-54"), "bip54");
-  assert.equal(resolveProposalId("119"), "bip119");
+  assert.equal(resolveProposalId("448"), "bip448");
   assert.equal(resolveProposalId("nope"), DEFAULT_PROPOSAL_ID);
   assert.equal(resolveProposalId(""), DEFAULT_PROPOSAL_ID);
 });
@@ -25,11 +25,11 @@ test("tryResolveProposalId returns null for unknown ids", () => {
   assert.equal(tryResolveProposalId("bip54"), "bip54");
 });
 
-test("enabled proposals include bip110/54/119 in display order", () => {
+test("enabled proposals include bip110/54/448 in display order", () => {
   const list = listEnabledProposals();
   assert.deepEqual(
     list.map((p) => p.id),
-    ["bip110", "bip54", "bip119"]
+    ["bip110", "bip54", "bip448"]
   );
 });
 
@@ -38,7 +38,7 @@ test("resolveProposalAccess allows bip110 for everyone; other BIPs admin-only", 
   assert.equal(resolveProposalAccess({ rawProposal: "bip54", sessionHandle: "alice" }).allowed, false);
   assert.equal(resolveProposalAccess({ rawProposal: "bip54", sessionHandle: "zndtoshi" }).allowed, true);
   assert.equal(resolveProposalAccess({ rawProposal: "119", sessionHandle: "@ZndToshi" }).allowed, true);
-  assert.equal(resolveProposalAccess({ rawProposal: "bip119", sessionHandle: null }).allowed, false);
+  assert.equal(resolveProposalAccess({ rawProposal: "bip448", sessionHandle: null }).allowed, false);
 });
 
 test("ensureProposalSchema uses advisory lock and migration version", () => {

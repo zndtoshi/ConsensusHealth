@@ -91,6 +91,8 @@ async function syncProposalCatalog(client: PoolClient): Promise<void> {
       ]
     );
   }
+  // Retire the superseded preview entry if an earlier galaxy build initialized it.
+  await client.query(`UPDATE proposals SET enabled = FALSE, updated_at = now() WHERE id = 'bip119'`);
 }
 
 async function ensureSchemaObjects(client: PoolClient): Promise<void> {
@@ -230,13 +232,22 @@ async function backfillBip110History(client: PoolClient): Promise<void> {
     SELECT
       sh.x_user_id,
       'bip110',
-      sh.previous_stance,
-      sh.new_stance,
+      CASE
+        WHEN lower(coalesce(sh.previous_stance, '')) = 'support' THEN 'approve'
+        WHEN lower(coalesce(sh.previous_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(sh.previous_stance)
+        ELSE NULL
+      END,
+      CASE
+        WHEN lower(coalesce(sh.new_stance, '')) = 'support' THEN 'approve'
+        WHEN lower(coalesce(sh.new_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(sh.new_stance)
+        ELSE NULL
+      END,
       sh.changed_at,
       sh.changed_by,
       sh.id
     FROM stance_history sh
     WHERE sh.x_user_id IS NOT NULL
+      AND lower(coalesce(sh.new_stance, '')) IN ('against', 'neutral', 'approve', 'support')
     ON CONFLICT (legacy_stance_history_id) DO NOTHING
     `
   );
@@ -273,8 +284,15 @@ export async function ensureProposalSchema(pool: Pool): Promise<void> {
           AND h.proposal_id = 'bip110'
           AND h.x_user_id = sh.x_user_id
           AND h.changed_at = sh.changed_at
-          AND h.new_stance = sh.new_stance
-          AND h.previous_stance IS NOT DISTINCT FROM sh.previous_stance
+          AND h.new_stance = CASE
+            WHEN lower(coalesce(sh.new_stance, '')) = 'support' THEN 'approve'
+            ELSE lower(sh.new_stance)
+          END
+          AND h.previous_stance IS NOT DISTINCT FROM CASE
+            WHEN lower(coalesce(sh.previous_stance, '')) = 'support' THEN 'approve'
+            WHEN lower(coalesce(sh.previous_stance, '')) IN ('against', 'neutral', 'approve') THEN lower(sh.previous_stance)
+            ELSE NULL
+          END
       `);
       await ensureHistoryUniqueness(client);
       await backfillBip110History(client);

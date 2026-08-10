@@ -16,7 +16,7 @@ import { resolveThemeKey, getTheme } from "./proposalThemes.js";
 
 test("frontend resolveProposalId matches bip numbers", () => {
   assert.equal(resolveProposalId("54"), "bip54");
-  assert.equal(resolveProposalId("bip119"), "bip119");
+  assert.equal(resolveProposalId("bip448"), "bip448");
   assert.equal(resolveProposalId("xyz"), DEFAULT_PROPOSAL_ID);
 });
 
@@ -34,7 +34,7 @@ test("non-admin is forced to bip110", () => {
 test("catalog order drives adjacency wrap", () => {
   const { prev, next, current } = adjacentProposals("bip110", FALLBACK_PROPOSALS);
   assert.equal(current.id, "bip110");
-  assert.equal(prev.id, "bip119");
+  assert.equal(prev.id, "bip448");
   assert.equal(next.id, "bip54");
 });
 
@@ -71,7 +71,7 @@ test("invalid URL proposal falls back to first accessible / default", () => {
 test("distant galaxies are every accessible non-active proposal", () => {
   const active = "bip54";
   const distant = FALLBACK_PROPOSALS.filter((p) => p.enabled && p.id !== active).map((p) => p.id);
-  assert.deepEqual(distant, ["bip110", "bip119"]);
+  assert.deepEqual(distant, ["bip110", "bip448"]);
 });
 
 test("reduced-motion hook subscribes to matchMedia change events", () => {
