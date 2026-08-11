@@ -1,9 +1,6 @@
 /**
  * HTTP-boundary authorization tests for proposal access.
  * Uses an isolated Express mini-app with the same resolveProposalAccessAsync gate.
- * Optional DB via TEST_DATABASE_URL; otherwise uses seed admin_only map behavior through
- * a temporary schema when URL is set. Without DB, tests still exercise the HTTP gate
- * using resolveProposalAccess (sync seed catalog) mounted identically.
  */
 
 import test from "node:test";
@@ -16,6 +13,7 @@ import {
   resolveProposalAccessAsync,
 } from "./proposals.js";
 import { isPrivilegedManualEditorHandle } from "./stanceHistory.js";
+import { getProposalById, isFinalProposalStatus } from "./proposalCatalog.js";
 
 function makeMiniApp(mode: "sync" | "async", pool?: { query: Function }) {
   const app = express();
@@ -56,13 +54,29 @@ function makeMiniApp(mode: "sync" | "async", pool?: { query: Function }) {
     const isAdmin = isPrivilegedManualEditorHandle(handle);
     res.json({
       admin_galaxies: isAdmin,
-      items: isAdmin
-        ? [{ id: "bip110" }, { id: "bip54" }, { id: "bip448" }, { id: "bip460" }]
-        : [{ id: "bip110" }],
+      items: [{ id: "bip110" }, { id: "bip54" }, { id: "bip448" }, { id: "bip460" }],
     });
   });
-  app.post("/api/stance", (_req, res) => {
-    res.status(409).json({ error: "stance_updates_restricted" });
+  app.post("/api/stance", (req, res) => {
+    const handle = (req as express.Request & { testHandle: string | null }).testHandle;
+    if (!handle) {
+      res.status(401).json({ error: "not_logged_in" });
+      return;
+    }
+    const access = resolveProposalAccess({
+      rawProposal: req.body?.proposal ?? req.body?.proposal_id,
+      sessionHandle: handle,
+    });
+    if (!access.allowed) {
+      res.status(403).json({ error: "forbidden_proposal" });
+      return;
+    }
+    const meta = getProposalById(access.proposalId);
+    if (isFinalProposalStatus(meta?.status)) {
+      res.status(409).json({ error: "proposal_stances_frozen" });
+      return;
+    }
+    res.json({ ok: true, proposal_id: access.proposalId, stance: req.body?.stance });
   });
   app.get("/api/stances/export-against.csv", gate);
   app.get("/api/stance-history", gate);
@@ -84,37 +98,45 @@ async function withServer(app: express.Express, fn: (base: string) => Promise<vo
   }
 }
 
-test("HTTP: ordinary user blocked from bip54/bip448/bip460; bip110 allowed", async () => {
+test("HTTP: ordinary user can access public ongoing galaxies; BIP-110 write stays frozen", async () => {
   const app = makeMiniApp("sync");
   await withServer(app, async (base) => {
     const h = { "x-test-handle": "alice", "content-type": "application/json" };
-    const ok110 = await fetch(`${base}/api/community?proposal=bip110`, { headers: h });
-    assert.equal(ok110.status, 200);
-    const deny54 = await fetch(`${base}/api/stats?proposal=bip54`, { headers: h });
-    assert.equal(deny54.status, 403);
-    const deny448 = await fetch(`${base}/api/stance-history?proposal=448`, { headers: h });
-    assert.equal(deny448.status, 403);
-    const deny460 = await fetch(`${base}/api/community?proposal=bip460`, { headers: h });
-    assert.equal(deny460.status, 403);
-    const denyWrite = await fetch(`${base}/api/stance`, {
+    for (const p of ["bip110", "bip54", "bip448", "bip460"]) {
+      const res = await fetch(`${base}/api/community?proposal=${p}`, { headers: h });
+      assert.equal(res.status, 200, p);
+    }
+    const freeze110 = await fetch(`${base}/api/stance`, {
       method: "POST",
       headers: h,
-      body: JSON.stringify({ stance: "against", proposal: "bip54" }),
+      body: JSON.stringify({ stance: "against", proposal: "bip110" }),
     });
-    assert.equal(denyWrite.status, 409);
+    assert.equal(freeze110.status, 409);
+    const write54 = await fetch(`${base}/api/stance`, {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ stance: "approve", proposal: "bip54" }),
+    });
+    assert.equal(write54.status, 200);
     const proposals = await fetch(`${base}/api/proposals`, { headers: h }).then((r) => r.json());
     assert.deepEqual(
       proposals.items.map((i: { id: string }) => i.id),
-      ["bip110"]
+      ["bip110", "bip54", "bip448", "bip460"]
     );
   });
 });
 
-test("HTTP: unauthenticated cannot access bip54", async () => {
+test("HTTP: unauthenticated can view bip54 but cannot write", async () => {
   const app = makeMiniApp("sync");
   await withServer(app, async (base) => {
     const res = await fetch(`${base}/api/community?proposal=bip54`);
-    assert.equal(res.status, 403);
+    assert.equal(res.status, 200);
+    const write = await fetch(`${base}/api/stance`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ stance: "against", proposal: "bip54" }),
+    });
+    assert.equal(write.status, 401);
   });
 });
 
@@ -133,9 +155,6 @@ test("HTTP: zndtoshi (mixed case) can access all seeded galaxies", async () => {
 });
 
 test("HTTP: client-supplied handle header cannot elevate without matching privilege helper", async () => {
-  // Mini-app trusts x-test-handle as session stand-in; privilege still goes through
-  // isPrivilegedManualEditorHandle — forging "zndtoshi" is only possible if session is forged.
-  // This asserts the privilege helper itself, and that non-zndtoshi stays denied.
   assert.equal(isPrivilegedManualEditorHandle("not-admin"), false);
   assert.equal(isPrivilegedManualEditorHandle("zndtoshi"), true);
 });
@@ -145,16 +164,15 @@ test("HTTP: unknown proposal rejected on gated routes", async () => {
   app.use(express.json());
   app.get("/api/community", async (req, res) => {
     const handle = String(req.headers["x-test-handle"] || "") || null;
-    const access = resolveProposalAccess({
-      rawProposal: req.query.proposal,
-      sessionHandle: handle,
-    });
-    // Production uses tryResolve + known flag; mirror rejection for unknown ids.
     const { tryResolveProposalId } = await import("./proposalCatalog.js");
     if (!tryResolveProposalId(req.query.proposal)) {
       res.status(400).json({ error: "unknown_proposal" });
       return;
     }
+    const access = resolveProposalAccess({
+      rawProposal: req.query.proposal,
+      sessionHandle: handle,
+    });
     if (!access.allowed) {
       res.status(403).json({ error: "forbidden_proposal" });
       return;

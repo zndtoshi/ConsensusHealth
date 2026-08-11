@@ -23,6 +23,8 @@ import {
 import {
   DEFAULT_PROPOSAL_ID,
   ensureProposalSchema,
+  getProposalById,
+  isFinalProposalStatus,
   listEnabledProposals,
   loadAccessibleProposals,
   resolveProposalAccessAsync,
@@ -66,7 +68,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET || "";
 const STATS_CACHE_TTL_MS = 45_000;
 // BIP-110 has concluded. Keep identity/session infrastructure active for future BIPs,
 // while making this proposal's final positions immutable at the API boundary.
-const SELF_STANCE_UPDATES_ENABLED: boolean = false;
+const SELF_STANCE_UPDATES_ENABLED: boolean = true;
 const statsResponseCacheByProposal = new Map<
   string,
   { expiresAt: number; payload: Record<string, unknown> }
@@ -1638,6 +1640,15 @@ app.post("/api/stance", async (req, res, next) => {
       return;
     }
 
+    const proposalMeta = getProposalById(access.proposalId);
+    if (isFinalProposalStatus(proposalMeta?.status)) {
+      res.status(409).json({
+        error: "proposal_stances_frozen",
+        message: "This proposal is a final locked snapshot. Positions can no longer be changed.",
+      });
+      return;
+    }
+
     if (process.env.NODE_ENV !== "production") {
       console.log("[stance-save] session-user", {
         x_user_id: user.x_user_id,
@@ -1844,7 +1855,8 @@ app.post("/api/admin/stance", async (req, res, next) => {
     const editingSelf =
       (reqHandle && reqHandle === normalizeHandle(user.handle)) ||
       (reqXUserId && reqXUserId === String(user.x_user_id));
-    if (editingSelf && access.proposalId === DEFAULT_PROPOSAL_ID) {
+    const proposalMeta = getProposalById(access.proposalId);
+    if (editingSelf && isFinalProposalStatus(proposalMeta?.status)) {
       res.status(409).json({
         error: "bip110_stances_frozen",
         message: "BIP-110 positions remain preserved as a final snapshot.",

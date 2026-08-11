@@ -26,7 +26,8 @@ test("App presents BIP-110 as a locked final snapshot", () => {
   assert.doesNotMatch(appSrc, /archiveBanner/);
   assert.doesNotMatch(appSrc, /FINAL SNAPSHOT/);
   assert.match(appSrc, /meHasStance && meStanceToolbar/);
-  assert.match(appSrc, /Your recorded.*BIP-110.*position/);
+  assert.match(appSrc, /isFinalProposal\(activeProposal\)/);
+  assert.match(appSrc, /StanceChoiceCard/);
   assert.doesNotMatch(appSrc, /onClick=\{\(\) => setStanceChoiceOpen/);
 });
 
@@ -34,29 +35,31 @@ test("BIP-110 concluded copy lives in the galaxy header hover tooltip", () => {
   const headerSrc = readFileSync(join(root, "src", "components", "GalaxyHeaderNav.jsx"), "utf8");
   assert.match(headerSrc, /Concluded without consensus/);
   assert.match(headerSrc, /galaxyHeaderNav__tooltip/);
+  assert.match(headerSrc, /Ongoing proposal\. Current positions are self-reported/);
 });
 
-test("self-service writes are restricted while admin stance editing remains available", () => {
+test("self-service stance writes are enabled for ongoing proposals; final stays frozen", () => {
   const userRoute = serverSrc.indexOf('app.post("/api/stance"');
   const adminRoute = serverSrc.indexOf('app.post("/api/admin/stance"');
   assert.ok(userRoute >= 0);
   assert.ok(adminRoute >= 0);
-  assert.match(serverSrc.slice(userRoute, userRoute + 400), /status\(409\)/);
-  assert.match(serverSrc.slice(userRoute, userRoute + 400), /stance_updates_restricted/);
-  assert.doesNotMatch(serverSrc.slice(adminRoute, adminRoute + 400), /status\(409\)/);
-  assert.match(serverSrc.slice(adminRoute, adminRoute + 700), /isPrivilegedManualEditorHandle/);
+  assert.match(serverSrc.slice(userRoute, userRoute + 1200), /proposal_stances_frozen|isFinalProposalStatus/);
+  assert.match(serverSrc, /SELF_STANCE_UPDATES_ENABLED:\s*boolean\s*=\s*true/);
+  assert.match(serverSrc.slice(adminRoute, adminRoute + 900), /isPrivilegedManualEditorHandle/);
   assert.match(appSrc, /Set user position/);
   assert.match(appSrc, /Edit positions on graph/);
+  assert.match(appSrc, /\/api\/stance/);
+  assert.match(appSrc, /saveOwnStanceChoice/);
 });
 
-test("admin can choose their own position only outside frozen BIP-110", () => {
-  const adminRoute = serverSrc.indexOf('app.post("/api/admin/stance"');
-  const routeSrc = serverSrc.slice(adminRoute, adminRoute + 2200);
-  assert.match(routeSrc, /editingSelf/);
-  assert.match(routeSrc, /access\.proposalId === DEFAULT_PROPOSAL_ID/);
-  assert.match(routeSrc, /bip110_stances_frozen/);
-  assert.match(appSrc, /activeProposalId !== DEFAULT_PROPOSAL_ID/);
+test("own stance chooser is available on ongoing proposals only", () => {
+  assert.match(appSrc, /canChooseOwnStance = me\?\.authenticated === true && isOngoingProposal\(activeProposal\)/);
   assert.match(appSrc, /openOwnStanceChoice/);
   assert.match(appSrc, /Choose your position/);
   assert.match(appSrc, /allowAbsentFromGalaxy/);
+  const adminRoute = serverSrc.indexOf('app.post("/api/admin/stance"');
+  const routeSrc = serverSrc.slice(adminRoute, adminRoute + 2200);
+  assert.match(routeSrc, /editingSelf/);
+  assert.match(routeSrc, /isFinalProposalStatus/);
+  assert.match(routeSrc, /bip110_stances_frozen/);
 });

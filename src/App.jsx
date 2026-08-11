@@ -31,10 +31,15 @@ import {
 } from "./utils/stanceAnalyst";
 import { assertHaloAvatarAdmin, isHaloAvatarAdmin } from "./utils/haloAvatarAdmin";
 import { HaloAvatarModal } from "./components/HaloAvatarModal";
+import { StanceChoiceCard } from "./components/StanceChoiceCard";
 import {
   DEFAULT_PROPOSAL_ID,
   FALLBACK_PROPOSALS,
   getProposalById,
+  isFinalProposal,
+  isOngoingProposal,
+  statisticsActionLabel,
+  statisticsModalCopy,
 } from "./config/proposals";
 import {
   normalizeIncomingProposalId,
@@ -978,9 +983,11 @@ export default function App() {
   const galaxyTravelLockRef = useRef(false);
   const proposalReloadAbortRef = useRef(null);
   const parallaxLayerRef = useRef(null);
+  const parallaxRafRef = useRef(0);
+  const parallaxNearRef = useRef({ x: 0, y: 0 });
   const travelCleanupRef = useRef(null);
   const prefersGalaxyReducedMotion = usePrefersReducedMotion();
-  const [proposalCatalog, setProposalCatalog] = useState(FALLBACK_PROPOSALS.filter((p) => !p.adminOnly));
+  const [proposalCatalog, setProposalCatalog] = useState(FALLBACK_PROPOSALS);
   const [proposalCatalogReady, setProposalCatalogReady] = useState(false);
   const showClusterHalo = useMemo(
     () =>
@@ -1006,6 +1013,7 @@ export default function App() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState("");
   const [statsData, setStatsData] = useState(null);
+  const [statsForProposalId, setStatsForProposalId] = useState(null);
   const statsDataRef = useRef(null);
   const statsFetchStartedAtRef = useRef(0);
   const [showDonateModal, setShowDonateModal] = useState(false);
@@ -1039,6 +1047,8 @@ export default function App() {
   const [pulseSelectedEnabled, setPulseSelectedEnabled] = useState(false);
   const [manualEditMode, setManualEditMode] = useState(false);
   const [manualEditTarget, setManualEditTarget] = useState(null);
+  const [stanceChoiceOpen, setStanceChoiceOpen] = useState(false);
+  const [stanceChoiceBusy, setStanceChoiceBusy] = useState(false);
   const [manualEditChoice, setManualEditChoice] = useState("neutral");
   const [manualEditBusy, setManualEditBusy] = useState(false);
   const [manualEditError, setManualEditError] = useState("");
@@ -1287,6 +1297,7 @@ export default function App() {
       const data = await res.json();
       if (isCancelled()) return;
       setStatsData(data);
+      setStatsForProposalId(activeProposalId);
       if (!(typeof import.meta !== "undefined" && import.meta.env && import.meta.env.PROD)) {
         // eslint-disable-next-line no-console
         console.log("[stats] timing", {
@@ -1321,6 +1332,8 @@ export default function App() {
   useEffect(() => {
     // Drop stale stats when switching galaxies so the modal never shows wrong BIP.
     setStatsData(null);
+    setStatsForProposalId(null);
+    setStanceChoiceOpen(false);
   }, [activeProposalId]);
 
   function openStatsModal() {
@@ -1389,20 +1402,17 @@ export default function App() {
     [me?.authenticated, me?.handle]
   );
   const adminGalaxiesEnabled = useMemo(
-    () =>
-      me?.authenticated === true &&
-      isPrivilegedManualEditor(me?.handle) &&
-      proposalCatalogReady &&
-      proposalCatalog.filter((p) => p.enabled).length > 1,
-    [me?.authenticated, me?.handle, proposalCatalog, proposalCatalogReady]
+    () => proposalCatalogReady && proposalCatalog.filter((p) => p.enabled).length > 1,
+    [proposalCatalog, proposalCatalogReady]
   );
   const proposalAccessReady = me !== null && proposalCatalogReady;
   const activeProposal = useMemo(
     () => getProposalById(activeProposalId, proposalCatalog),
     [activeProposalId, proposalCatalog]
   );
-  const canChooseOwnStance =
-    me?.authenticated === true && isPrivilegedEditor && activeProposalId !== DEFAULT_PROPOSAL_ID;
+  const canChooseOwnStance = me?.authenticated === true && isOngoingProposal(activeProposal);
+  const statsActionLabel = statisticsActionLabel(activeProposal);
+  const statsModalCopy = statisticsModalCopy(activeProposal);
   const manualEditTargetIsSelf =
     Boolean(manualEditTarget) &&
     ((String(manualEditTarget?.x_user_id ?? "").trim() &&
@@ -1430,7 +1440,7 @@ export default function App() {
       try {
         const { items } = await fetchAccessibleProposals({ apiBase: API_BASE });
         if (cancelled) return;
-        const next = items.length ? items : FALLBACK_PROPOSALS.filter((p) => !p.adminOnly);
+        const next = items.length ? items : FALLBACK_PROPOSALS;
         setProposalCatalog(next);
         setProposalCatalogReady(true);
       } catch {
@@ -1888,10 +1898,67 @@ export default function App() {
 
   function openOwnStanceChoice() {
     if (!canChooseOwnStance) return;
-    selectManualUser({
-      ...me,
-      stance: meForActiveProposal?.stance || null,
-    });
+    setStanceChoiceOpen(true);
+  }
+
+  async function saveOwnStanceChoice(uiStance, apiStance) {
+    if (!canChooseOwnStance || stanceChoiceBusy) return;
+    setStanceChoiceBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/stance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          stance: apiStance,
+          proposal: activeProposalId,
+        }),
+      });
+      if (!res.ok) {
+        let msg = `Failed (${res.status})`;
+        try {
+          const errData = await res.json();
+          if (errData?.error) msg = String(errData.error);
+        } catch {
+          // ignore
+        }
+        throw new Error(msg);
+      }
+      const data = await res.json();
+      const targetHandleNorm = normalizeHandle(data?.handle || me?.handle);
+      const next = normalizedStance(data?.stance || uiStance);
+      setLabels((prev) => ({ ...prev, [targetHandleNorm]: next }));
+      setAccounts((prev) => {
+        const exists = prev.some((account) => normalizeHandle(account?.handle) === targetHandleNorm);
+        const updated = applyManualStanceUpdate(prev, targetHandleNorm, next);
+        if (exists) return updated;
+        return [
+          ...updated,
+          {
+            ...data,
+            handle: targetHandleNorm,
+            stance: next,
+            position: next,
+          },
+        ];
+      });
+      setMe((prev) => ({
+        ...prev,
+        proposal_stances: {
+          ...(prev?.proposal_stances || {}),
+          [activeProposalId]: next,
+        },
+      }));
+      await refreshStatsNow();
+      setStanceChoiceOpen(false);
+    } catch (e) {
+      if (!import.meta.env.PROD) {
+        // eslint-disable-next-line no-console
+        console.warn("[own-stance] failed", String(e?.message || e));
+      }
+    } finally {
+      setStanceChoiceBusy(false);
+    }
   }
 
   async function saveManualStanceEdit() {
@@ -2316,7 +2383,7 @@ export default function App() {
     if (galaxyTravelLockRef.current) return;
     galaxyTravelLockRef.current = true;
     const from = activeProposalId;
-    const duration = prefersGalaxyReducedMotion ? 280 : 900;
+    const duration = prefersGalaxyReducedMotion ? 280 : 700;
     const t0 = performance.now();
     setGalaxyTravel({ from, to: target, progress: 0 });
     let midSwapped = false;
@@ -5993,12 +6060,21 @@ export default function App() {
       onPointerMove={
         adminGalaxiesEnabled && !prefersGalaxyReducedMotion
           ? (e) => {
-              const layer = parallaxLayerRef.current;
-              if (!layer || e.pointerType === "touch") return;
+              if (e.pointerType === "touch") return;
               if (cameraInteractingRef.current) return;
               const nx = (e.clientX / window.innerWidth - 0.5) * 2;
               const ny = (e.clientY / window.innerHeight - 0.5) * 2;
-              layer.style.transform = `translate3d(${(-nx * 6).toFixed(2)}px, ${(-ny * 4).toFixed(2)}px, 0)`;
+              parallaxNearRef.current = { x: -nx * 6, y: -ny * 4 };
+              const root = e.currentTarget;
+              if (parallaxRafRef.current) return;
+              parallaxRafRef.current = requestAnimationFrame(() => {
+                parallaxRafRef.current = 0;
+                const { x, y } = parallaxNearRef.current;
+                root.style.setProperty("--gx-par-nx", `${x.toFixed(2)}px`);
+                root.style.setProperty("--gx-par-ny", `${y.toFixed(2)}px`);
+                root.style.setProperty("--gx-par-fx", `${(x * 0.35).toFixed(2)}px`);
+                root.style.setProperty("--gx-par-fy", `${(y * 0.35).toFixed(2)}px`);
+              });
             }
           : undefined
       }
@@ -6304,11 +6380,15 @@ export default function App() {
               ) : meHasStance && meStanceToolbar ? (
                 <div
                   style={{ ...styles.stanceSegment, gridTemplateColumns: "1fr" }}
-                  aria-label={`Your recorded ${activeProposal?.title || "BIP-110"} position: ${meStanceToolbar.label}`}
+                  aria-label={`Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}`}
                 >
                   <span
                     className={`stanceSeg stanceSeg--solo stanceSeg--locked ${meStanceToolbar.className} is-active`}
-                    title={`Your recorded ${activeProposal?.title || "BIP-110"} position: ${meStanceToolbar.label}. Position updates are admin-managed.`}
+                    title={
+                      isFinalProposal(activeProposal)
+                        ? `Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}. This proposal is a final locked snapshot.`
+                        : `Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}.`
+                    }
                   >
                     <span aria-hidden="true">🔒</span>
                     {meStanceToolbar.label}
@@ -6317,7 +6397,7 @@ export default function App() {
               ) : (
                 <span
                   className="stanceArchiveEmpty"
-                  title={`No ${activeProposal?.title || "BIP-110"} position was recorded for this account.`}
+                  title={`No ${activeProposal?.title || "proposal"} position was recorded for this account.`}
                 >
                   No position recorded
                 </span>
@@ -6466,6 +6546,7 @@ export default function App() {
                     proposalId={activeProposalId}
                     catalog={proposalCatalog}
                     disabled={Boolean(galaxyTravel)}
+                    onNavigate={travelToGalaxy}
                     reducedMotion={prefersGalaxyReducedMotion}
                     parallaxRef={parallaxLayerRef}
                     travel={galaxyTravel}
@@ -6660,11 +6741,11 @@ export default function App() {
       <div style={styles.footerNote}>
         <div style={styles.footerNoteLine}>
           <span>
-            {activeProposalId === DEFAULT_PROPOSAL_ID
+            {isFinalProposal(activeProposal)
               ? "Final positions are self-reported or curated and are now read-only."
-              : "Positions in this preview galaxy are managed by @zndtoshi."}
+              : "Positions are self-reported by authenticated accounts for this ongoing proposal."}
           </span>
-          {activeProposalId === DEFAULT_PROPOSAL_ID ? <CuratedStanceInfo /> : null}
+          {isFinalProposal(activeProposal) ? <CuratedStanceInfo /> : null}
         </div>
         {stanceListsViewEnabled ? (
           <div>Within each stance: avatar + @username, multi-column grid, followers (highest first).</div>
@@ -6679,7 +6760,7 @@ export default function App() {
       </div>
       <div style={styles.bottomControls}>
         <button type="button" className="toolbarBtn" onClick={openStatsModal}>
-          Final Results
+          {statsActionLabel}
         </button>
         <div style={styles.barDivider} aria-hidden="true" />
         <button type="button" className="toolbarBtn" onClick={() => setShowDonateModal(true)}>
@@ -6703,11 +6784,13 @@ export default function App() {
           <StatisticsModal
             open={showStatsModal}
             onClose={() => setShowStatsModal(false)}
-            data={statisticsData}
-            loading={statsLoading && !statisticsData}
+            data={statsData && statsForProposalId === activeProposalId ? statisticsData : null}
+            loading={statsLoading || (showStatsModal && statsForProposalId !== activeProposalId)}
             error={statsError}
             apiBase={API_BASE}
             proposalId={activeProposalId}
+            heading={statsModalCopy.heading}
+            subtitle={statsModalCopy.subtitle}
             onRetryHistory={() => {
               statsFetchStartedAtRef.current = performance.now();
               fetchStats({ forceLoading: true });
@@ -6715,6 +6798,17 @@ export default function App() {
           />
         </Suspense>
       )}
+      {stanceChoiceOpen && canChooseOwnStance ? (
+        <StanceChoiceCard
+          open={stanceChoiceOpen}
+          mode={meHasStance ? "change" : "choose"}
+          currentStance={meStance || ""}
+          busy={stanceChoiceBusy}
+          proposalLabel={activeProposal?.title || "proposal"}
+          onSelect={saveOwnStanceChoice}
+          onDismiss={() => setStanceChoiceOpen(false)}
+        />
+      ) : null}
       {manualUserPickerOpen && isPrivilegedEditor ? (
         <div style={styles.modalBackdrop} onClick={() => setManualUserPickerOpen(false)}>
           <div style={{ ...styles.manualEditCard, width: "min(440px, calc(100vw - 32px))" }} onClick={(e) => e.stopPropagation()}>

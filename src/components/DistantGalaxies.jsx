@@ -1,18 +1,28 @@
 import React, { useMemo } from "react";
-import { listEnabledProposals } from "../config/proposals";
+import { selectDistantProposals } from "../config/proposals";
 
-/** Keep inactive galaxies flanking the center mass on one horizontal band. */
-function distantLayout(index) {
+function hashSeed(text) {
+  return [...String(text)].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+}
+
+/** Deterministic placement: flanks center mass, varies scale/rotation, avoids rigid stack. */
+function distantLayout(proposalId, index) {
+  const seed = hashSeed(proposalId) + index * 17;
   const sideIndex = index % 2;
   const row = Math.floor(index / 2);
+  const xJitter = ((seed % 11) - 5) * 0.35;
+  const yJitter = ((seed % 7) - 3) * 0.55;
+  const depth = 0.78 + ((seed % 5) / 5) * 0.2; // farther → smaller (~15–25%)
   return {
-    x: sideIndex === 0 ? 9 : 91,
-    y: 17 + row * 9,
+    x: (sideIndex === 0 ? 8.5 : 91.5) + xJitter,
+    y: 16 + row * 11 + yJitter,
+    scale: depth,
+    rotate: ((seed % 13) - 6) * 1.4,
   };
 }
 
-function galaxyStars(proposalId, count = 30) {
-  const seed = [...String(proposalId)].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
+function galaxyStars(proposalId, count = 28) {
+  const seed = hashSeed(proposalId);
   return Array.from({ length: count }, (_, index) => {
     const angle = index * 2.399963 + seed * 0.017;
     const radius = 7 + Math.sqrt((index + 1) / count) * 39;
@@ -27,42 +37,53 @@ function galaxyStars(proposalId, count = 30) {
 }
 
 /**
- * Decorative distant galaxies for inactive proposals (admin only).
- * Visual markers only — not navigation controls.
+ * Exploratory distant galaxies — interactive shortcuts into travelToGalaxy.
+ * Capped subset of inactive proposals; full catalog remains in the header dropdown.
  */
 export function DistantGalaxies({
   activeProposalId,
   catalog,
   reducedMotion = false,
+  disabled = false,
+  onNavigate,
 }) {
   const others = useMemo(
-    () => listEnabledProposals(catalog).filter((p) => p.id !== activeProposalId),
+    () => selectDistantProposals(activeProposalId, catalog, 4),
     [activeProposalId, catalog]
   );
 
   return (
-    <div className="distantGalaxies" aria-hidden="true">
+    <div className="distantGalaxies" aria-label="Nearby consensus galaxies">
       {others.map((p, i) => {
-        const pos = distantLayout(i);
+        const pos = distantLayout(p.id, i);
         const theme = p.visualTheme;
         const stars = galaxyStars(p.id);
+        const label = `Travel to ${p.title}: ${p.description}`;
         return (
-          <div
+          <button
             key={p.id}
-            className={`distantGalaxy distantGalaxy--decorative${
-              reducedMotion ? " distantGalaxy--static" : ""
-            }`}
+            type="button"
+            className={`distantGalaxy${reducedMotion ? " distantGalaxy--static" : ""}`}
+            disabled={disabled}
+            aria-label={label}
+            title={label}
+            onClick={() => {
+              if (disabled) return;
+              onNavigate?.(p.id);
+            }}
             style={{
               left: `${pos.x}%`,
               top: `${pos.y}%`,
               "--galaxy-accent": theme.accent,
               "--galaxy-glow": theme.distantGlow,
+              "--galaxy-scale": String(pos.scale),
+              "--galaxy-rotate": `${pos.rotate}deg`,
             }}
           >
             <span className="distantGalaxy__label">
               <strong>{p.title}</strong>
             </span>
-            <span className="distantGalaxy__core">
+            <span className="distantGalaxy__core" aria-hidden="true">
               <span className="distantGalaxy__dust" />
               <span className="distantGalaxy__arms" />
               {stars.map((star, starIndex) => (
@@ -80,7 +101,7 @@ export function DistantGalaxies({
               ))}
               <span className="distantGalaxy__bulge" />
             </span>
-          </div>
+          </button>
         );
       })}
     </div>
