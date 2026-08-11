@@ -34,14 +34,11 @@ export function getAdjacent(id: ProposalId, catalog?: ProposalConfig[]) {
 
 export function normalizeIncomingProposalId(
   raw: unknown,
-  adminGalaxies: boolean,
+  _allowMultiGalaxy: boolean,
   catalog?: ProposalConfig[]
 ): ProposalId {
   const list = listEnabledProposals(catalog);
   const id = resolveProposalId(raw, list, DEFAULT_PROPOSAL_ID);
-  if (adminGalaxies) {
-    if (list.some((p) => p.id === id)) return id;
-    return list[0]?.id || DEFAULT_PROPOSAL_ID;
-  }
-  return DEFAULT_PROPOSAL_ID;
+  if (list.some((p) => p.id === id)) return id;
+  return list[0]?.id || DEFAULT_PROPOSAL_ID;
 }

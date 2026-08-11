@@ -19,6 +19,8 @@ test("admin galaxy UI is lazy-loaded behind privileged multi-proposal catalog", 
   assert.doesNotMatch(appSrc, /ArrowLeft/);
   assert.doesNotMatch(appSrc, /ArrowRight/);
   assert.doesNotMatch(appSrc, /getAdjacent/);
+  assert.match(appSrc, /proposalCatalogReady && proposalCatalog\.filter/);
+  assert.match(appSrc, /:\s*700/);
 });
 
 test("brand area no longer keeps a legacy BIP-110 badge link", () => {
@@ -66,26 +68,23 @@ test("header BIP nav is a centered dropdown without prev/next controls", () => {
   assert.match(headerSrc, /galaxyHeaderNav__trigger/);
   assert.match(headerSrc, /galaxyHeaderNav__chevron/);
   assert.match(headerSrc, /galaxyHeaderNav__option/);
+  assert.match(headerSrc, /galaxyHeaderNav__descRow/);
+  assert.match(headerSrc, /visualTheme\?\.accent/);
+  assert.doesNotMatch(headerSrc, /p\.id === "bip110"/);
   assert.match(headerSrc, /Final snapshot/);
-  assert.match(headerSrc, /Admin preview/);
+  assert.match(headerSrc, /Ongoing/);
   assert.match(headerSrc, /Escape/);
   assert.match(headerSrc, /triggerRef/);
   assert.match(headerSrc, /restoreFocusAfterTravelRef/);
-  assert.match(headerSrc, /closeMenu\(\{ restoreFocus: true \}\)/);
-  assert.match(headerSrc, /closeMenu\(\{ restoreFocus: false \}\)/);
-  assert.match(headerSrc, /restoreFocusAfterTravelRef\.current = true/);
-  assert.match(headerSrc, /if \(disabled\) return;/);
-  assert.match(headerSrc, /if \(!restoreFocusAfterTravelRef\.current\) return;/);
-  assert.match(headerSrc, /restoreFocusAfterTravelRef\.current = false;/);
-  assert.match(headerSrc, /}, \[disabled\]\);/);
   assert.match(headerSrc, /Do not intercept Tab/);
   assert.doesNotMatch(headerSrc, /galaxyHeaderNav__side/);
   assert.doesNotMatch(headerSrc, /getAdjacent/);
   assert.doesNotMatch(headerSrc, /\bPrev\b|\bNext\b/);
   assert.doesNotMatch(headerSrc, /e\.key === "Tab"[\s\S]{0,80}preventDefault/);
+  assert.doesNotMatch(headerSrc, /position:\s*absolute/);
 });
 
-test("distant galaxies are decorative and hide under non-default account filters", () => {
+test("distant galaxies are interactive travel shortcuts with capped neighbors", () => {
   const distantSrc = fs.readFileSync(path.join(here, "DistantGalaxies.jsx"), "utf8");
   const headerSrc = fs.readFileSync(path.join(here, "GalaxyHeaderNav.jsx"), "utf8");
   const chromeSrc = fs.readFileSync(
@@ -94,29 +93,22 @@ test("distant galaxies are decorative and hide under non-default account filters
   );
   const appSrc = fs.readFileSync(path.join(here, "..", "App.jsx"), "utf8");
   const cssSrc = fs.readFileSync(path.join(here, "..", "index.css"), "utf8");
-  assert.match(distantSrc, /sideIndex === 0 \? 9 : 91/);
+  assert.match(distantSrc, /selectDistantProposals/);
+  assert.match(distantSrc, /onNavigate/);
+  assert.match(distantSrc, /<button/);
+  assert.match(distantSrc, /aria-label/);
+  assert.match(distantSrc, /Travel to/);
+  assert.doesNotMatch(distantSrc, /Travel affordance|Travel »/);
   assert.match(distantSrc, /distantGalaxy__label/);
-  assert.match(distantSrc, /distantGalaxy__arms/);
-  assert.match(distantSrc, /distantGalaxy__dust/);
-  assert.match(distantSrc, /distantGalaxy__star/);
-  assert.match(distantSrc, /aria-hidden="true"/);
-  assert.match(distantSrc, /distantGalaxy--decorative/);
-  assert.doesNotMatch(distantSrc, /onNavigate/);
-  assert.doesNotMatch(distantSrc, /<button/);
-  assert.doesNotMatch(distantSrc, /Travel/);
-  assert.match(cssSrc, /\.distantGalaxy__arms/);
-  assert.match(cssSrc, /\.distantGalaxy__dust/);
-  assert.match(cssSrc, /\.distantGalaxy__star/);
-  assert.match(cssSrc, /conic-gradient/);
-  assert.doesNotMatch(cssSrc, /\.edgeGalaxyNav\b/);
-  assert.match(headerSrc, /galaxyHeaderNav__description/);
-  assert.match(headerSrc, /galaxyHeaderNav__github/);
-  assert.match(headerSrc, /proposalGithubUrl/);
-  assert.match(headerSrc, /current\.description/);
-  assert.match(cssSrc, /\.galaxyHeaderNav__github/);
-  assert.match(cssSrc, /\.galaxyHeaderNav__tooltip/);
+  assert.match(cssSrc, /\.distantGalaxy:hover/);
+  assert.match(cssSrc, /scale\(calc\(var\(--galaxy-scale, 1\) \* 1\.08\)\)/);
+  assert.match(cssSrc, /--gx-par-fx/);
   assert.match(appSrc, /defaultAccountFilterActive/);
   assert.match(appSrc, /showDistantGalaxies=\{defaultAccountFilterActive\}/);
-  assert.match(chromeSrc, /showDistantGalaxies/);
-  assert.match(chromeSrc, /showDistantGalaxies \?/);
+  assert.match(appSrc, /statsActionLabel/);
+  assert.match(appSrc, /statsModalCopy/);
+  assert.match(appSrc, /statsForProposalId/);
+  assert.match(chromeSrc, /onNavigate=\{onNavigate\}/);
+  assert.match(headerSrc, /galaxyHeaderNav__github/);
+  assert.match(headerSrc, /galaxyHeaderNav__descRow/);
 });

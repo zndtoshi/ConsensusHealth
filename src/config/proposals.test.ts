@@ -11,6 +11,9 @@ import {
   proposalGithubUrl,
   resolveProposalId,
   adjacentProposals,
+  selectDistantProposals,
+  statisticsActionLabel,
+  statisticsModalCopy,
 } from "./proposals.js";
 import { normalizeIncomingProposalId } from "../utils/proposalNavigation.js";
 import { resolveThemeKey, getTheme } from "./proposalThemes.js";
@@ -30,11 +33,11 @@ test("parseProposalFromPathname reads /bip/:n", () => {
   assert.equal(parseProposalFromPathname("/"), DEFAULT_PROPOSAL_ID);
 });
 
-test("non-admin is forced to bip110", () => {
-  assert.equal(normalizeIncomingProposalId("bip54", false), "bip110");
-  assert.equal(normalizeIncomingProposalId("bip54", true), "bip54");
-  assert.equal(normalizeIncomingProposalId("bip460", false), "bip110");
-  assert.equal(normalizeIncomingProposalId("bip460", true), "bip460");
+test("non-admin can open public ongoing proposals from the accessible catalog", () => {
+  assert.equal(normalizeIncomingProposalId("bip54", false, FALLBACK_PROPOSALS), "bip54");
+  assert.equal(normalizeIncomingProposalId("bip54", true, FALLBACK_PROPOSALS), "bip54");
+  assert.equal(normalizeIncomingProposalId("bip460", false, FALLBACK_PROPOSALS), "bip460");
+  assert.equal(normalizeIncomingProposalId("bip460", true, FALLBACK_PROPOSALS), "bip460");
 });
 
 test("catalog order drives adjacency wrap", () => {
@@ -71,7 +74,7 @@ test("invalid URL proposal falls back to first accessible / default", () => {
     normalizeIncomingProposalId("bip999", true, FALLBACK_PROPOSALS),
     FALLBACK_PROPOSALS[0].id
   );
-  assert.equal(normalizeIncomingProposalId("bip54", false, FALLBACK_PROPOSALS), "bip110");
+  assert.equal(normalizeIncomingProposalId("bip54", false, FALLBACK_PROPOSALS), "bip54");
 });
 
 test("distant galaxies are every accessible non-active proposal", () => {
@@ -108,9 +111,30 @@ test("BIP-460 is present after BIP-448 in the fallback catalog", () => {
   assert.equal(bip460?.bipNumber, 460);
   assert.equal(bip460?.shortName, "BIP460");
   assert.equal(bip460?.title, "BIP-460");
-  assert.equal(bip460?.adminOnly, true);
+  assert.equal(bip460?.adminOnly, false);
   assert.equal(bip460?.order, 3);
   assert.equal(bip460?.themeKey, "nebula-yellow");
+  assert.equal(bip460?.status, "ongoing");
+  assert.equal(FALLBACK_PROPOSALS.find((p) => p.id === "bip110")?.status, "final");
+});
+
+test("selectDistantProposals prefers neighbors and caps at 4", () => {
+  const from110 = selectDistantProposals("bip110", FALLBACK_PROPOSALS, 4).map((p) => p.id);
+  assert.deepEqual(from110, ["bip460", "bip54", "bip448"]);
+  const from54 = selectDistantProposals("bip54", FALLBACK_PROPOSALS, 4).map((p) => p.id);
+  assert.ok(from54.includes("bip110"));
+  assert.ok(from54.includes("bip448"));
+  assert.equal(from54.length, 3);
+  assert.ok(!from54.includes("bip54"));
+  assert.equal(selectDistantProposals("bip110", FALLBACK_PROPOSALS, 2).length, 2);
+});
+
+test("statistics labels and modal copy follow proposal status", () => {
+  assert.equal(statisticsActionLabel(FALLBACK_PROPOSALS.find((p) => p.id === "bip110")), "Final Results");
+  assert.equal(statisticsActionLabel(FALLBACK_PROPOSALS.find((p) => p.id === "bip54")), "Statistics");
+  assert.equal(statisticsModalCopy(FALLBACK_PROPOSALS.find((p) => p.id === "bip110")).heading, "BIP-110 Final Results");
+  assert.equal(statisticsModalCopy(FALLBACK_PROPOSALS.find((p) => p.id === "bip54")).heading, "BIP-54 Statistics");
+  assert.match(statisticsModalCopy(FALLBACK_PROPOSALS.find((p) => p.id === "bip460")).subtitle, /ongoing/i);
 });
 
 test("nebula-yellow is a validated theme and BIP-460 uses its accents", () => {

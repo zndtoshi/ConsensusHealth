@@ -8,6 +8,9 @@ export type ProposalId = string;
 
 export type ProposalThemeKey = "nebula-red" | "nebula-cyan" | "nebula-violet" | "nebula-yellow";
 
+/** Validated proposal lifecycle — never apply arbitrary DB strings to UI/access. */
+export type ProposalStatus = "final" | "ongoing" | "draft";
+
 export type ProposalSeedConfig = {
   id: ProposalId;
   bipNumber: number;
@@ -16,8 +19,9 @@ export type ProposalSeedConfig = {
   description: string;
   order: number;
   enabled: boolean;
-  /** When true, only privileged admin (zndtoshi) may access. */
+  /** When true, only privileged admin (zndtoshi) may access (draft/unpublished). */
   adminOnly: boolean;
+  status: ProposalStatus;
   themeKey: ProposalThemeKey;
   emptyMessage: string;
 };
@@ -39,6 +43,7 @@ export const PROPOSAL_SEEDS: ProposalSeedConfig[] = [
     order: 0,
     enabled: true,
     adminOnly: false,
+    status: "final",
     themeKey: "nebula-red",
     emptyMessage: "Be the first to map this consensus galaxy.",
   },
@@ -50,7 +55,8 @@ export const PROPOSAL_SEEDS: ProposalSeedConfig[] = [
     description: "Consensus Cleanup — fixes long-standing consensus vulnerabilities",
     order: 1,
     enabled: true,
-    adminOnly: true,
+    adminOnly: false,
+    status: "ongoing",
     themeKey: "nebula-cyan",
     emptyMessage: "Be the first to map this consensus galaxy.",
   },
@@ -62,7 +68,8 @@ export const PROPOSAL_SEEDS: ProposalSeedConfig[] = [
     description: "Taproot-native rebindable transactions for scalable payment protocols",
     order: 2,
     enabled: true,
-    adminOnly: true,
+    adminOnly: false,
+    status: "ongoing",
     themeKey: "nebula-violet",
     emptyMessage: "Be the first to map this consensus galaxy.",
   },
@@ -74,7 +81,8 @@ export const PROPOSAL_SEEDS: ProposalSeedConfig[] = [
     description: "Cross-Input Signature Aggregation",
     order: 3,
     enabled: true,
-    adminOnly: true,
+    adminOnly: false,
+    status: "ongoing",
     themeKey: "nebula-yellow",
     emptyMessage: "Be the first to map this consensus galaxy.",
   },
@@ -82,6 +90,18 @@ export const PROPOSAL_SEEDS: ProposalSeedConfig[] = [
 
 const BY_ID = new Map(PROPOSAL_SEEDS.map((p) => [p.id, p]));
 const BY_NUMBER = new Map(PROPOSAL_SEEDS.map((p) => [p.bipNumber, p]));
+
+export function resolveProposalStatus(raw: unknown): ProposalStatus {
+  const key = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  if (key === "final" || key === "ongoing" || key === "draft") return key;
+  return "ongoing";
+}
+
+export function isFinalProposalStatus(status: unknown): boolean {
+  return resolveProposalStatus(status) === "final";
+}
 
 export function getProposalSeedById(id: unknown): ProposalSeedConfig | null {
   const key = String(id ?? "")
@@ -143,6 +163,7 @@ export type PublicProposalDto = {
   description: string;
   order: number;
   admin_only: boolean;
+  status: ProposalStatus;
   theme_key: ProposalThemeKey;
   empty_message: string;
 };

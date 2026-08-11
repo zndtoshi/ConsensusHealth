@@ -8,6 +8,8 @@ import { getTheme, resolveThemeKey, type ProposalThemeKey, type ProposalVisualTh
 
 export type ProposalId = string;
 
+export type ProposalStatus = "final" | "ongoing" | "draft";
+
 export type ProposalConfig = {
   id: ProposalId;
   bipNumber: number;
@@ -17,6 +19,7 @@ export type ProposalConfig = {
   order: number;
   enabled: boolean;
   adminOnly: boolean;
+  status: ProposalStatus;
   themeKey: ProposalThemeKey;
   visualTheme: ProposalVisualTheme;
   emptyMessage: string;
@@ -37,6 +40,22 @@ export function proposalGithubUrl(id: unknown): string | null {
   return PROPOSAL_GITHUB_URLS[key] ?? null;
 }
 
+export function resolveProposalStatus(raw: unknown): ProposalStatus {
+  const key = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  if (key === "final" || key === "ongoing" || key === "draft") return key;
+  return "ongoing";
+}
+
+export function isFinalProposal(proposal: { status?: unknown } | null | undefined): boolean {
+  return resolveProposalStatus(proposal?.status) === "final";
+}
+
+export function isOngoingProposal(proposal: { status?: unknown } | null | undefined): boolean {
+  return resolveProposalStatus(proposal?.status) === "ongoing";
+}
+
 /** Offline / pre-fetch fallback — keep in sync with server seed catalog. */
 export const FALLBACK_PROPOSALS: ProposalConfig[] = [
   {
@@ -48,6 +67,7 @@ export const FALLBACK_PROPOSALS: ProposalConfig[] = [
     order: 0,
     enabled: true,
     adminOnly: false,
+    status: "final",
     themeKey: "nebula-red",
     visualTheme: getTheme("nebula-red"),
     emptyMessage: "Be the first to map this consensus galaxy.",
@@ -60,7 +80,8 @@ export const FALLBACK_PROPOSALS: ProposalConfig[] = [
     description: "Consensus Cleanup — fixes long-standing consensus vulnerabilities",
     order: 1,
     enabled: true,
-    adminOnly: true,
+    adminOnly: false,
+    status: "ongoing",
     themeKey: "nebula-cyan",
     visualTheme: getTheme("nebula-cyan"),
     emptyMessage: "Be the first to map this consensus galaxy.",
@@ -73,7 +94,8 @@ export const FALLBACK_PROPOSALS: ProposalConfig[] = [
     description: "Taproot-native rebindable transactions for scalable payment protocols",
     order: 2,
     enabled: true,
-    adminOnly: true,
+    adminOnly: false,
+    status: "ongoing",
     themeKey: "nebula-violet",
     visualTheme: getTheme("nebula-violet"),
     emptyMessage: "Be the first to map this consensus galaxy.",
@@ -86,7 +108,8 @@ export const FALLBACK_PROPOSALS: ProposalConfig[] = [
     description: "Cross-Input Signature Aggregation",
     order: 3,
     enabled: true,
-    adminOnly: true,
+    adminOnly: false,
+    status: "ongoing",
     themeKey: "nebula-yellow",
     visualTheme: getTheme("nebula-yellow"),
     emptyMessage: "Be the first to map this consensus galaxy.",
@@ -105,6 +128,7 @@ export type ProposalApiItem = {
   description: string;
   order: number;
   admin_only: boolean;
+  status?: string;
   theme_key: string;
   empty_message: string;
 };
@@ -120,6 +144,7 @@ export function mapApiProposal(item: ProposalApiItem): ProposalConfig {
     order: Number(item.order) || 0,
     enabled: true,
     adminOnly: Boolean(item.admin_only),
+    status: resolveProposalStatus(item.status),
     themeKey,
     visualTheme: getTheme(themeKey),
     emptyMessage: String(item.empty_message || "Be the first to map this consensus galaxy."),
@@ -160,6 +185,37 @@ export function listEnabledProposals(catalog: ProposalConfig[] = FALLBACK_PROPOS
   return [...catalog].filter((p) => p.enabled).sort((a, b) => a.order - b.order);
 }
 
+/**
+ * Pick up to `limit` inactive proposals for distant-galaxy display.
+ * Prefers nearest previous/next neighbors around the active proposal (wrapping).
+ */
+export function selectDistantProposals(
+  activeProposalId: unknown,
+  catalog: ProposalConfig[] = FALLBACK_PROPOSALS,
+  limit = 4
+): ProposalConfig[] {
+  const list = listEnabledProposals(catalog);
+  if (list.length <= 1) return [];
+  const activeIdx = Math.max(0, list.findIndex((p) => p.id === String(activeProposalId ?? "").toLowerCase()));
+  const cap = Math.max(0, Math.min(4, Math.trunc(limit) || 4, list.length - 1));
+  const picked: ProposalConfig[] = [];
+  const seen = new Set<string>();
+  for (let step = 1; picked.length < cap && step < list.length; step += 1) {
+    const candidates = [
+      list[(activeIdx - step + list.length) % list.length],
+      list[(activeIdx + step) % list.length],
+    ];
+    for (const candidate of candidates) {
+      if (!candidate || candidate.id === list[activeIdx]?.id) continue;
+      if (seen.has(candidate.id)) continue;
+      seen.add(candidate.id);
+      picked.push(candidate);
+      if (picked.length >= cap) break;
+    }
+  }
+  return picked;
+}
+
 export function adjacentProposals(
   id: ProposalId,
   catalog: ProposalConfig[] = FALLBACK_PROPOSALS
@@ -184,4 +240,25 @@ export function parseProposalFromPathname(
   const m = String(pathname || "").match(/\/bip\/(\d+)/i);
   if (m) return resolveProposalId(m[1], catalog);
   return DEFAULT_PROPOSAL_ID;
+}
+
+export function statisticsActionLabel(proposal: { status?: unknown; title?: string } | null | undefined): string {
+  return isFinalProposal(proposal) ? "Final Results" : "Statistics";
+}
+
+export function statisticsModalCopy(proposal: { status?: unknown; title?: string } | null | undefined): {
+  heading: string;
+  subtitle: string;
+} {
+  const title = String(proposal?.title || "Proposal").trim() || "Proposal";
+  if (isFinalProposal(proposal)) {
+    return {
+      heading: `${title} Final Results`,
+      subtitle: "Final positions · preserved historical snapshot",
+    };
+  }
+  return {
+    heading: `${title} Statistics`,
+    subtitle: "Current positions · ongoing proposal",
+  };
 }

@@ -10,6 +10,8 @@ export function StatisticsModal({
   error,
   apiBase = "",
   proposalId = "bip110",
+  heading = "Statistics",
+  subtitle = "Current positions",
   onRetryHistory,
 }: {
   open: boolean;
@@ -19,6 +21,8 @@ export function StatisticsModal({
   error?: string;
   apiBase?: string;
   proposalId?: string;
+  heading?: string;
+  subtitle?: string;
   onRetryHistory?: () => void;
 }) {
   useEffect(() => {
@@ -72,8 +76,8 @@ export function StatisticsModal({
           }}
         >
           <div>
-            <div style={{ fontSize: 18, fontWeight: 900, color: "rgba(255,255,255,0.95)" }}>BIP-110 Final Results</div>
-            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.60)" }}>Final positions · preserved historical snapshot</div>
+            <div style={{ fontSize: 18, fontWeight: 900, color: "rgba(255,255,255,0.95)" }}>{heading}</div>
+            <div style={{ fontSize: 12, color: "rgba(255,255,255,0.60)" }}>{subtitle}</div>
           </div>
 
           <button

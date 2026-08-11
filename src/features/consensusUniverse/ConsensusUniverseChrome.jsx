@@ -3,7 +3,7 @@ import { GalaxyHeaderNav } from "../../components/GalaxyHeaderNav";
 import { DistantGalaxies } from "../../components/DistantGalaxies";
 import { GalaxyTravelOverlay } from "../../components/GalaxyTravelOverlay";
 
-/** Lazy-loaded admin-only galaxy chrome (header + overlays). */
+/** Lazy-loaded multi-galaxy chrome (header + overlays). */
 export default function ConsensusUniverseChrome({
   slot,
   proposalId,
@@ -36,6 +36,8 @@ export default function ConsensusUniverseChrome({
           activeProposalId={proposalId}
           catalog={catalog}
           reducedMotion={reducedMotion}
+          disabled={disabled}
+          onNavigate={onNavigate}
         />
       ) : null}
       <GalaxyTravelOverlay

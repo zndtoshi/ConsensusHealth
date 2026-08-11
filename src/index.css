@@ -1323,7 +1323,7 @@ html[data-browser="firefox"] .stanceGlow {
   justify-items: center;
   gap: 3px;
   width: 100%;
-  padding: 4px 28px;
+  padding: 4px 8px;
   border-radius: 12px;
   outline: none;
   transition: background 160ms ease;
@@ -1376,23 +1376,21 @@ html[data-browser="firefox"] .stanceGlow {
 }
 
 .galaxyHeaderNav__github {
-  position: absolute;
-  top: 6px;
-  right: 4px;
+  position: static;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
   color: rgba(226, 232, 240, 0.58);
   border-radius: 999px;
   transition: color 160ms ease, background 160ms ease, transform 160ms ease;
-  z-index: 2;
 }
 
 .galaxyHeaderNav__github svg {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
 }
 
 .galaxyHeaderNav__github:hover,
@@ -1403,8 +1401,17 @@ html[data-browser="firefox"] .stanceGlow {
   transform: translateY(-1px);
 }
 
+.galaxyHeaderNav__descRow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: min(420px, 86vw);
+  margin-top: 2px;
+}
+
 .galaxyHeaderNav__description {
-  max-width: min(390px, 44vw);
+  max-width: min(360px, 72vw);
   color: rgba(226, 232, 240, 0.63);
   font-size: 10px;
   font-weight: 650;
@@ -1470,6 +1477,7 @@ html[data-browser="firefox"] .stanceGlow {
 .galaxyHeaderNav__optionTitle strong {
   font-weight: 800;
   letter-spacing: 0.02em;
+  color: var(--option-accent, #f8fafc);
 }
 
 .galaxyHeaderNav__check,
@@ -1483,14 +1491,14 @@ html[data-browser="firefox"] .stanceGlow {
 
 .galaxyHeaderNav__optionDesc {
   padding-left: 18px;
-  color: rgba(226, 232, 240, 0.72);
+  color: color-mix(in srgb, var(--option-accent, #94a3b8) 40%, rgba(226, 232, 240, 0.7));
   font-size: 11px;
   line-height: 1.35;
 }
 
 .galaxyHeaderNav__optionStatus {
   padding-left: 18px;
-  color: rgba(226, 232, 240, 0.52);
+  color: color-mix(in srgb, var(--option-accent, #94a3b8) 30%, rgba(226, 232, 240, 0.5));
   font-size: 10px;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -1548,19 +1556,47 @@ html[data-browser="firefox"] .stanceGlow {
   inset: 0;
   pointer-events: none;
   z-index: 5;
+  transform: translate3d(var(--gx-par-fx, 0px), var(--gx-par-fy, 0px), 0);
+  will-change: transform;
 }
 
-.distantGalaxy,
-.distantGalaxy--decorative {
+.distantGalaxy {
   position: absolute;
   width: 112px;
   height: 86px;
   margin: -43px 0 0 -56px;
   border: none;
   background: transparent;
-  cursor: default;
-  pointer-events: none;
+  cursor: pointer;
+  pointer-events: auto;
   padding: 0;
+  opacity: 0.52;
+  filter: saturate(0.72) blur(0.35px);
+  transform: scale(var(--galaxy-scale, 1)) rotate(var(--galaxy-rotate, 0deg));
+  transition:
+    opacity 180ms ease,
+    filter 180ms ease,
+    transform 220ms ease;
+}
+
+.distantGalaxy:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.distantGalaxy:hover:not(:disabled),
+.distantGalaxy:focus-visible:not(:disabled) {
+  opacity: 1;
+  filter: saturate(1) blur(0);
+  outline: none;
+  transform: scale(calc(var(--galaxy-scale, 1) * 1.08)) rotate(var(--galaxy-rotate, 0deg));
+}
+
+.distantGalaxy--static:hover:not(:disabled),
+.distantGalaxy--static:focus-visible:not(:disabled) {
+  transform: scale(var(--galaxy-scale, 1)) rotate(var(--galaxy-rotate, 0deg));
+  filter: saturate(1) blur(0);
+  opacity: 1;
 }
 
 .distantGalaxy__core {
@@ -1576,9 +1612,15 @@ html[data-browser="firefox"] .stanceGlow {
     radial-gradient(ellipse at center, rgba(255, 255, 255, 0.44) 0 3%, transparent 14%),
     conic-gradient(from 18deg at 50% 50%, transparent 0 8%, var(--galaxy-accent) 11%, transparent 18% 36%, var(--galaxy-glow) 43%, transparent 51% 68%, var(--galaxy-accent) 76%, transparent 84% 100%);
   filter: drop-shadow(0 0 10px var(--galaxy-glow));
-  opacity: 0.68;
+  opacity: 0.62;
   transform: rotate(-14deg) scaleY(0.72);
-  transition: opacity 180ms ease, transform 220ms ease, filter 180ms ease;
+  transition: opacity 180ms ease, filter 180ms ease;
+}
+
+.distantGalaxy:hover:not(:disabled) .distantGalaxy__core,
+.distantGalaxy:focus-visible:not(:disabled) .distantGalaxy__core {
+  opacity: 1;
+  filter: drop-shadow(0 0 15px var(--galaxy-glow));
 }
 
 .distantGalaxy__dust {
@@ -1634,7 +1676,7 @@ html[data-browser="firefox"] .stanceGlow {
   transform: translateX(-50%);
   display: grid;
   gap: 1px;
-  color: rgba(226, 232, 240, 0.42);
+  color: rgba(226, 232, 240, 0.28);
   font-size: 8px;
   line-height: 1.2;
   letter-spacing: 0.14em;
@@ -1642,13 +1684,24 @@ html[data-browser="firefox"] .stanceGlow {
   text-transform: uppercase;
   text-shadow: 0 0 10px rgba(15, 23, 42, 0.95);
   transition: color 180ms ease, opacity 180ms ease;
+  pointer-events: none;
 }
 
 .distantGalaxy__label strong {
-  color: color-mix(in srgb, var(--galaxy-accent) 54%, rgba(226, 232, 240, 0.45));
+  color: color-mix(in srgb, var(--galaxy-accent) 38%, rgba(226, 232, 240, 0.32));
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.1em;
+}
+
+.distantGalaxy:hover:not(:disabled) .distantGalaxy__label,
+.distantGalaxy:focus-visible:not(:disabled) .distantGalaxy__label {
+  color: rgba(226, 232, 240, 0.78);
+}
+
+.distantGalaxy:hover:not(:disabled) .distantGalaxy__label strong,
+.distantGalaxy:focus-visible:not(:disabled) .distantGalaxy__label strong {
+  color: color-mix(in srgb, var(--galaxy-accent) 72%, rgba(226, 232, 240, 0.55));
 }
 
 .galaxyTravelOverlay {
@@ -1666,6 +1719,7 @@ html[data-browser="firefox"] .stanceGlow {
   background:
     radial-gradient(circle at 18% 30%, rgba(255, 255, 255, 0.05) 0%, transparent 42%),
     radial-gradient(circle at 78% 68%, rgba(255, 255, 255, 0.035) 0%, transparent 40%);
+  transform: translate3d(var(--gx-par-nx, 0px), var(--gx-par-ny, 0px), 0);
   will-change: transform;
 }
 

@@ -37,15 +37,15 @@ test("enabled proposals include bip110/54/448/460 in display order", () => {
   );
 });
 
-test("resolveProposalAccess allows bip110 for everyone; other BIPs admin-only", () => {
+test("resolveProposalAccess allows public galaxies for everyone; draft would stay admin-only", () => {
   assert.equal(resolveProposalAccess({ rawProposal: "bip110", sessionHandle: "alice" }).allowed, true);
-  assert.equal(resolveProposalAccess({ rawProposal: "bip54", sessionHandle: "alice" }).allowed, false);
+  assert.equal(resolveProposalAccess({ rawProposal: "bip54", sessionHandle: "alice" }).allowed, true);
   assert.equal(resolveProposalAccess({ rawProposal: "bip54", sessionHandle: "zndtoshi" }).allowed, true);
   assert.equal(resolveProposalAccess({ rawProposal: "448", sessionHandle: "@ZndToshi" }).allowed, true);
-  assert.equal(resolveProposalAccess({ rawProposal: "bip448", sessionHandle: null }).allowed, false);
-  assert.equal(resolveProposalAccess({ rawProposal: "bip460", sessionHandle: "alice" }).allowed, false);
+  assert.equal(resolveProposalAccess({ rawProposal: "bip448", sessionHandle: null }).allowed, true);
+  assert.equal(resolveProposalAccess({ rawProposal: "bip460", sessionHandle: "alice" }).allowed, true);
   assert.equal(resolveProposalAccess({ rawProposal: "460", sessionHandle: "zndtoshi" }).allowed, true);
-  assert.equal(resolveProposalAccess({ rawProposal: "BIP-460", sessionHandle: null }).allowed, false);
+  assert.equal(resolveProposalAccess({ rawProposal: "BIP-460", sessionHandle: null }).allowed, true);
 });
 
 test("ensureProposalSchema uses advisory lock and migration version", () => {
@@ -67,4 +67,7 @@ test("nebula-yellow is a validated server theme key used by BIP-460", () => {
   assert.equal(isValidThemeKey("nebula-red"), true);
   assert.equal(isValidThemeKey("not-a-theme"), false);
   assert.equal(getProposalSeedById("bip460")?.themeKey, "nebula-yellow");
+  assert.equal(getProposalSeedById("bip460")?.status, "ongoing");
+  assert.equal(getProposalSeedById("bip110")?.status, "final");
+  assert.equal(getProposalSeedById("bip54")?.adminOnly, false);
 });

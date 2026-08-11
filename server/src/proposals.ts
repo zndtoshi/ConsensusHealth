@@ -13,6 +13,7 @@ import {
   DEFAULT_PROPOSAL_ID,
   listEnabledProposalSeeds,
   resolveProposalId,
+  resolveProposalStatus,
   tryResolveProposalId,
   type ProposalId,
   type PublicProposalDto,
@@ -26,8 +27,11 @@ export {
   getProposalByBipNumber,
   listEnabledProposals,
   resolveProposalId,
+  resolveProposalStatus,
+  isFinalProposalStatus,
   CONSENSUS_UNIVERSE_MIGRATION_VERSION,
   type ProposalId,
+  type ProposalStatus,
   type PublicProposalDto,
 } from "./proposalCatalog.js";
 
@@ -37,7 +41,7 @@ export type ProposalAccess = {
   allowed: boolean;
 };
 
-/** Resolve proposal from query/body; admin_only proposals require zndtoshi. */
+/** Resolve proposal from query/body; admin_only / draft proposals require zndtoshi. */
 export function resolveProposalAccess(opts: {
   rawProposal: unknown;
   sessionHandle: unknown;
@@ -45,7 +49,7 @@ export function resolveProposalAccess(opts: {
 }): ProposalAccess {
   const proposalId = resolveProposalId(opts.rawProposal, DEFAULT_PROPOSAL_ID);
   const isAdmin = isPrivilegedManualEditorHandle(opts.sessionHandle);
-  let adminOnly = proposalId !== DEFAULT_PROPOSAL_ID;
+  let adminOnly = false;
   if (opts.adminOnlyById?.has(proposalId)) {
     adminOnly = Boolean(opts.adminOnlyById.get(proposalId));
   } else {
@@ -62,9 +66,9 @@ async function syncProposalCatalog(client: PoolClient): Promise<void> {
       `
       INSERT INTO proposals (
         id, slug, bip_number, name, description, display_order, enabled,
-        admin_only, theme_key, empty_message, updated_at
+        admin_only, status, theme_key, empty_message, updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
       ON CONFLICT (id) DO UPDATE SET
         slug = EXCLUDED.slug,
         bip_number = EXCLUDED.bip_number,
@@ -73,6 +77,7 @@ async function syncProposalCatalog(client: PoolClient): Promise<void> {
         display_order = EXCLUDED.display_order,
         enabled = EXCLUDED.enabled,
         admin_only = EXCLUDED.admin_only,
+        status = EXCLUDED.status,
         theme_key = EXCLUDED.theme_key,
         empty_message = EXCLUDED.empty_message,
         updated_at = now()
@@ -86,6 +91,7 @@ async function syncProposalCatalog(client: PoolClient): Promise<void> {
         p.order,
         p.enabled,
         p.adminOnly,
+        p.status,
         p.themeKey,
         p.emptyMessage,
       ]
@@ -113,6 +119,7 @@ async function ensureSchemaObjects(client: PoolClient): Promise<void> {
       display_order INTEGER NOT NULL DEFAULT 0,
       enabled BOOLEAN NOT NULL DEFAULT TRUE,
       admin_only BOOLEAN NOT NULL DEFAULT TRUE,
+      status TEXT NOT NULL DEFAULT 'ongoing',
       theme_key TEXT NOT NULL DEFAULT 'nebula-red',
       empty_message TEXT NOT NULL DEFAULT 'Be the first to map this consensus galaxy.',
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -120,6 +127,7 @@ async function ensureSchemaObjects(client: PoolClient): Promise<void> {
     );
   `);
   await client.query(`ALTER TABLE proposals ADD COLUMN IF NOT EXISTS admin_only BOOLEAN NOT NULL DEFAULT TRUE`);
+  await client.query(`ALTER TABLE proposals ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ongoing'`);
   await client.query(`ALTER TABLE proposals ADD COLUMN IF NOT EXISTS theme_key TEXT NOT NULL DEFAULT 'nebula-red'`);
   await client.query(
     `ALTER TABLE proposals ADD COLUMN IF NOT EXISTS empty_message TEXT NOT NULL DEFAULT 'Be the first to map this consensus galaxy.'`
@@ -334,7 +342,7 @@ export async function loadAccessibleProposals(
     `
     SELECT
       id, slug, bip_number, name, description, display_order,
-      admin_only, theme_key, empty_message
+      admin_only, status, theme_key, empty_message
     FROM proposals
     WHERE enabled = TRUE
     ORDER BY display_order ASC, bip_number ASC
@@ -345,6 +353,8 @@ export async function loadAccessibleProposals(
     const adminOnly = Boolean(r.admin_only);
     if (adminOnly && !isAdmin) continue;
     const themeKey = isValidThemeKey(r.theme_key) ? r.theme_key : "nebula-red";
+    const seed = listEnabledProposalSeeds().find((p) => p.id === String(r.id));
+    const status = resolveProposalStatus(r.status ?? seed?.status);
     items.push({
       id: String(r.id),
       slug: String(r.slug || r.id),
@@ -354,6 +364,7 @@ export async function loadAccessibleProposals(
       description: String(r.description || ""),
       order: Number(r.display_order) || 0,
       admin_only: adminOnly,
+      status,
       theme_key: themeKey,
       empty_message: String(r.empty_message || "Be the first to map this consensus galaxy."),
     });
