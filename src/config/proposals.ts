@@ -28,6 +28,8 @@ const PROPOSAL_GITHUB_URLS: Record<string, string> = {
   bip54: "https://github.com/bitcoin/bips/blob/master/bip-0054.md",
   bip110: "https://github.com/bitcoin/bips/blob/master/bip-0110.mediawiki",
   bip448: "https://github.com/bitcoin/bips/blob/master/bip-0448.md",
+  bip460:
+    "https://github.com/fjahr/bips/blob/cf0d4f2142cd0504b16e86739167b1f7ab9a3a06/bip-XXXX.mediawiki",
 };
 
 export function proposalGithubUrl(id: unknown): string | null {
@@ -74,6 +76,19 @@ export const FALLBACK_PROPOSALS: ProposalConfig[] = [
     adminOnly: true,
     themeKey: "nebula-violet",
     visualTheme: getTheme("nebula-violet"),
+    emptyMessage: "Be the first to map this consensus galaxy.",
+  },
+  {
+    id: "bip460",
+    bipNumber: 460,
+    shortName: "BIP460",
+    title: "BIP-460",
+    description: "Cross-Input Signature Aggregation",
+    order: 3,
+    enabled: true,
+    adminOnly: true,
+    themeKey: "nebula-yellow",
+    visualTheme: getTheme("nebula-yellow"),
     emptyMessage: "Be the first to map this consensus galaxy.",
   },
 ];

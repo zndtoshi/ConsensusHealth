@@ -45,7 +45,7 @@ Internal notes for the multi-proposal (galaxy) data model and migrations.
 ## Adding another proposal
 
 1. Add a seed entry in `server/src/proposalCatalog.ts` (`PROPOSAL_SEEDS`) with `adminOnly`, `themeKey`, copy, and display order.
-2. If needed, add an approved theme in `src/config/proposalThemes.ts` (`nebula-red` | `nebula-cyan` | `nebula-violet` or a new validated key). Never apply raw DB CSS.
+2. If needed, add an approved theme in `src/config/proposalThemes.ts` (`nebula-red` | `nebula-cyan` | `nebula-violet` | `nebula-yellow` or a new validated key). Never apply raw DB CSS.
 3. Deploy; boot migration syncs the `proposals` table. No new proposal-specific API routes should normally be required.
 4. Access policy comes from `admin_only` / `enabled` on the proposal row (seed sync re-applies known seed values on boot).
 5. Confirm seed policy: only BIP110 unions static seed JSON; new galaxies start empty (no seeds).

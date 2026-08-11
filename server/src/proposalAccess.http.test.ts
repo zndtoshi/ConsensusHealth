@@ -57,7 +57,7 @@ function makeMiniApp(mode: "sync" | "async", pool?: { query: Function }) {
     res.json({
       admin_galaxies: isAdmin,
       items: isAdmin
-        ? [{ id: "bip110" }, { id: "bip54" }, { id: "bip448" }]
+        ? [{ id: "bip110" }, { id: "bip54" }, { id: "bip448" }, { id: "bip460" }]
         : [{ id: "bip110" }],
     });
   });
@@ -84,7 +84,7 @@ async function withServer(app: express.Express, fn: (base: string) => Promise<vo
   }
 }
 
-test("HTTP: ordinary user blocked from bip54/bip448; bip110 allowed", async () => {
+test("HTTP: ordinary user blocked from bip54/bip448/bip460; bip110 allowed", async () => {
   const app = makeMiniApp("sync");
   await withServer(app, async (base) => {
     const h = { "x-test-handle": "alice", "content-type": "application/json" };
@@ -94,6 +94,8 @@ test("HTTP: ordinary user blocked from bip54/bip448; bip110 allowed", async () =
     assert.equal(deny54.status, 403);
     const deny448 = await fetch(`${base}/api/stance-history?proposal=448`, { headers: h });
     assert.equal(deny448.status, 403);
+    const deny460 = await fetch(`${base}/api/community?proposal=bip460`, { headers: h });
+    assert.equal(deny460.status, 403);
     const denyWrite = await fetch(`${base}/api/stance`, {
       method: "POST",
       headers: h,
@@ -116,17 +118,17 @@ test("HTTP: unauthenticated cannot access bip54", async () => {
   });
 });
 
-test("HTTP: zndtoshi (mixed case) can access all three", async () => {
+test("HTTP: zndtoshi (mixed case) can access all seeded galaxies", async () => {
   const app = makeMiniApp("sync");
   await withServer(app, async (base) => {
     const h = { "x-test-handle": "@ZndToshi" };
-    for (const p of ["bip110", "bip54", "bip448"]) {
+    for (const p of ["bip110", "bip54", "bip448", "bip460"]) {
       const res = await fetch(`${base}/api/community?proposal=${p}`, { headers: h });
       assert.equal(res.status, 200, p);
     }
     const proposals = await fetch(`${base}/api/proposals`, { headers: h }).then((r) => r.json());
     assert.equal(proposals.admin_galaxies, true);
-    assert.equal(proposals.items.length, 3);
+    assert.equal(proposals.items.length, 4);
   });
 });
 
