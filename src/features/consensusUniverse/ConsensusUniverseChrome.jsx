@@ -15,7 +15,7 @@ export default function ConsensusUniverseChrome({
   travel,
   fromProposal,
   toProposal,
-  showNavigation = true,
+  showDistantGalaxies = true,
 }) {
   if (slot === "header") {
     return (
@@ -24,7 +24,6 @@ export default function ConsensusUniverseChrome({
         catalog={catalog}
         disabled={disabled}
         onNavigate={onNavigate}
-        showNavigation={showNavigation}
       />
     );
   }
@@ -32,13 +31,13 @@ export default function ConsensusUniverseChrome({
   return (
     <>
       <div ref={parallaxRef} className="galaxyParallaxLayer" aria-hidden="true" />
-      <DistantGalaxies
-        activeProposalId={proposalId}
-        catalog={catalog}
-        disabled={disabled}
-        onNavigate={onNavigate}
-        reducedMotion={reducedMotion}
-      />
+      {showDistantGalaxies ? (
+        <DistantGalaxies
+          activeProposalId={proposalId}
+          catalog={catalog}
+          reducedMotion={reducedMotion}
+        />
+      ) : null}
       <GalaxyTravelOverlay
         active={Boolean(travel)}
         fromProposal={fromProposal}

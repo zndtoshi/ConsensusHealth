@@ -40,7 +40,6 @@ import {
   normalizeIncomingProposalId,
   readProposalIdFromLocation,
   writeProposalIdToLocation,
-  getAdjacent,
 } from "./utils/proposalNavigation";
 import { fetchAccessibleProposals } from "./api/proposals";
 import { usePrefersReducedMotion } from "./hooks/usePrefersReducedMotion";
@@ -1597,6 +1596,13 @@ export default function App() {
   const followerFilterActive =
     plebsMode || influencersMode || joinDateFilterActive || seedOnlyMode || selfReportedMode;
 
+  const defaultAccountFilterActive =
+    !plebsMode &&
+    !influencersMode &&
+    !joinDateFilterActive &&
+    !seedOnlyMode &&
+    !selfReportedMode;
+
   const accountByHandle = useMemo(() => {
     const m = new Map();
     for (const a of visibleAccounts) {
@@ -2343,25 +2349,6 @@ export default function App() {
   useEffect(() => () => {
     if (travelCleanupRef.current) travelCleanupRef.current();
   }, []);
-
-  useEffect(() => {
-    if (!adminGalaxiesEnabled) return undefined;
-    function onKey(e) {
-      if (e.defaultPrevented) return;
-      const tag = String(e.target?.tagName || "").toLowerCase();
-      if (tag === "input" || tag === "textarea" || e.target?.isContentEditable) return;
-      if (galaxyTravelLockRef.current) return;
-      if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        travelToGalaxy(getAdjacent(activeProposalId, proposalCatalog).prev.id);
-      } else if (e.key === "ArrowRight") {
-        e.preventDefault();
-        travelToGalaxy(getAdjacent(activeProposalId, proposalCatalog).next.id);
-      }
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [adminGalaxiesEnabled, activeProposalId, proposalCatalog, travelToGalaxy]);
 
   // Defer the mentions CSV (462 KB) + PapaParse: it is only needed to show a
   // selected user's tweets, not for first paint. Dynamically import PapaParse so
@@ -6019,22 +6006,6 @@ export default function App() {
       <div ref={headerRef} className="appHeader" style={styles.header}>
         <div className="appHeader__brand" style={styles.brandWrap}>
           <div style={styles.title}>Consensus Health</div>
-          <a
-            className="bipTagLink"
-            href="https://github.com/bitcoin/bips/blob/master/bip-0110.mediawiki"
-            target="_blank"
-            rel="noopener noreferrer"
-            title="View the official BIP-110 proposal on GitHub"
-            aria-label="Open official BIP-110 proposal on GitHub"
-          >
-            <span>bip110</span>
-            <svg className="bipTagLink__icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-              <path
-                fill="currentColor"
-                d="M6.75 2a.75.75 0 0 0 0 1.5h4.69L3.22 11.72a.75.75 0 1 0 1.06 1.06L12.5 4.56v4.69a.75.75 0 0 0 1.5 0V2.75A.75.75 0 0 0 13.25 2H6.75Z"
-              />
-            </svg>
-          </a>
         </div>
         <div
           ref={searchWrapRef}
@@ -6108,7 +6079,6 @@ export default function App() {
                 catalog={proposalCatalog}
                 disabled={Boolean(galaxyTravel)}
                 onNavigate={travelToGalaxy}
-                showNavigation={proposalCatalog.filter((p) => p.enabled).length > 1}
               />
             </Suspense>
           ) : null}
@@ -6143,15 +6113,6 @@ export default function App() {
                   {selectedHeaderStance || "unlabeled"}
                 </span>
               </div>
-              <button
-                type="button"
-                className="selectedUserCard__close"
-                onClick={() => setSelectedHandle(null)}
-                title="Clear selection"
-                aria-label="Clear selected user"
-              >
-                ×
-              </button>
             </div>
           ) : null}
         </div>
@@ -6505,12 +6466,12 @@ export default function App() {
                     proposalId={activeProposalId}
                     catalog={proposalCatalog}
                     disabled={Boolean(galaxyTravel)}
-                    onNavigate={travelToGalaxy}
                     reducedMotion={prefersGalaxyReducedMotion}
                     parallaxRef={parallaxLayerRef}
                     travel={galaxyTravel}
                     fromProposal={getProposalById(galaxyTravel?.from, proposalCatalog)}
                     toProposal={getProposalById(galaxyTravel?.to, proposalCatalog)}
+                    showDistantGalaxies={defaultAccountFilterActive}
                   />
                 </Suspense>
               ) : null}

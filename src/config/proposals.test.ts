@@ -18,24 +18,29 @@ import { resolveThemeKey, getTheme } from "./proposalThemes.js";
 test("frontend resolveProposalId matches bip numbers", () => {
   assert.equal(resolveProposalId("54"), "bip54");
   assert.equal(resolveProposalId("bip448"), "bip448");
+  assert.equal(resolveProposalId("460"), "bip460");
+  assert.equal(resolveProposalId("BIP-460"), "bip460");
   assert.equal(resolveProposalId("xyz"), DEFAULT_PROPOSAL_ID);
 });
 
 test("parseProposalFromPathname reads /bip/:n", () => {
   assert.equal(parseProposalFromPathname("/bip/110"), "bip110");
   assert.equal(parseProposalFromPathname("/bip/54"), "bip54");
+  assert.equal(parseProposalFromPathname("/bip/460"), "bip460");
   assert.equal(parseProposalFromPathname("/"), DEFAULT_PROPOSAL_ID);
 });
 
 test("non-admin is forced to bip110", () => {
   assert.equal(normalizeIncomingProposalId("bip54", false), "bip110");
   assert.equal(normalizeIncomingProposalId("bip54", true), "bip54");
+  assert.equal(normalizeIncomingProposalId("bip460", false), "bip110");
+  assert.equal(normalizeIncomingProposalId("bip460", true), "bip460");
 });
 
 test("catalog order drives adjacency wrap", () => {
   const { prev, next, current } = adjacentProposals("bip110", FALLBACK_PROPOSALS);
   assert.equal(current.id, "bip110");
-  assert.equal(prev.id, "bip448");
+  assert.equal(prev.id, "bip460");
   assert.equal(next.id, "bip54");
 });
 
@@ -72,20 +77,54 @@ test("invalid URL proposal falls back to first accessible / default", () => {
 test("distant galaxies are every accessible non-active proposal", () => {
   const active = "bip54";
   const distant = FALLBACK_PROPOSALS.filter((p) => p.enabled && p.id !== active).map((p) => p.id);
-  assert.deepEqual(distant, ["bip110", "bip448"]);
+  assert.deepEqual(distant, ["bip110", "bip448", "bip460"]);
 });
 
 test("proposal subtitles explain what each galaxy covers", () => {
   assert.equal(FALLBACK_PROPOSALS.find((p) => p.id === "bip110")?.description, "Reduced Data Temporary Softfork");
   assert.match(FALLBACK_PROPOSALS.find((p) => p.id === "bip54")?.description || "", /Consensus Cleanup/);
   assert.match(FALLBACK_PROPOSALS.find((p) => p.id === "bip448")?.description || "", /rebindable transactions/i);
+  assert.equal(
+    FALLBACK_PROPOSALS.find((p) => p.id === "bip460")?.description,
+    "Cross-Input Signature Aggregation"
+  );
 });
 
 test("proposalGithubUrl maps known BIPs and rejects unknowns", () => {
   assert.match(proposalGithubUrl("bip110") || "", /bip-0110\.mediawiki/);
   assert.match(proposalGithubUrl("BIP54") || "", /bip-0054\.md/);
   assert.match(proposalGithubUrl("bip448") || "", /bip-0448\.md/);
+  assert.equal(
+    proposalGithubUrl("bip460"),
+    "https://github.com/fjahr/bips/blob/cf0d4f2142cd0504b16e86739167b1f7ab9a3a06/bip-XXXX.mediawiki"
+  );
   assert.equal(proposalGithubUrl("bip999"), null);
+});
+
+test("BIP-460 is present after BIP-448 in the fallback catalog", () => {
+  const ids = FALLBACK_PROPOSALS.filter((p) => p.enabled).map((p) => p.id);
+  assert.deepEqual(ids, ["bip110", "bip54", "bip448", "bip460"]);
+  const bip460 = FALLBACK_PROPOSALS.find((p) => p.id === "bip460");
+  assert.equal(bip460?.bipNumber, 460);
+  assert.equal(bip460?.shortName, "BIP460");
+  assert.equal(bip460?.title, "BIP-460");
+  assert.equal(bip460?.adminOnly, true);
+  assert.equal(bip460?.order, 3);
+  assert.equal(bip460?.themeKey, "nebula-yellow");
+});
+
+test("nebula-yellow is a validated theme and BIP-460 uses its accents", () => {
+  assert.equal(resolveThemeKey("nebula-yellow"), "nebula-yellow");
+  const yellow = getTheme("nebula-yellow");
+  assert.match(yellow.accent, /#e8d48b/i);
+  assert.match(yellow.accentSoft, /232,\s*212,\s*139/);
+  assert.match(yellow.distantGlow, /202,\s*168,\s*68/);
+  assert.match(yellow.nebulaFrom, /133,\s*98,\s*18/);
+  const bip460 = FALLBACK_PROPOSALS.find((p) => p.id === "bip460");
+  assert.equal(bip460?.themeKey, "nebula-yellow");
+  assert.equal(bip460?.visualTheme.accent, yellow.accent);
+  assert.equal(bip460?.visualTheme.distantGlow, yellow.distantGlow);
+  assert.equal(bip460?.visualTheme.nebulaFrom, yellow.nebulaFrom);
 });
 
 test("reduced-motion hook subscribes to matchMedia change events", () => {

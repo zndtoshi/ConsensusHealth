@@ -71,64 +71,6 @@ button:focus-visible {
    Account toolbar (logged-in top control bar)
    ================================ */
 
-/* Compact BIP-110 badge beside the brand — interactive link affordance. */
-.bipTagLink {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  box-sizing: border-box;
-  max-height: 22px;
-  padding: 3px 7px 3px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: rgba(17, 24, 39, 0.72);
-  color: #cbd5e1;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.2px;
-  line-height: 1;
-  text-transform: lowercase;
-  text-decoration: none;
-  cursor: pointer;
-  box-shadow: 0 0 0 0 rgba(148, 163, 184, 0);
-  transition:
-    background-color 180ms ease,
-    border-color 180ms ease,
-    color 180ms ease,
-    box-shadow 180ms ease,
-    transform 180ms ease;
-}
-.bipTagLink:hover {
-  background: rgba(51, 65, 85, 0.88);
-  border-color: rgba(226, 232, 240, 0.28);
-  color: #f1f5f9;
-  box-shadow: 0 0 12px rgba(148, 163, 184, 0.28);
-  transform: translateY(-1px);
-}
-.bipTagLink:focus-visible {
-  outline: 2px solid rgba(147, 197, 253, 0.95);
-  outline-offset: 2px;
-  color: #f8fafc;
-}
-.bipTagLink__icon {
-  width: 10px;
-  height: 10px;
-  flex: 0 0 auto;
-  opacity: 0.78;
-}
-.bipTagLink:hover .bipTagLink__icon,
-.bipTagLink:focus-visible .bipTagLink__icon {
-  opacity: 1;
-}
-@media (prefers-reduced-motion: reduce) {
-  .bipTagLink {
-    transition: none;
-  }
-  .bipTagLink:hover {
-    transform: none;
-  }
-}
-
 /* Desktop keeps inline flex + absolute center/controls from App styles.
    Brand + search are separate in-flow children, so keep them left-grouped. */
 .appHeader__search {
@@ -245,28 +187,6 @@ button:focus-visible {
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.75);
 }
 
-.selectedUserCard__close {
-  appearance: none;
-  -webkit-appearance: none;
-  width: 24px;
-  height: 24px;
-  border: none;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(226, 232, 240, 0.78);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  flex: 0 0 auto;
-}
-
-.selectedUserCard__close:hover,
-.selectedUserCard__close:focus-visible {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-  outline: none;
-}
-
 @media (min-width: 721px) {
   .appHeader {
     justify-content: flex-start !important;
@@ -305,11 +225,6 @@ button:focus-visible {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  /* Active galaxy header already links the current BIP; free horizontal space. */
-  .appHeader__brand .bipTagLink {
-    display: none;
   }
 
   .appHeader__search {
@@ -365,12 +280,13 @@ button:focus-visible {
   .galaxyHeaderNav {
     width: 100%;
     gap: 6px;
-    justify-content: space-between;
+    justify-content: center;
   }
 
-  .galaxyHeaderNav__identity {
+  .galaxyHeaderNav__selector {
     min-width: 0;
-    flex: 1 1 auto;
+    width: 100%;
+    max-width: min(320px, 86vw);
   }
 
   .galaxyHeaderNav__tooltip {
@@ -391,11 +307,8 @@ button:focus-visible {
     font-size: 17px;
   }
 
-  .galaxyHeaderNav__side {
-    font-size: 11px;
-    padding: 4px 2px;
-    transform: none;
-    flex: 0 0 auto;
+  .galaxyHeaderNav__listbox {
+    max-height: min(52vh, 360px);
   }
 
   .galaxyHeaderNav__titleRow {
@@ -1378,50 +1291,52 @@ html[data-browser="firefox"] .stanceGlow {
    ================================ */
 
 .galaxyHeaderNav {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 18px;
+  gap: 0;
   pointer-events: auto;
 }
 
-.galaxyHeaderNav--single {
-  gap: 0;
-}
-
-.galaxyHeaderNav__side {
-  appearance: none;
-  border: none;
-  background: transparent;
-  color: rgba(226, 232, 240, 0.55);
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 8px;
-  transform: scale(0.92);
-  transition: color 160ms ease, transform 160ms ease, background 160ms ease;
-}
-
-.galaxyHeaderNav__side:hover:not(:disabled),
-.galaxyHeaderNav__side:focus-visible {
-  color: #f8fafc;
-  background: rgba(255, 255, 255, 0.06);
-  outline: none;
-}
-
-.galaxyHeaderNav__side:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.galaxyHeaderNav__identity {
+.galaxyHeaderNav__selector {
   position: relative;
   display: grid;
   justify-items: center;
-  gap: 3px;
   min-width: min(390px, 44vw);
+}
+
+.galaxyHeaderNav__closed {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  width: 100%;
+}
+
+.galaxyHeaderNav__trigger {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  width: 100%;
+  padding: 4px 28px;
+  border-radius: 12px;
   outline: none;
+  transition: background 160ms ease;
+}
+
+.galaxyHeaderNav__trigger:hover:not(:disabled),
+.galaxyHeaderNav__trigger:focus-visible {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.galaxyHeaderNav__trigger:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .galaxyHeaderNav__titleRow {
@@ -1439,6 +1354,19 @@ html[data-browser="firefox"] .stanceGlow {
   text-align: center;
 }
 
+.galaxyHeaderNav__chevron {
+  width: 14px;
+  height: 14px;
+  color: rgba(226, 232, 240, 0.55);
+  flex: 0 0 auto;
+  transition: transform 160ms ease, color 160ms ease;
+}
+
+.galaxyHeaderNav__trigger[aria-expanded="true"] .galaxyHeaderNav__chevron {
+  transform: rotate(180deg);
+  color: rgba(248, 250, 252, 0.85);
+}
+
 .galaxyHeaderNav__lock {
   width: 13px;
   height: 13px;
@@ -1448,6 +1376,9 @@ html[data-browser="firefox"] .stanceGlow {
 }
 
 .galaxyHeaderNav__github {
+  position: absolute;
+  top: 6px;
+  right: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1456,6 +1387,7 @@ html[data-browser="firefox"] .stanceGlow {
   color: rgba(226, 232, 240, 0.58);
   border-radius: 999px;
   transition: color 160ms ease, background 160ms ease, transform 160ms ease;
+  z-index: 2;
 }
 
 .galaxyHeaderNav__github svg {
@@ -1480,6 +1412,88 @@ html[data-browser="firefox"] .stanceGlow {
   letter-spacing: 0.025em;
   text-align: center;
   text-wrap: balance;
+}
+
+.galaxyHeaderNav__listbox {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 8px);
+  transform: translateX(-50%);
+  z-index: 50;
+  width: min(420px, 86vw);
+  max-height: min(58vh, 420px);
+  overflow: auto;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.48);
+}
+
+.galaxyHeaderNav__option {
+  appearance: none;
+  width: 100%;
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #e2e8f0;
+  border-radius: 10px;
+  padding: 9px 10px;
+  cursor: pointer;
+  outline: none;
+}
+
+.galaxyHeaderNav__option.is-active,
+.galaxyHeaderNav__option:hover,
+.galaxyHeaderNav__option:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.galaxyHeaderNav__option.is-selected {
+  border-color: color-mix(in srgb, var(--option-accent, #94a3b8) 55%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--option-glow, #94a3b8) 28%, transparent);
+}
+
+.galaxyHeaderNav__optionTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #f8fafc;
+}
+
+.galaxyHeaderNav__optionTitle strong {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.galaxyHeaderNav__check,
+.galaxyHeaderNav__checkSpacer {
+  width: 12px;
+  flex: 0 0 auto;
+  color: var(--option-accent, #94a3b8);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.galaxyHeaderNav__optionDesc {
+  padding-left: 18px;
+  color: rgba(226, 232, 240, 0.72);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.galaxyHeaderNav__optionStatus {
+  padding-left: 18px;
+  color: rgba(226, 232, 240, 0.52);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 .galaxyHeaderNav__tooltip {
@@ -1522,8 +1536,8 @@ html[data-browser="firefox"] .stanceGlow {
   letter-spacing: 0.01em;
 }
 
-.galaxyHeaderNav__identity:hover .galaxyHeaderNav__tooltip,
-.galaxyHeaderNav__identity:focus-within .galaxyHeaderNav__tooltip {
+.galaxyHeaderNav:hover > .galaxyHeaderNav__tooltip,
+.galaxyHeaderNav:focus-within > .galaxyHeaderNav__tooltip {
   opacity: 1;
   visibility: visible;
   transform: translateX(-50%) translateY(0);
@@ -1536,15 +1550,16 @@ html[data-browser="firefox"] .stanceGlow {
   z-index: 5;
 }
 
-.distantGalaxy {
+.distantGalaxy,
+.distantGalaxy--decorative {
   position: absolute;
   width: 112px;
   height: 86px;
   margin: -43px 0 0 -56px;
   border: none;
   background: transparent;
-  cursor: pointer;
-  pointer-events: auto;
+  cursor: default;
+  pointer-events: none;
   padding: 0;
 }
 
@@ -1636,46 +1651,6 @@ html[data-browser="firefox"] .stanceGlow {
   letter-spacing: 0.1em;
 }
 
-.distantGalaxy:hover .distantGalaxy__core,
-.distantGalaxy:focus-visible .distantGalaxy__core {
-  opacity: 1;
-  transform: rotate(-8deg) scale(1.08, 0.8);
-  filter: drop-shadow(0 0 15px var(--galaxy-glow));
-}
-
-.distantGalaxy:hover .distantGalaxy__label,
-.distantGalaxy:focus-visible .distantGalaxy__label {
-  color: rgba(226, 232, 240, 0.78);
-}
-.distantGalaxy__tip {
-  position: absolute;
-  left: 50%;
-  top: calc(100% + 5px);
-  transform: translateX(-50%);
-  min-width: 160px;
-  max-width: 220px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: rgba(15, 23, 42, 0.94);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #e2e8f0;
-  display: grid;
-  gap: 4px;
-  text-align: left;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
-  z-index: 6;
-}
-
-.distantGalaxy__tip strong {
-  font-size: 12px;
-}
-
-.distantGalaxy__tip span {
-  font-size: 11px;
-  color: rgba(226, 232, 240, 0.75);
-  line-height: 1.35;
-}
-
 .galaxyTravelOverlay {
   position: absolute;
   inset: 0;
@@ -1726,7 +1701,8 @@ html[data-browser="firefox"] .stanceGlow {
 
 @media (prefers-reduced-motion: reduce) {
   .distantGalaxy--static .distantGalaxy__core,
-  .galaxyHeaderNav__side,
+  .galaxyHeaderNav__trigger,
+  .galaxyHeaderNav__chevron,
   .galaxyHeaderNav__github,
   .galaxyHeaderNav__tooltip {
     transition: none;

@@ -6,7 +6,7 @@
 
 export type ProposalId = string;
 
-export type ProposalThemeKey = "nebula-red" | "nebula-cyan" | "nebula-violet";
+export type ProposalThemeKey = "nebula-red" | "nebula-cyan" | "nebula-violet" | "nebula-yellow";
 
 export type ProposalSeedConfig = {
   id: ProposalId;
@@ -64,6 +64,18 @@ export const PROPOSAL_SEEDS: ProposalSeedConfig[] = [
     enabled: true,
     adminOnly: true,
     themeKey: "nebula-violet",
+    emptyMessage: "Be the first to map this consensus galaxy.",
+  },
+  {
+    id: "bip460",
+    bipNumber: 460,
+    shortName: "BIP460",
+    title: "BIP-460",
+    description: "Cross-Input Signature Aggregation",
+    order: 3,
+    enabled: true,
+    adminOnly: true,
+    themeKey: "nebula-yellow",
     emptyMessage: "Be the first to map this consensus galaxy.",
   },
 ];
@@ -136,5 +148,10 @@ export type PublicProposalDto = {
 };
 
 export function isValidThemeKey(raw: unknown): raw is ProposalThemeKey {
-  return raw === "nebula-red" || raw === "nebula-cyan" || raw === "nebula-violet";
+  return (
+    raw === "nebula-red" ||
+    raw === "nebula-cyan" ||
+    raw === "nebula-violet" ||
+    raw === "nebula-yellow"
+  );
 }

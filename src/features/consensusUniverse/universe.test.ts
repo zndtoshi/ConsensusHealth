@@ -19,5 +19,6 @@ test("consensus universe chrome module exists as a separate lazy chunk entry", (
   assert.match(src, /DistantGalaxies/);
   assert.match(src, /GalaxyTravelOverlay/);
   assert.doesNotMatch(src, /EdgeGalaxyNav/);
-  assert.match(src, /showNavigation/);
+  assert.match(src, /showDistantGalaxies/);
+  assert.doesNotMatch(src, /showNavigation/);
 });

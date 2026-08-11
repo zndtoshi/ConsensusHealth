@@ -5,6 +5,8 @@ import {
   listEnabledProposals,
   resolveProposalId,
   tryResolveProposalId,
+  isValidThemeKey,
+  getProposalSeedById,
 } from "./proposalCatalog.js";
 import { resolveProposalAccess } from "./proposals.js";
 import fs from "node:fs";
@@ -16,6 +18,8 @@ test("resolveProposalId accepts bip ids and numbers; invalid falls back to bip11
   assert.equal(resolveProposalId("110"), "bip110");
   assert.equal(resolveProposalId("BIP-54"), "bip54");
   assert.equal(resolveProposalId("448"), "bip448");
+  assert.equal(resolveProposalId("460"), "bip460");
+  assert.equal(resolveProposalId("BIP-460"), "bip460");
   assert.equal(resolveProposalId("nope"), DEFAULT_PROPOSAL_ID);
   assert.equal(resolveProposalId(""), DEFAULT_PROPOSAL_ID);
 });
@@ -25,11 +29,11 @@ test("tryResolveProposalId returns null for unknown ids", () => {
   assert.equal(tryResolveProposalId("bip54"), "bip54");
 });
 
-test("enabled proposals include bip110/54/448 in display order", () => {
+test("enabled proposals include bip110/54/448/460 in display order", () => {
   const list = listEnabledProposals();
   assert.deepEqual(
     list.map((p) => p.id),
-    ["bip110", "bip54", "bip448"]
+    ["bip110", "bip54", "bip448", "bip460"]
   );
 });
 
@@ -39,6 +43,9 @@ test("resolveProposalAccess allows bip110 for everyone; other BIPs admin-only", 
   assert.equal(resolveProposalAccess({ rawProposal: "bip54", sessionHandle: "zndtoshi" }).allowed, true);
   assert.equal(resolveProposalAccess({ rawProposal: "448", sessionHandle: "@ZndToshi" }).allowed, true);
   assert.equal(resolveProposalAccess({ rawProposal: "bip448", sessionHandle: null }).allowed, false);
+  assert.equal(resolveProposalAccess({ rawProposal: "bip460", sessionHandle: "alice" }).allowed, false);
+  assert.equal(resolveProposalAccess({ rawProposal: "460", sessionHandle: "zndtoshi" }).allowed, true);
+  assert.equal(resolveProposalAccess({ rawProposal: "BIP-460", sessionHandle: null }).allowed, false);
 });
 
 test("ensureProposalSchema uses advisory lock and migration version", () => {
@@ -53,4 +60,11 @@ test("ensureProposalSchema uses advisory lock and migration version", () => {
   assert.match(src, /legacy_stance_history_id/);
   assert.match(src, /ON CONFLICT \(legacy_stance_history_id\) DO NOTHING/);
   assert.match(src, /ROLLBACK/);
+});
+
+test("nebula-yellow is a validated server theme key used by BIP-460", () => {
+  assert.equal(isValidThemeKey("nebula-yellow"), true);
+  assert.equal(isValidThemeKey("nebula-red"), true);
+  assert.equal(isValidThemeKey("not-a-theme"), false);
+  assert.equal(getProposalSeedById("bip460")?.themeKey, "nebula-yellow");
 });

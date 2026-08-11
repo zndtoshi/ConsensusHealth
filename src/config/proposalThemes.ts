@@ -3,7 +3,7 @@
  * theme_key from the API/DB must match a key here — never apply raw CSS from the database.
  */
 
-export type ProposalThemeKey = "nebula-red" | "nebula-cyan" | "nebula-violet";
+export type ProposalThemeKey = "nebula-red" | "nebula-cyan" | "nebula-violet" | "nebula-yellow";
 
 export type ProposalVisualTheme = {
   accent: string;
@@ -38,6 +38,14 @@ export const PROPOSAL_THEMES: Record<ProposalThemeKey, ProposalVisualTheme> = {
     nebulaTo: "rgba(15, 23, 42, 0.92)",
     starTint: "rgba(221, 214, 254, 0.55)",
     distantGlow: "rgba(167, 139, 250, 0.45)",
+  },
+  "nebula-yellow": {
+    accent: "#e8d48b",
+    accentSoft: "rgba(232, 212, 139, 0.36)",
+    nebulaFrom: "rgba(133, 98, 18, 0.3)",
+    nebulaTo: "rgba(15, 23, 42, 0.92)",
+    starTint: "rgba(254, 243, 199, 0.58)",
+    distantGlow: "rgba(202, 168, 68, 0.45)",
   },
 };
 
