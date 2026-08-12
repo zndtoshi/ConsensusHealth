@@ -4,6 +4,8 @@ import { fetchXTweetById } from "./xApiUsers.js";
 import {
   snippetExplanationText,
   toPublicExplanation,
+  verifyAndUpsertStanceExplanation,
+  STANCE_EXPLANATION_USER_MESSAGES,
 } from "./stanceExplanations.js";
 
 function jsonResponse(status: number, body: unknown) {
@@ -11,6 +13,19 @@ function jsonResponse(status: number, body: unknown) {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function oembedFor(handle: string, tweetId: string, text = "Verified explanation text") {
+  return {
+    url: `https://x.com/${handle}/status/${tweetId}`,
+    author_name: handle,
+    author_url: `https://x.com/${handle}`,
+    html: `<blockquote class="twitter-tweet"><p lang="en" dir="ltr">${text}</p>&mdash; ${handle} (@${handle}) <a href="https://x.com/${handle}/status/${tweetId}">Jan 1, 2024</a></blockquote><script async src="https://platform.x.com/widgets.js"></script>`,
+    type: "rich",
+    provider_name: "Twitter",
+    provider_url: "https://twitter.com",
+    version: "1.0",
+  };
 }
 
 test("fetchXTweetById preserves long digit ids and maps fields", async () => {
@@ -78,27 +93,203 @@ test("snippetExplanationText truncates safely", () => {
   assert.equal(snippetExplanationText("short", 40), "short");
 });
 
-test("verify failures include safe user-facing messages without secrets", async () => {
-  const { STANCE_EXPLANATION_USER_MESSAGES, verifyAndUpsertStanceExplanation } = await import(
-    "./stanceExplanations.js"
-  );
+test("oEmbed verification succeeds with no X credentials configured", async () => {
   const pool = {
-    query: async () => ({ rows: [{ stance: "against" }] }),
+    query: async (sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("SELECT stance")) {
+        return { rows: [{ stance: "against" }] };
+      }
+      if (String(sql).includes("INSERT INTO user_proposal_stance_explanations")) {
+        assert.equal(params[5], null, "oEmbed-only must not invent a stable author_x_user_id");
+        assert.equal(params[8], "x_oembed_author_handle");
+        return {
+          rows: [
+            {
+              proposal_id: params[1],
+              tweet_id: params[2],
+              canonical_url: params[3],
+              tweet_text: params[4],
+              author_handle: params[6],
+              stance_at_verification: params[7],
+              verification_method: params[8],
+              verified_at: new Date().toISOString(),
+              unavailable_at: null,
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected sql ${sql}`);
+    },
   };
-  process.env.X_BEARER_TOKEN = "";
+  const prevBearer = process.env.X_BEARER_TOKEN;
+  const prevTw = process.env.TWITTER_BEARER_TOKEN;
+  delete process.env.X_BEARER_TOKEN;
   delete process.env.TWITTER_BEARER_TOKEN;
-  delete process.env.X_CLIENT_ID;
-  delete process.env.X_CLIENT_SECRET;
-  const result = await verifyAndUpsertStanceExplanation(pool as never, {
-    xUserId: "1",
-    handle: "alice",
-    proposalId: "bip54",
-    tweetUrl: "https://x.com/alice/status/1",
-  });
-  assert.equal(result.ok, false);
-  if (!result.ok) {
-    assert.equal(result.error, "verification_unavailable");
-    assert.equal(result.message, STANCE_EXPLANATION_USER_MESSAGES.verification_unavailable);
-    assert.doesNotMatch(result.message || "", /Bearer|CLIENT_SECRET|token/i);
+
+  try {
+    const result = await verifyAndUpsertStanceExplanation(pool as never, {
+      xUserId: "111",
+      handle: "alice",
+      proposalId: "bip54",
+      tweetUrl: "https://x.com/alice/status/1498836693482356740?s=20",
+      fetchImpl: async (url) => {
+        const u = String(url);
+        assert.match(u, /^https:\/\/publish\.x\.com\/oembed\?/);
+        assert.doesNotMatch(u, /^https:\/\/x\.com\//);
+        assert.match(u, /1498836693482356740/);
+        return jsonResponse(
+          200,
+          oembedFor("alice", "1498836693482356740", "Public oEmbed text")
+        );
+      },
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.explanation.tweet_id, "1498836693482356740");
+      assert.equal(result.explanation.tweet_text, "Public oEmbed text");
+      assert.equal(result.explanation.verification_method, "x_oembed_author_handle");
+      assert.doesNotMatch(result.explanation.tweet_text, /</);
+    }
+  } finally {
+    if (prevBearer != null) process.env.X_BEARER_TOKEN = prevBearer;
+    else delete process.env.X_BEARER_TOKEN;
+    if (prevTw != null) process.env.TWITTER_BEARER_TOKEN = prevTw;
+    else delete process.env.TWITTER_BEARER_TOKEN;
+  }
+});
+
+test("optional bearer author_id mismatch still rejects after oEmbed handle match", async () => {
+  const pool = {
+    query: async (sql: string) => {
+      if (String(sql).includes("SELECT stance")) return { rows: [{ stance: "against" }] };
+      throw new Error("should not insert");
+    },
+  };
+  process.env.X_BEARER_TOKEN = "test-bearer";
+  try {
+    const result = await verifyAndUpsertStanceExplanation(pool as never, {
+      xUserId: "111",
+      handle: "alice",
+      proposalId: "bip54",
+      tweetUrl: "https://x.com/alice/status/42",
+      fetchImpl: async (url) => {
+        const u = String(url);
+        if (u.includes("publish.x.com/oembed")) {
+          return jsonResponse(200, oembedFor("alice", "42"));
+        }
+        return jsonResponse(200, {
+          data: { id: "42", author_id: "999", text: "api" },
+        });
+      },
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.error, "tweet_author_mismatch");
+      assert.equal(result.message, STANCE_EXPLANATION_USER_MESSAGES.tweet_author_mismatch);
+    }
+  } finally {
+    delete process.env.X_BEARER_TOKEN;
+  }
+});
+
+test("invalid bearer does not block successful oEmbed verification", async () => {
+  const pool = {
+    query: async (sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("SELECT stance")) return { rows: [{ stance: "against" }] };
+      if (String(sql).includes("INSERT INTO")) {
+        assert.equal(params[5], null);
+        assert.equal(params[8], "x_oembed_author_handle");
+        return {
+          rows: [
+            {
+              proposal_id: params[1],
+              tweet_id: params[2],
+              canonical_url: params[3],
+              tweet_text: params[4],
+              author_handle: params[6],
+              stance_at_verification: params[7],
+              verification_method: params[8],
+              verified_at: new Date().toISOString(),
+            },
+          ],
+        };
+      }
+      throw new Error("unexpected");
+    },
+  };
+  process.env.X_BEARER_TOKEN = "bad-token";
+  try {
+    const result = await verifyAndUpsertStanceExplanation(pool as never, {
+      xUserId: "111",
+      handle: "alice",
+      proposalId: "bip54",
+      tweetUrl: "https://x.com/alice/status/7",
+      fetchImpl: async (url) => {
+        const u = String(url);
+        if (u.includes("publish.x.com/oembed")) {
+          return jsonResponse(200, oembedFor("alice", "7", "oembed wins"));
+        }
+        return jsonResponse(401, { title: "Unauthorized" });
+      },
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.explanation.verification_method, "x_oembed_author_handle");
+      assert.equal(result.explanation.tweet_text, "oembed wins");
+    }
+  } finally {
+    delete process.env.X_BEARER_TOKEN;
+  }
+});
+
+test("successful optional API cross-check stores stable author_x_user_id", async () => {
+  const pool = {
+    query: async (sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("SELECT stance")) return { rows: [{ stance: "against" }] };
+      if (String(sql).includes("INSERT INTO")) {
+        assert.equal(params[5], "111");
+        assert.equal(params[8], "x_api_author_id");
+        return {
+          rows: [
+            {
+              proposal_id: params[1],
+              tweet_id: params[2],
+              canonical_url: params[3],
+              tweet_text: params[4],
+              author_handle: params[6],
+              stance_at_verification: params[7],
+              verification_method: params[8],
+              verified_at: new Date().toISOString(),
+            },
+          ],
+        };
+      }
+      throw new Error("unexpected");
+    },
+  };
+  process.env.X_BEARER_TOKEN = "test-bearer";
+  try {
+    const result = await verifyAndUpsertStanceExplanation(pool as never, {
+      xUserId: "111",
+      handle: "alice",
+      proposalId: "bip54",
+      tweetUrl: "https://x.com/alice/status/88",
+      fetchImpl: async (url) => {
+        const u = String(url);
+        if (u.includes("publish.x.com/oembed")) {
+          return jsonResponse(200, oembedFor("alice", "88", "oembed"));
+        }
+        return jsonResponse(200, {
+          data: { id: "88", author_id: "111", text: "api text" },
+        });
+      },
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.explanation.verification_method, "x_api_author_id");
+      assert.equal(result.explanation.tweet_text, "api text");
+    }
+  } finally {
+    delete process.env.X_BEARER_TOKEN;
   }
 });

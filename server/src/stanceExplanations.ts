@@ -1,16 +1,19 @@
 /**
  * Proposal-scoped verified X-post stance explanations.
+ *
+ * Primary verification: official unauthenticated oEmbed (handle ownership).
+ * Optional stronger check: X API v2 author_id when X_BEARER_TOKEN is configured.
  */
 
 import type { Pool, PoolClient } from "pg";
 import { normalizeStanceValue, type StanceValue } from "./stanceHistory.js";
 import {
-  classifyXApiError,
   fetchXTweetById,
-  getXAppBearerToken,
-  type XApiErrorKind,
 } from "./xApiUsers.js";
 import { parseStanceExplanationUrl } from "./stanceExplanationUrl.js";
+import { verifyPublicPostViaOEmbed } from "./xOEmbed.js";
+
+export type VerificationMethod = "x_api_author_id" | "x_oembed_author_handle";
 
 export const STANCE_EXPLANATION_USER_MESSAGES = {
   invalid_tweet_url: "Enter a direct link to one of your X posts.",
@@ -23,8 +26,24 @@ export const STANCE_EXPLANATION_USER_MESSAGES = {
   tweet_author_mismatch: "This post was not published by your connected X account.",
 } as const;
 
+type VerifyLogReason =
+  | "invalid_tweet_url"
+  | "stance_required"
+  | "tweet_unavailable"
+  | "tweet_author_mismatch"
+  | "oembed_unavailable"
+  | "oembed_malformed"
+  | "oembed_author_mismatch"
+  | "oembed_text_missing"
+  | "author_id_crosscheck_failed"
+  | "author_id_crosscheck_ok"
+  | "timeout"
+  | "verification_failed"
+  | "verification_rate_limited"
+  | "unauthorized";
+
 function logVerifyIssue(opts: {
-  reason: XApiErrorKind | "invalid_tweet_url" | "stance_required" | "tweet_unavailable" | "tweet_author_mismatch";
+  reason: VerifyLogReason;
   proposalId: string;
   xUserId: string;
   tweetId?: string;
@@ -38,6 +57,10 @@ function logVerifyIssue(opts: {
   });
 }
 
+function configuredBearerToken(): string {
+  return (process.env.X_BEARER_TOKEN || process.env.TWITTER_BEARER_TOKEN || "").trim();
+}
+
 export type StanceExplanationPublicDto = {
   proposal_id: string;
   tweet_id: string;
@@ -46,6 +69,7 @@ export type StanceExplanationPublicDto = {
   author_handle: string;
   verified_at: string;
   stance_at_verification: StanceValue;
+  verification_method?: VerificationMethod | null;
 };
 
 export type StanceExplanationOwnerDto = StanceExplanationPublicDto & {
@@ -65,6 +89,9 @@ function mapPublicRow(r: Record<string, unknown>): StanceExplanationPublicDto | 
   if (!tweetId || !url || !handle || !stance || !proposalId) return null;
   if (r.unavailable_at) return null;
   const verifiedAt = new Date(String(r.verified_at || r.updated_at || Date.now())).toISOString();
+  const methodRaw = String(r.verification_method ?? "").trim();
+  const verification_method: VerificationMethod | null =
+    methodRaw === "x_api_author_id" || methodRaw === "x_oembed_author_handle" ? methodRaw : null;
   return {
     proposal_id: proposalId,
     tweet_id: tweetId,
@@ -73,6 +100,7 @@ function mapPublicRow(r: Record<string, unknown>): StanceExplanationPublicDto | 
     author_handle: handle,
     verified_at: verifiedAt,
     stance_at_verification: stance,
+    verification_method,
   };
 }
 
@@ -102,10 +130,12 @@ export async function ensureStanceExplanationTable(client: PoolClient): Promise<
       tweet_id TEXT NOT NULL,
       canonical_url TEXT NOT NULL,
       tweet_text TEXT NOT NULL,
-      author_x_user_id TEXT NOT NULL,
+      -- Stable X author_id from API only; NULL when verification_method is handle-only oEmbed.
+      author_x_user_id TEXT NULL,
       author_handle TEXT NOT NULL,
       stance_at_verification TEXT NOT NULL
         CHECK (stance_at_verification IN ('against','neutral','approve')),
+      verification_method TEXT NULL,
       verified_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       unavailable_at TIMESTAMPTZ NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -114,12 +144,70 @@ export async function ensureStanceExplanationTable(client: PoolClient): Promise<
       CONSTRAINT user_proposal_stance_explanations_stance_fk
         FOREIGN KEY (x_user_id, proposal_id)
         REFERENCES user_proposal_stances (x_user_id, proposal_id)
-        ON DELETE CASCADE
+        ON DELETE CASCADE,
+      CONSTRAINT stance_explanations_verification_coherence CHECK (
+        verification_method IS NULL
+        OR (
+          verification_method = 'x_api_author_id'
+          AND author_x_user_id IS NOT NULL
+          AND btrim(author_x_user_id) <> ''
+        )
+        OR (
+          verification_method = 'x_oembed_author_handle'
+          AND author_x_user_id IS NULL
+        )
+      )
     );
   `);
   await client.query(
     `ALTER TABLE user_proposal_stance_explanations ADD COLUMN IF NOT EXISTS unavailable_at TIMESTAMPTZ NULL`
   );
+  await client.query(
+    `ALTER TABLE user_proposal_stance_explanations ADD COLUMN IF NOT EXISTS verification_method TEXT NULL`
+  );
+  // author_x_user_id is the verified API author_id only — nullable for oEmbed-only rows.
+  await client.query(
+    `ALTER TABLE user_proposal_stance_explanations ALTER COLUMN author_x_user_id DROP NOT NULL`
+  );
+  // Legacy API-verified rows (author id present, method unset) → x_api_author_id.
+  await client.query(`
+    UPDATE user_proposal_stance_explanations
+    SET verification_method = 'x_api_author_id'
+    WHERE verification_method IS NULL
+      AND author_x_user_id IS NOT NULL
+      AND btrim(author_x_user_id) <> ''
+  `);
+  // oEmbed-only rows must not keep a session/forged author_x_user_id.
+  await client.query(`
+    UPDATE user_proposal_stance_explanations
+    SET author_x_user_id = NULL
+    WHERE verification_method = 'x_oembed_author_handle'
+      AND author_x_user_id IS NOT NULL
+  `);
+  // Replace older method-only checks with coherence between method and author_x_user_id.
+  await client.query(`
+    ALTER TABLE user_proposal_stance_explanations
+      DROP CONSTRAINT IF EXISTS user_proposal_stance_explanations_verification_method_check
+  `);
+  await client.query(`
+    ALTER TABLE user_proposal_stance_explanations
+      DROP CONSTRAINT IF EXISTS stance_explanations_verification_coherence
+  `);
+  await client.query(`
+    ALTER TABLE user_proposal_stance_explanations
+      ADD CONSTRAINT stance_explanations_verification_coherence CHECK (
+        verification_method IS NULL
+        OR (
+          verification_method = 'x_api_author_id'
+          AND author_x_user_id IS NOT NULL
+          AND btrim(author_x_user_id) <> ''
+        )
+        OR (
+          verification_method = 'x_oembed_author_handle'
+          AND author_x_user_id IS NULL
+        )
+      )
+  `);
   await client.query(
     `CREATE INDEX IF NOT EXISTS idx_stance_explanations_proposal
      ON user_proposal_stance_explanations (proposal_id)`
@@ -134,7 +222,8 @@ export async function loadExplanationsForProposal(
     `
     SELECT
       x_user_id, proposal_id, tweet_id, canonical_url, tweet_text,
-      author_handle, stance_at_verification, verified_at, unavailable_at
+      author_handle, stance_at_verification, verification_method,
+      verified_at, unavailable_at
     FROM user_proposal_stance_explanations
     WHERE proposal_id = $1
     `,
@@ -157,7 +246,8 @@ export async function loadExplanationsForUser(
     `
     SELECT
       e.proposal_id, e.tweet_id, e.canonical_url, e.tweet_text,
-      e.author_handle, e.stance_at_verification, e.verified_at, e.unavailable_at,
+      e.author_handle, e.stance_at_verification, e.verification_method,
+      e.verified_at, e.unavailable_at,
       ups.stance AS current_stance
     FROM user_proposal_stance_explanations e
     LEFT JOIN user_proposal_stances ups
@@ -230,45 +320,45 @@ export async function verifyAndUpsertStanceExplanation(
     };
   }
 
-  let bearer: string;
-  try {
-    bearer = await getXAppBearerToken({ fetchImpl: args.fetchImpl });
-  } catch (err) {
-    const reason = classifyXApiError(err);
-    logVerifyIssue({
-      reason,
-      proposalId: args.proposalId,
-      xUserId: args.xUserId,
-      tweetId: parsed.value.tweetId,
-    });
-    return {
-      ok: false,
-      status: 503,
-      error: "verification_unavailable",
-      message: STANCE_EXPLANATION_USER_MESSAGES.verification_unavailable,
-    };
-  }
+  const sessionHandle = String(args.handle)
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "");
+  // Always use the authenticated session handle in the canonical URL we store and
+  // send to oEmbed — never trust a mismatched path username beyond the parser gate.
+  const canonicalUrl = `https://x.com/${sessionHandle}/status/${parsed.value.tweetId}`;
 
-  let tweet;
-  try {
-    tweet = await fetchXTweetById(bearer, parsed.value.tweetId, { fetchImpl: args.fetchImpl });
-  } catch (err) {
-    const reason = classifyXApiError(err);
+  const oembed = await verifyPublicPostViaOEmbed({
+    canonicalPostUrl: canonicalUrl,
+    expectedTweetId: parsed.value.tweetId,
+    expectedHandle: sessionHandle,
+    fetchImpl: args.fetchImpl,
+  });
+
+  if (!oembed.ok) {
     logVerifyIssue({
-      reason,
+      reason: oembed.reason,
       proposalId: args.proposalId,
       xUserId: args.xUserId,
       tweetId: parsed.value.tweetId,
     });
-    if (reason === "rate_limited") {
+    if (oembed.reason === "oembed_author_mismatch") {
       return {
         ok: false,
-        status: 429,
-        error: "verification_rate_limited",
-        message: STANCE_EXPLANATION_USER_MESSAGES.verification_rate_limited,
+        status: 403,
+        error: "tweet_author_mismatch",
+        message: STANCE_EXPLANATION_USER_MESSAGES.tweet_author_mismatch,
       };
     }
-    if (reason === "timeout" || reason === "provider_auth_failed" || reason === "missing_credentials") {
+    if (oembed.reason === "tweet_unavailable") {
+      return {
+        ok: false,
+        status: 404,
+        error: "tweet_unavailable",
+        message: STANCE_EXPLANATION_USER_MESSAGES.tweet_unavailable,
+      };
+    }
+    if (oembed.reason === "timeout" || oembed.reason === "oembed_unavailable") {
       return {
         ok: false,
         status: 503,
@@ -284,50 +374,74 @@ export async function verifyAndUpsertStanceExplanation(
     };
   }
 
-  if (!tweet) {
-    logVerifyIssue({
-      reason: "tweet_unavailable",
-      proposalId: args.proposalId,
-      xUserId: args.xUserId,
-      tweetId: parsed.value.tweetId,
-    });
-    return {
-      ok: false,
-      status: 404,
-      error: "tweet_unavailable",
-      message: STANCE_EXPLANATION_USER_MESSAGES.tweet_unavailable,
-    };
-  }
-  if (tweet.authorId !== String(args.xUserId).trim()) {
-    logVerifyIssue({
-      reason: "tweet_author_mismatch",
-      proposalId: args.proposalId,
-      xUserId: args.xUserId,
-      tweetId: tweet.id,
-    });
-    return {
-      ok: false,
-      status: 403,
-      error: "tweet_author_mismatch",
-      message: STANCE_EXPLANATION_USER_MESSAGES.tweet_author_mismatch,
-    };
+  let tweetText = oembed.tweetText;
+  // author_x_user_id means verified API author_id only — never the session id for oEmbed-only.
+  let authorXUserId: string | null = null;
+  let verificationMethod: VerificationMethod = "x_oembed_author_handle";
+  let tweetId = oembed.tweetId;
+
+  // Optional stronger stable-ID cross-check when an explicit bearer token is configured.
+  // Missing/invalid bearer must never block a successful oEmbed verification.
+  const bearer = configuredBearerToken();
+  if (bearer) {
+    try {
+      const apiTweet = await fetchXTweetById(bearer, parsed.value.tweetId, {
+        fetchImpl: args.fetchImpl,
+      });
+      if (!apiTweet) {
+        logVerifyIssue({
+          reason: "author_id_crosscheck_failed",
+          proposalId: args.proposalId,
+          xUserId: args.xUserId,
+          tweetId: parsed.value.tweetId,
+        });
+      } else if (apiTweet.authorId !== String(args.xUserId).trim()) {
+        logVerifyIssue({
+          reason: "tweet_author_mismatch",
+          proposalId: args.proposalId,
+          xUserId: args.xUserId,
+          tweetId: apiTweet.id,
+        });
+        return {
+          ok: false,
+          status: 403,
+          error: "tweet_author_mismatch",
+          message: STANCE_EXPLANATION_USER_MESSAGES.tweet_author_mismatch,
+        };
+      } else {
+        tweetText = apiTweet.text || tweetText;
+        authorXUserId = apiTweet.authorId;
+        tweetId = apiTweet.id;
+        verificationMethod = "x_api_author_id";
+        logVerifyIssue({
+          reason: "author_id_crosscheck_ok",
+          proposalId: args.proposalId,
+          xUserId: args.xUserId,
+          tweetId: apiTweet.id,
+        });
+      }
+    } catch {
+      // Timeout / provider failure on optional API: keep handle-verified oEmbed result.
+      logVerifyIssue({
+        reason: "author_id_crosscheck_failed",
+        proposalId: args.proposalId,
+        xUserId: args.xUserId,
+        tweetId: parsed.value.tweetId,
+      });
+    }
   }
 
-  const handle = String(args.handle)
-    .trim()
-    .toLowerCase()
-    .replace(/^@+/, "");
-  const canonicalUrl = `https://x.com/${handle}/status/${tweet.id}`;
+  const storeUrl = `https://x.com/${oembed.authorHandle}/status/${tweetId}`;
 
   const { rows } = await pool.query(
     `
     INSERT INTO user_proposal_stance_explanations (
       x_user_id, proposal_id, tweet_id, canonical_url, tweet_text,
-      author_x_user_id, author_handle, stance_at_verification,
+      author_x_user_id, author_handle, stance_at_verification, verification_method,
       verified_at, unavailable_at, created_at, updated_at
     ) VALUES (
       $1, $2, $3, $4, $5,
-      $6, $7, $8,
+      $6, $7, $8, $9,
       now(), NULL, now(), now()
     )
     ON CONFLICT (x_user_id, proposal_id) DO UPDATE SET
@@ -337,27 +451,37 @@ export async function verifyAndUpsertStanceExplanation(
       author_x_user_id = EXCLUDED.author_x_user_id,
       author_handle = EXCLUDED.author_handle,
       stance_at_verification = EXCLUDED.stance_at_verification,
+      verification_method = EXCLUDED.verification_method,
       verified_at = now(),
       unavailable_at = NULL,
       updated_at = now()
     RETURNING
       proposal_id, tweet_id, canonical_url, tweet_text,
-      author_handle, stance_at_verification, verified_at, unavailable_at
+      author_handle, stance_at_verification, verification_method,
+      verified_at, unavailable_at
     `,
     [
       args.xUserId,
       args.proposalId,
-      tweet.id,
-      canonicalUrl,
-      tweet.text,
-      tweet.authorId,
-      handle,
+      tweetId,
+      storeUrl,
+      tweetText,
+      authorXUserId,
+      oembed.authorHandle,
       stance,
+      verificationMethod,
     ]
   );
 
   const dto = mapPublicRow(rows[0] as Record<string, unknown>);
-  if (!dto) return { ok: false, status: 502, error: "verification_failed" };
+  if (!dto) {
+    return {
+      ok: false,
+      status: 502,
+      error: "verification_failed",
+      message: STANCE_EXPLANATION_USER_MESSAGES.verification_failed,
+    };
+  }
   return { ok: true, explanation: dto };
 }
 
@@ -372,7 +496,8 @@ export async function confirmExplanationForStance(
     WHERE x_user_id = $1 AND proposal_id = $2 AND unavailable_at IS NULL
     RETURNING
       proposal_id, tweet_id, canonical_url, tweet_text,
-      author_handle, stance_at_verification, verified_at, unavailable_at
+      author_handle, stance_at_verification, verification_method,
+      verified_at, unavailable_at
     `,
     [args.xUserId, args.proposalId, args.stance]
   );

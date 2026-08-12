@@ -73,6 +73,7 @@ function makeFakePool(seed?: {
           authorXUserId,
           authorHandle,
           stanceAt,
+          verificationMethod,
         ] = params as string[];
         const row = {
           x_user_id: xUserId,
@@ -83,6 +84,7 @@ function makeFakePool(seed?: {
           author_x_user_id: authorXUserId,
           author_handle: authorHandle,
           stance_at_verification: stanceAt,
+          verification_method: verificationMethod,
           verified_at: new Date().toISOString(),
           unavailable_at: null,
         };
@@ -213,6 +215,51 @@ function jsonResponse(status: number, body: unknown) {
   });
 }
 
+function oembedPayload(handle: string, tweetId: string, text: string) {
+  return {
+    url: `https://x.com/${handle}/status/${tweetId}`,
+    author_name: handle,
+    author_url: `https://x.com/${handle}`,
+    html: `<blockquote class="twitter-tweet"><p lang="en" dir="ltr">${text}</p>&mdash; ${handle} (@${handle}) <a href="https://x.com/${handle}/status/${tweetId}">Jan 1, 2024</a></blockquote><script async src="https://platform.x.com/widgets.js"></script>`,
+    type: "rich",
+    provider_name: "Twitter",
+    provider_url: "https://twitter.com",
+    version: "1.0",
+  };
+}
+
+/** Shared provider mock: oEmbed first; optional X API when bearer path is exercised. */
+function makeProviderFetch(opts?: { apiAuthorId?: string }) {
+  const apiAuthorId = opts?.apiAuthorId ?? "111";
+  return async (url: string | URL | Request) => {
+    const u = String(url);
+    assert.doesNotMatch(u, /^https:\/\/(?:www\.)?(?:x|twitter)\.com\//);
+    if (u.includes("publish.x.com/oembed") || u.includes("publish.twitter.com/oembed")) {
+      const embedded = new URL(u).searchParams.get("url") || "";
+      const id = embedded.split("/status/")[1]?.split(/[?#]/)[0] || "";
+      if (id === "999") {
+        return jsonResponse(200, oembedPayload("eve", "999", "other-author"));
+      }
+      if (id === "404") return new Response("{}", { status: 404 });
+      if (id === "429") return new Response("{}", { status: 429 });
+      if (id === "500") return new Response("{}", { status: 500 });
+      return jsonResponse(200, oembedPayload("alice", id, `oembed-text-${id}`));
+    }
+    const id = u.split("/tweets/")[1]?.split("?")[0];
+    if (id === "999") {
+      return jsonResponse(200, { data: { id: "999", author_id: "222", text: "nope" } });
+    }
+    return jsonResponse(200, {
+      data: {
+        id,
+        author_id: apiAuthorId,
+        text: `api-text-${id}`,
+        created_at: "2024-01-01T00:00:00.000Z",
+      },
+    });
+  };
+}
+
 test("production handlers: unauthenticated explanation rejected", async () => {
   const pool = makeFakePool();
   const app = makeApp({ session: null, pool });
@@ -226,7 +273,7 @@ test("production handlers: unauthenticated explanation rejected", async () => {
   });
 });
 
-test("production handlers: ownership, provider mappings, isolation, confirm, delete", async () => {
+test("production handlers: oEmbed ownership, isolation, confirm, delete (no bearer)", async () => {
   const snowflake = "18446744073709551615";
   const pool = makeFakePool({
     stances: [
@@ -235,149 +282,207 @@ test("production handlers: ownership, provider mappings, isolation, confirm, del
       { x_user_id: "111", proposal_id: "bip110", stance: "neutral" },
     ],
   });
-  process.env.X_BEARER_TOKEN = "test-bearer";
-  const app = makeApp({
-    session: { x_user_id: "111", handle: "alice" },
-    pool,
-    fetchImpl: async (url) => {
-      const id = String(url).split("/tweets/")[1]?.split("?")[0];
-      if (id === "999") return jsonResponse(200, { data: { id: "999", author_id: "222", text: "nope" } });
-      if (id === "404") return new Response("{}", { status: 404 });
-      if (id === "429") return new Response("{}", { status: 429 });
-      if (id === "500") return new Response("{}", { status: 500 });
-      if (id === "slow") {
-        await new Promise((r) => setTimeout(r, 50));
-        return jsonResponse(200, { data: { id: "slow", author_id: "111", text: "late" } });
-      }
-      return jsonResponse(200, {
-        data: {
-          id,
-          author_id: "111",
-          text: `api-text-${id}`,
-          created_at: "2024-01-01T00:00:00.000Z",
-        },
+  const prevBearer = process.env.X_BEARER_TOKEN;
+  const prevTw = process.env.TWITTER_BEARER_TOKEN;
+  delete process.env.X_BEARER_TOKEN;
+  delete process.env.TWITTER_BEARER_TOKEN;
+
+  try {
+    const app = makeApp({
+      session: { x_user_id: "111", handle: "alice" },
+      pool,
+      fetchImpl: makeProviderFetch(),
+    });
+
+    await withServer(app, async (base) => {
+      const noStance = await fetch(`${base}/api/stance-explanation`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          proposal: "bip448",
+          tweet_url: `https://x.com/alice/status/${snowflake}`,
+        }),
       });
-    },
+      assert.equal(noStance.status, 409);
+
+      const wrongAuthor = await fetch(`${base}/api/stance-explanation`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ proposal: "bip54", tweet_url: "https://x.com/alice/status/999" }),
+      });
+      assert.equal(wrongAuthor.status, 403);
+
+      const missing = await fetch(`${base}/api/stance-explanation`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ proposal: "bip54", tweet_url: "https://x.com/alice/status/404" }),
+      });
+      assert.equal(missing.status, 404);
+
+      const rate = await fetch(`${base}/api/stance-explanation`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ proposal: "bip54", tweet_url: "https://x.com/alice/status/429" }),
+      });
+      assert.equal(rate.status, 503);
+
+      const fail = await fetch(`${base}/api/stance-explanation`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ proposal: "bip54", tweet_url: "https://x.com/alice/status/500" }),
+      });
+      assert.equal(fail.status, 503);
+
+      const save54 = await fetch(`${base}/api/stance-explanation`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          proposal: "bip54",
+          tweet_url: `https://x.com/alice/status/${snowflake}?s=20`,
+          tweet_text: "client-forged-text",
+        }),
+      });
+      assert.equal(save54.status, 200);
+      const body54 = await save54.json();
+      assert.equal(body54.explanation.tweet_id, snowflake);
+      assert.equal(body54.explanation.tweet_text, `oembed-text-${snowflake}`);
+      assert.equal(body54.explanation.verification_method, "x_oembed_author_handle");
+      assert.doesNotMatch(body54.explanation.tweet_text, /</);
+      assert.equal(pool._explanations.get("111:bip54")?.verification_method, "x_oembed_author_handle");
+      assert.equal(pool._explanations.get("111:bip54")?.author_x_user_id, null);
+
+      const save460 = await fetch(`${base}/api/stance-explanation`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          proposal: "bip460",
+          tweet_url: "https://x.com/alice/status/42",
+        }),
+      });
+      assert.equal(save460.status, 200);
+
+      pool._stances.set("111:bip54", { x_user_id: "111", proposal_id: "bip54", stance: "approve" });
+      const confirm = await fetch(`${base}/api/stance-explanation`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ proposal: "bip54", confirm_existing: true }),
+      });
+      assert.equal(confirm.status, 200);
+      const confirmed = await confirm.json();
+      assert.equal(confirmed.explanation.stance_at_verification, "approve");
+      assert.equal(confirmed.explanation.tweet_id, snowflake);
+
+      const del54 = await fetch(`${base}/api/stance-explanation`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ proposal: "bip54" }),
+      });
+      assert.equal(del54.status, 200);
+      assert.equal(pool._explanations.has("111:bip54"), false);
+      assert.equal(pool._explanations.get("111:bip460")?.tweet_id, "42");
+
+      const save110 = await fetch(`${base}/api/stance-explanation`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          proposal: "bip110",
+          tweet_url: "https://x.com/alice/status/1101",
+        }),
+      });
+      assert.equal(save110.status, 200);
+      assert.equal(pool._stances.get("111:bip110")?.stance, "neutral");
+    });
+  } finally {
+    if (prevBearer != null) process.env.X_BEARER_TOKEN = prevBearer;
+    else delete process.env.X_BEARER_TOKEN;
+    if (prevTw != null) process.env.TWITTER_BEARER_TOKEN = prevTw;
+    else delete process.env.TWITTER_BEARER_TOKEN;
+  }
+});
+
+test("optional bearer cross-check upgrades verification_method and rejects author_id mismatch", async () => {
+  const pool = makeFakePool({
+    stances: [{ x_user_id: "111", proposal_id: "bip54", stance: "against" }],
   });
-
-  await withServer(app, async (base) => {
-    const noStance = await fetch(`${base}/api/stance-explanation`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        proposal: "bip448",
-        tweet_url: `https://x.com/alice/status/${snowflake}`,
-      }),
+  process.env.X_BEARER_TOKEN = "test-bearer";
+  try {
+    const okApp = makeApp({
+      session: { x_user_id: "111", handle: "alice" },
+      pool,
+      fetchImpl: makeProviderFetch({ apiAuthorId: "111" }),
     });
-    assert.equal(noStance.status, 409);
-
-    const wrongAuthor = await fetch(`${base}/api/stance-explanation`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ proposal: "bip54", tweet_url: "https://x.com/alice/status/999" }),
+    await withServer(okApp, async (base) => {
+      const save = await fetch(`${base}/api/stance-explanation`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          proposal: "bip54",
+          tweet_url: "https://x.com/alice/status/55",
+          tweet_text: "forged",
+        }),
+      });
+      assert.equal(save.status, 200);
+      const body = await save.json();
+      assert.equal(body.explanation.tweet_text, "api-text-55");
+      assert.equal(body.explanation.verification_method, "x_api_author_id");
+      assert.equal(pool._explanations.get("111:bip54")?.author_x_user_id, "111");
+      assert.equal(pool._explanations.get("111:bip54")?.verification_method, "x_api_author_id");
     });
-    assert.equal(wrongAuthor.status, 403);
 
-    const missing = await fetch(`${base}/api/stance-explanation`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ proposal: "bip54", tweet_url: "https://x.com/alice/status/404" }),
+    const mismatchPool = makeFakePool({
+      stances: [{ x_user_id: "111", proposal_id: "bip54", stance: "against" }],
     });
-    assert.equal(missing.status, 404);
-
-    const rate = await fetch(`${base}/api/stance-explanation`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ proposal: "bip54", tweet_url: "https://x.com/alice/status/429" }),
+    const badApp = makeApp({
+      session: { x_user_id: "111", handle: "alice" },
+      pool: mismatchPool,
+      fetchImpl: async (url) => {
+        const u = String(url);
+        if (u.includes("oembed")) {
+          return jsonResponse(200, oembedPayload("alice", "77", "handle-ok"));
+        }
+        return jsonResponse(200, { data: { id: "77", author_id: "999", text: "api" } });
+      },
     });
-    assert.equal(rate.status, 429);
-
-    const fail = await fetch(`${base}/api/stance-explanation`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ proposal: "bip54", tweet_url: "https://x.com/alice/status/500" }),
+    await withServer(badApp, async (base) => {
+      const res = await fetch(`${base}/api/stance-explanation`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ proposal: "bip54", tweet_url: "https://x.com/alice/status/77" }),
+      });
+      assert.equal(res.status, 403);
+      assert.equal(mismatchPool._explanations.size, 0);
     });
-    assert.equal(fail.status, 502);
-
-    const save54 = await fetch(`${base}/api/stance-explanation`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        proposal: "bip54",
-        tweet_url: `https://x.com/alice/status/${snowflake}`,
-        tweet_text: "client-forged-text",
-      }),
-    });
-    assert.equal(save54.status, 200);
-    const body54 = await save54.json();
-    assert.equal(body54.explanation.tweet_id, snowflake);
-    assert.equal(body54.explanation.tweet_text, `api-text-${snowflake}`);
-
-    const save460 = await fetch(`${base}/api/stance-explanation`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        proposal: "bip460",
-        tweet_url: "https://x.com/alice/status/42",
-      }),
-    });
-    assert.equal(save460.status, 200);
-
-    // Stance change on bip54 leaves stored explanation; confirm rebinds publicly.
-    pool._stances.set("111:bip54", { x_user_id: "111", proposal_id: "bip54", stance: "approve" });
-    const confirm = await fetch(`${base}/api/stance-explanation`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ proposal: "bip54", confirm_existing: true }),
-    });
-    assert.equal(confirm.status, 200);
-    const confirmed = await confirm.json();
-    assert.equal(confirmed.explanation.stance_at_verification, "approve");
-    assert.equal(confirmed.explanation.tweet_id, snowflake);
-
-    const del54 = await fetch(`${base}/api/stance-explanation`, {
-      method: "DELETE",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ proposal: "bip54" }),
-    });
-    assert.equal(del54.status, 200);
-    assert.equal(pool._explanations.has("111:bip54"), false);
-    assert.equal(pool._explanations.get("111:bip460")?.tweet_id, "42");
-
-    // BIP-110 explanation management does not require changing the frozen stance.
-    const save110 = await fetch(`${base}/api/stance-explanation`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        proposal: "bip110",
-        tweet_url: "https://x.com/alice/status/1101",
-      }),
-    });
-    assert.equal(save110.status, 200);
-    assert.equal(pool._stances.get("111:bip110")?.stance, "neutral");
-  });
+  } finally {
+    delete process.env.X_BEARER_TOKEN;
+  }
 });
 
 test("production verify path maps timeout/abort to temporary failure without writing", async () => {
   const pool = makeFakePool({
     stances: [{ x_user_id: "111", proposal_id: "bip54", stance: "against" }],
   });
-  process.env.X_BEARER_TOKEN = "test-bearer";
-  const result = await verifyAndUpsertStanceExplanation(pool as never, {
-    xUserId: "111",
-    handle: "alice",
-    proposalId: "bip54",
-    tweetUrl: "https://x.com/alice/status/1",
-    fetchImpl: async () => {
-      throw Object.assign(new Error("Aborted"), { name: "AbortError" });
-    },
-  });
-  assert.equal(result.ok, false);
-  if (!result.ok) {
-    assert.equal(result.status, 503);
-    assert.equal(result.error, "verification_unavailable");
+  const prevBearer = process.env.X_BEARER_TOKEN;
+  delete process.env.X_BEARER_TOKEN;
+  try {
+    const result = await verifyAndUpsertStanceExplanation(pool as never, {
+      xUserId: "111",
+      handle: "alice",
+      proposalId: "bip54",
+      tweetUrl: "https://x.com/alice/status/1",
+      fetchImpl: async () => {
+        throw Object.assign(new Error("Aborted"), { name: "AbortError" });
+      },
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.status, 503);
+      assert.equal(result.error, "verification_unavailable");
+    }
+    assert.equal(pool._explanations.size, 0);
+  } finally {
+    if (prevBearer != null) process.env.X_BEARER_TOKEN = prevBearer;
+    else delete process.env.X_BEARER_TOKEN;
   }
-  assert.equal(pool._explanations.size, 0);
 });
 
 test("production admin stance: final BIP-110 blocks any target; hampus_s is not admin", async () => {
