@@ -42,6 +42,8 @@ test("selected avatar card has no close X button and can show full explanation",
   assert.doesNotMatch(appSrc, /Clear selected user/);
   assert.doesNotMatch(cssSrc, /\.selectedUserCard__close\b/);
   assert.match(cssSrc, /selectedUserCard__explanationText/);
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard\s*\{[^}]*align-items:\s*center/m);
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__identity\s*\{[^}]*flex-direction:\s*column/m);
 });
 
 test("mobile header stacks brand, galaxy title, and search without absolute overlap", () => {
@@ -60,12 +62,13 @@ test("mobile header stacks brand, galaxy title, and search without absolute over
   assert.match(cssSrc, /"brand search controls"/);
   assert.match(cssSrc, /\.selectedUserCard\s*\{/);
   assert.match(cssSrc, /\.searchToggleBtn\s*\{/);
-  assert.match(cssSrc, /\.galaxyHeaderNav__tooltip\s*\{[\s\S]*display:\s*none/);
+  assert.doesNotMatch(cssSrc, /\.galaxyHeaderNav__tooltip\b/);
   assert.match(cssSrc, /\.galaxyHeaderNav__description\s*\{[\s\S]*display:\s*block/);
 });
 
 test("header BIP nav is a centered dropdown without prev/next controls", () => {
   const headerSrc = fs.readFileSync(path.join(here, "GalaxyHeaderNav.jsx"), "utf8");
+  const cssSrc = fs.readFileSync(path.join(here, "..", "index.css"), "utf8");
   assert.match(headerSrc, /role="listbox"/);
   assert.match(headerSrc, /aria-haspopup="listbox"/);
   assert.match(headerSrc, /galaxyHeaderNav__trigger/);
@@ -74,8 +77,15 @@ test("header BIP nav is a centered dropdown without prev/next controls", () => {
   assert.match(headerSrc, /galaxyHeaderNav__descRow/);
   assert.match(headerSrc, /visualTheme\?\.accent/);
   assert.doesNotMatch(headerSrc, /p\.id === "bip110"/);
-  assert.match(headerSrc, /Final snapshot/);
-  assert.match(headerSrc, /Ongoing/);
+  assert.match(headerSrc, /FINAL SNAPSHOT/);
+  assert.match(headerSrc, /ONGOING/);
+  assert.match(headerSrc, /galaxyHeaderNav__optionStatus/);
+  assert.doesNotMatch(headerSrc, /galaxyHeaderNav__tooltip/);
+  assert.doesNotMatch(headerSrc, /role="tooltip"/);
+  assert.doesNotMatch(cssSrc, /\.galaxyHeaderNav__tooltip\b/);
+  assert.doesNotMatch(cssSrc, /galaxyHeaderNav:hover\s*>\s*\.galaxyHeaderNav__tooltip/);
+  assert.match(cssSrc, /\.galaxyHeaderNav__optionTitle\s*\{[\s\S]*flex-wrap:\s*wrap/);
+  assert.match(cssSrc, /\.galaxyHeaderNav__optionStatus\s*\{[\s\S]*font-size:\s*9px/);
   assert.match(headerSrc, /Escape/);
   assert.match(headerSrc, /triggerRef/);
   assert.match(headerSrc, /restoreFocusAfterTravelRef/);

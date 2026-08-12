@@ -35,11 +35,24 @@ test("App presents BIP-110 as a locked final snapshot with explanation managemen
   assert.doesNotMatch(appSrc, /onClick=\{\(\) => setStanceChoiceOpen/);
 });
 
-test("BIP-110 concluded copy lives in the galaxy header hover tooltip", () => {
+test("BIP header has no hover info dialog; status is inline in the dropdown", () => {
   const headerSrc = readFileSync(join(root, "src", "components", "GalaxyHeaderNav.jsx"), "utf8");
-  assert.match(headerSrc, /Concluded without consensus/);
-  assert.match(headerSrc, /galaxyHeaderNav__tooltip/);
-  assert.match(headerSrc, /Ongoing proposal\. Current positions are self-reported/);
+  assert.doesNotMatch(headerSrc, /galaxyHeaderNav__tooltip/);
+  assert.doesNotMatch(headerSrc, /role="tooltip"/);
+  assert.doesNotMatch(headerSrc, /Concluded without consensus/);
+  assert.doesNotMatch(headerSrc, /Ongoing proposal\. Current positions are self-reported/);
+  assert.match(headerSrc, /FINAL SNAPSHOT/);
+  assert.match(headerSrc, /ONGOING/);
+  assert.match(headerSrc, /galaxyHeaderNav__optionStatus/);
+  // Status sits inside the title row with the BIP name, not as a third line under the description.
+  assert.match(
+    headerSrc,
+    /galaxyHeaderNav__optionTitle[\s\S]*?galaxyHeaderNav__optionStatus[\s\S]*?galaxyHeaderNav__optionDesc/
+  );
+  assert.doesNotMatch(
+    headerSrc,
+    /galaxyHeaderNav__optionDesc[\s\S]{0,160}galaxyHeaderNav__optionStatus/
+  );
 });
 
 test("self-service stance writes are enabled for ongoing proposals; final stays frozen for everyone", () => {
@@ -87,6 +100,17 @@ test("hover and selected card render plain-text explanation surfaces", () => {
   assert.match(cssSrc, /min\(28vh,\s*220px\)/);
   assert.equal(snippetStanceExplanation("short"), "short");
   assert.match(snippetStanceExplanation("x".repeat(200), 40), /…$/);
+});
+
+test("selected-user card centers avatar and primary content with scrollable explanation", () => {
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard\s*\{[^}]*flex-direction:\s*column/m);
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard\s*\{[^}]*align-items:\s*center/m);
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard\s*\{[^}]*text-align:\s*center/m);
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__identity\s*\{[^}]*flex-direction:\s*column/m);
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__identity\s*\{[^}]*align-items:\s*center/m);
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__explanationText\s*\{[^}]*text-align:\s*left/m);
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__explanationText\s*\{[^}]*overflow-y:\s*auto/m);
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__explanationText\s*\{[^}]*max-height:\s*min\(28vh,\s*220px\)/m);
 });
 
 test("own stance chooser is available on ongoing proposals; final can manage explanations", () => {

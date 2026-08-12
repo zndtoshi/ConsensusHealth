@@ -133,40 +133,40 @@ button:focus-visible {
   left: 50%;
   transform: translateX(-50%);
   z-index: 45;
-  display: inline-flex;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 190px;
   max-width: min(320px, calc(100vw - 24px));
-  padding: 8px 10px 8px 8px;
+  padding: 10px 12px;
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(15, 23, 42, 0.96);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+  text-align: center;
 }
 
 .selectedUserCard--withExplanation {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
   width: min(420px, calc(100vw - 24px));
   max-width: min(420px, calc(100vw - 24px));
-  padding: 10px;
+  padding: 12px;
 }
 
 .selectedUserCard__identity {
-  display: inline-flex;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
+  width: 100%;
 }
 
 .selectedUserCard__avatar {
-  width: 34px;
-  height: 34px;
+  width: 40px;
+  height: 40px;
   border-radius: 999px;
   object-fit: cover;
   border: 1px solid rgba(255, 255, 255, 0.24);
@@ -177,7 +177,8 @@ button:focus-visible {
   display: grid;
   gap: 2px;
   min-width: 0;
-  flex: 1 1 auto;
+  width: 100%;
+  justify-items: center;
 }
 
 .selectedUserCard__handle {
@@ -185,6 +186,7 @@ button:focus-visible {
   font-size: 13px;
   font-weight: 800;
   text-decoration: none;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -208,8 +210,10 @@ button:focus-visible {
   display: grid;
   gap: 6px;
   min-width: 0;
+  width: 100%;
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   padding-top: 8px;
+  justify-items: center;
 }
 
 .selectedUserCard__explanationLabel {
@@ -222,6 +226,7 @@ button:focus-visible {
 
 .selectedUserCard__explanationText {
   margin: 0;
+  width: 100%;
   max-height: min(28vh, 220px);
   overflow-x: hidden;
   overflow-y: auto;
@@ -230,6 +235,7 @@ button:focus-visible {
   font-size: 12px;
   font-weight: 500;
   line-height: 1.45;
+  text-align: left;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -338,7 +344,7 @@ button:focus-visible {
     max-width: none;
   }
 
-  /* Compact galaxy title row — description/tooltip were colliding on phones. */
+  /* Compact galaxy title row on phones. */
   .galaxyHeaderNav {
     width: 100%;
     gap: 6px;
@@ -349,10 +355,6 @@ button:focus-visible {
     min-width: 0;
     width: 100%;
     max-width: min(320px, 86vw);
-  }
-
-  .galaxyHeaderNav__tooltip {
-    display: none;
   }
 
   .galaxyHeaderNav__description {
@@ -1648,14 +1650,18 @@ html[data-browser="firefox"] .stanceGlow {
 }
 
 .galaxyHeaderNav__optionTitle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
   font-size: 13px;
   color: #f8fafc;
 }
 
 .galaxyHeaderNav__optionTitle strong {
+  flex: 0 1 auto;
+  min-width: 0;
   font-weight: 800;
   letter-spacing: 0.02em;
   color: var(--option-accent, #f8fafc);
@@ -1678,58 +1684,15 @@ html[data-browser="firefox"] .stanceGlow {
 }
 
 .galaxyHeaderNav__optionStatus {
-  padding-left: 18px;
-  color: color-mix(in srgb, var(--option-accent, #94a3b8) 30%, rgba(226, 232, 240, 0.5));
-  font-size: 10px;
-  letter-spacing: 0.02em;
+  flex: 0 1 auto;
+  min-width: 0;
+  color: rgba(226, 232, 240, 0.52);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  line-height: 1.2;
   text-transform: uppercase;
-}
-
-.galaxyHeaderNav__tooltip {
-  position: absolute;
-  left: 50%;
-  top: calc(100% + 10px);
-  transform: translateX(-50%) translateY(4px);
-  min-width: 220px;
-  max-width: min(320px, 70vw);
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgba(15, 23, 42, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42);
-  display: grid;
-  gap: 5px;
-  text-align: left;
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 160ms ease, transform 160ms ease, visibility 160ms ease;
-  z-index: 40;
-}
-
-.galaxyHeaderNav__tooltip strong {
-  color: #f8fafc;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.galaxyHeaderNav__tooltip span {
-  color: rgba(226, 232, 240, 0.76);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.galaxyHeaderNav__status {
-  color: rgba(226, 232, 240, 0.58) !important;
-  font-size: 10px !important;
-  letter-spacing: 0.01em;
-}
-
-.galaxyHeaderNav:hover > .galaxyHeaderNav__tooltip,
-.galaxyHeaderNav:focus-within > .galaxyHeaderNav__tooltip {
-  opacity: 1;
-  visibility: visible;
-  transform: translateX(-50%) translateY(0);
+  white-space: nowrap;
 }
 
 .distantGalaxies {
@@ -1938,8 +1901,7 @@ html[data-browser="firefox"] .stanceGlow {
   .distantGalaxy--static .distantGalaxy__core,
   .galaxyHeaderNav__trigger,
   .galaxyHeaderNav__chevron,
-  .galaxyHeaderNav__github,
-  .galaxyHeaderNav__tooltip {
+  .galaxyHeaderNav__github {
     transition: none;
   }
 }

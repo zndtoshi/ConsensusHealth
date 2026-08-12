@@ -9,9 +9,9 @@ import {
 
 function proposalStatusLabel(proposal) {
   if (!proposal) return "";
-  if (isFinalProposal(proposal)) return "Final snapshot";
-  if (isOngoingProposal(proposal)) return "Ongoing";
-  if (proposal.adminOnly) return "Admin preview";
+  if (isFinalProposal(proposal)) return "FINAL SNAPSHOT";
+  if (isOngoingProposal(proposal)) return "ONGOING";
+  if (proposal.adminOnly) return "ADMIN PREVIEW";
   return "";
 }
 
@@ -253,11 +253,11 @@ export function GalaxyHeaderNav({
                         <span className="galaxyHeaderNav__checkSpacer" aria-hidden="true" />
                       )}
                       <strong>{p.title}</strong>
+                      {optionStatus ? (
+                        <span className="galaxyHeaderNav__optionStatus">{optionStatus}</span>
+                      ) : null}
                     </span>
                     <span className="galaxyHeaderNav__optionDesc">{p.description}</span>
-                    {optionStatus ? (
-                      <span className="galaxyHeaderNav__optionStatus">{optionStatus}</span>
-                    ) : null}
                   </button>
                 </li>
               );
@@ -265,18 +265,6 @@ export function GalaxyHeaderNav({
           </ul>
         ) : null}
       </div>
-
-      {!open ? (
-        <div className="galaxyHeaderNav__tooltip" role="tooltip">
-          <strong>{current.title}</strong>
-          <span>{current.description}</span>
-          <span className="galaxyHeaderNav__status">
-            {isFinalSnapshot
-              ? "Concluded without consensus. Positions are locked and preserved as a final snapshot."
-              : "Ongoing proposal. Current positions are self-reported by authenticated accounts."}
-          </span>
-        </div>
-      ) : null}
     </div>
   );
 }
