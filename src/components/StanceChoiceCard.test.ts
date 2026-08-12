@@ -102,15 +102,12 @@ test("hover and selected card render plain-text explanation surfaces", () => {
   assert.match(snippetStanceExplanation("x".repeat(200), 40), /…$/);
 });
 
-test("selected-user card centers avatar and primary content with scrollable explanation", () => {
-  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard\s*\{[^}]*flex-direction:\s*column/m);
-  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard\s*\{[^}]*align-items:\s*center/m);
-  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard\s*\{[^}]*text-align:\s*center/m);
-  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__identity\s*\{[^}]*flex-direction:\s*column/m);
-  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__identity\s*\{[^}]*align-items:\s*center/m);
-  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__explanationText\s*\{[^}]*text-align:\s*left/m);
-  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__explanationText\s*\{[^}]*overflow-y:\s*auto/m);
-  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__explanationText\s*\{[^}]*max-height:\s*min\(28vh,\s*220px\)/m);
+test("selected-user card keeps the compact left-aligned identity layout", () => {
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard\s*\{[^}]*display:\s*inline-flex/m);
+  assert.doesNotMatch(cssSrc, /(?:^|\n)\.selectedUserCard\s*\{[^}]*flex-direction:\s*column/m);
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard--withExplanation\s*\{[^}]*align-items:\s*stretch/m);
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__identity\s*\{[^}]*display:\s*inline-flex/m);
+  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__avatar\s*\{[^}]*width:\s*34px[^}]*height:\s*34px/m);
 });
 
 test("own stance chooser is available on ongoing proposals; final can manage explanations", () => {

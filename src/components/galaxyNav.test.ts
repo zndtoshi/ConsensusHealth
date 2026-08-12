@@ -42,8 +42,6 @@ test("selected avatar card has no close X button and can show full explanation",
   assert.doesNotMatch(appSrc, /Clear selected user/);
   assert.doesNotMatch(cssSrc, /\.selectedUserCard__close\b/);
   assert.match(cssSrc, /selectedUserCard__explanationText/);
-  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard\s*\{[^}]*align-items:\s*center/m);
-  assert.match(cssSrc, /(?:^|\n)\.selectedUserCard__identity\s*\{[^}]*flex-direction:\s*column/m);
 });
 
 test("mobile header stacks brand, galaxy title, and search without absolute overlap", () => {
