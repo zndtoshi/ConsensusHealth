@@ -5,11 +5,38 @@
 import type { Pool, PoolClient } from "pg";
 import { normalizeStanceValue, type StanceValue } from "./stanceHistory.js";
 import {
+  classifyXApiError,
   fetchXTweetById,
   getXAppBearerToken,
-  isXApiTimeoutError,
+  type XApiErrorKind,
 } from "./xApiUsers.js";
 import { parseStanceExplanationUrl } from "./stanceExplanationUrl.js";
+
+export const STANCE_EXPLANATION_USER_MESSAGES = {
+  invalid_tweet_url: "Enter a direct link to one of your X posts.",
+  stance_required: "Choose a position before attaching an explanation.",
+  verification_unavailable:
+    "X verification is temporarily unavailable. Your explanation was not changed; please try again shortly.",
+  verification_failed: "We could not verify this X post right now. Please try again shortly.",
+  verification_rate_limited: "X verification is temporarily rate-limited. Please wait a moment and try again.",
+  tweet_unavailable: "This X post could not be found or is not publicly accessible.",
+  tweet_author_mismatch: "This post was not published by your connected X account.",
+} as const;
+
+function logVerifyIssue(opts: {
+  reason: XApiErrorKind | "invalid_tweet_url" | "stance_required" | "tweet_unavailable" | "tweet_author_mismatch";
+  proposalId: string;
+  xUserId: string;
+  tweetId?: string;
+}) {
+  // Operator-only diagnostics: never log tokens, cookies, or provider payloads.
+  console.warn("[stance-explanation-verify]", {
+    reason: opts.reason,
+    proposal_id: opts.proposalId,
+    x_user_id: opts.xUserId,
+    ...(opts.tweetId ? { tweet_id: opts.tweetId } : {}),
+  });
+}
 
 export type StanceExplanationPublicDto = {
   proposal_id: string;
@@ -176,7 +203,17 @@ export async function verifyAndUpsertStanceExplanation(
 ): Promise<VerifyAndUpsertResult> {
   const parsed = parseStanceExplanationUrl(args.tweetUrl, args.handle);
   if (!parsed.ok) {
-    return { ok: false, status: 400, error: "invalid_tweet_url", message: parsed.error };
+    logVerifyIssue({
+      reason: "invalid_tweet_url",
+      proposalId: args.proposalId,
+      xUserId: args.xUserId,
+    });
+    return {
+      ok: false,
+      status: 400,
+      error: "invalid_tweet_url",
+      message: STANCE_EXPLANATION_USER_MESSAGES.invalid_tweet_url,
+    };
   }
 
   const stanceRes = await pool.query(
@@ -189,7 +226,7 @@ export async function verifyAndUpsertStanceExplanation(
       ok: false,
       status: 409,
       error: "stance_required",
-      message: "Choose a position before attaching an explanation.",
+      message: STANCE_EXPLANATION_USER_MESSAGES.stance_required,
     };
   }
 
@@ -197,29 +234,83 @@ export async function verifyAndUpsertStanceExplanation(
   try {
     bearer = await getXAppBearerToken({ fetchImpl: args.fetchImpl });
   } catch (err) {
-    if (isXApiTimeoutError(err)) {
-      return { ok: false, status: 503, error: "verification_unavailable" };
-    }
-    return { ok: false, status: 503, error: "verification_unavailable" };
+    const reason = classifyXApiError(err);
+    logVerifyIssue({
+      reason,
+      proposalId: args.proposalId,
+      xUserId: args.xUserId,
+      tweetId: parsed.value.tweetId,
+    });
+    return {
+      ok: false,
+      status: 503,
+      error: "verification_unavailable",
+      message: STANCE_EXPLANATION_USER_MESSAGES.verification_unavailable,
+    };
   }
 
   let tweet;
   try {
     tweet = await fetchXTweetById(bearer, parsed.value.tweetId, { fetchImpl: args.fetchImpl });
   } catch (err) {
-    if (isXApiTimeoutError(err)) {
-      return { ok: false, status: 503, error: "verification_unavailable" };
+    const reason = classifyXApiError(err);
+    logVerifyIssue({
+      reason,
+      proposalId: args.proposalId,
+      xUserId: args.xUserId,
+      tweetId: parsed.value.tweetId,
+    });
+    if (reason === "rate_limited") {
+      return {
+        ok: false,
+        status: 429,
+        error: "verification_rate_limited",
+        message: STANCE_EXPLANATION_USER_MESSAGES.verification_rate_limited,
+      };
     }
-    const status = Number((err as { status?: number })?.status || 0);
-    if (status === 429) return { ok: false, status: 429, error: "verification_rate_limited" };
-    return { ok: false, status: 502, error: "verification_failed" };
+    if (reason === "timeout" || reason === "provider_auth_failed" || reason === "missing_credentials") {
+      return {
+        ok: false,
+        status: 503,
+        error: "verification_unavailable",
+        message: STANCE_EXPLANATION_USER_MESSAGES.verification_unavailable,
+      };
+    }
+    return {
+      ok: false,
+      status: 502,
+      error: "verification_failed",
+      message: STANCE_EXPLANATION_USER_MESSAGES.verification_failed,
+    };
   }
 
   if (!tweet) {
-    return { ok: false, status: 404, error: "tweet_unavailable" };
+    logVerifyIssue({
+      reason: "tweet_unavailable",
+      proposalId: args.proposalId,
+      xUserId: args.xUserId,
+      tweetId: parsed.value.tweetId,
+    });
+    return {
+      ok: false,
+      status: 404,
+      error: "tweet_unavailable",
+      message: STANCE_EXPLANATION_USER_MESSAGES.tweet_unavailable,
+    };
   }
   if (tweet.authorId !== String(args.xUserId).trim()) {
-    return { ok: false, status: 403, error: "tweet_author_mismatch" };
+    logVerifyIssue({
+      reason: "tweet_author_mismatch",
+      proposalId: args.proposalId,
+      xUserId: args.xUserId,
+      tweetId: tweet.id,
+    });
+    return {
+      ok: false,
+      status: 403,
+      error: "tweet_author_mismatch",
+      message: STANCE_EXPLANATION_USER_MESSAGES.tweet_author_mismatch,
+    };
   }
 
   const handle = String(args.handle)

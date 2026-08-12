@@ -77,3 +77,28 @@ test("snippetExplanationText truncates safely", () => {
   assert.match(snip, /…$/);
   assert.equal(snippetExplanationText("short", 40), "short");
 });
+
+test("verify failures include safe user-facing messages without secrets", async () => {
+  const { STANCE_EXPLANATION_USER_MESSAGES, verifyAndUpsertStanceExplanation } = await import(
+    "./stanceExplanations.js"
+  );
+  const pool = {
+    query: async () => ({ rows: [{ stance: "against" }] }),
+  };
+  process.env.X_BEARER_TOKEN = "";
+  delete process.env.TWITTER_BEARER_TOKEN;
+  delete process.env.X_CLIENT_ID;
+  delete process.env.X_CLIENT_SECRET;
+  const result = await verifyAndUpsertStanceExplanation(pool as never, {
+    xUserId: "1",
+    handle: "alice",
+    proposalId: "bip54",
+    tweetUrl: "https://x.com/alice/status/1",
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error, "verification_unavailable");
+    assert.equal(result.message, STANCE_EXPLANATION_USER_MESSAGES.verification_unavailable);
+    assert.doesNotMatch(result.message || "", /Bearer|CLIENT_SECRET|token/i);
+  }
+});

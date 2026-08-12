@@ -11,14 +11,40 @@ export type XApiUserProfile = {
   bio: string | null;
 };
 
-/** Bounded timeout for explanation-verification X API calls. */
 export const X_API_REQUEST_TIMEOUT_MS = 8_000;
+
+export type XApiErrorKind =
+  | "missing_credentials"
+  | "bearer_acquisition_failed"
+  | "timeout"
+  | "provider_auth_failed"
+  | "rate_limited"
+  | "provider_failed";
 
 export class XApiTimeoutError extends Error {
   status = 503;
+  kind: XApiErrorKind = "timeout";
   constructor(message = "X API request timed out") {
     super(message);
     this.name = "XApiTimeoutError";
+  }
+}
+
+export class XApiConfigError extends Error {
+  kind: XApiErrorKind = "missing_credentials";
+  constructor(message = "Missing X app credentials") {
+    super(message);
+    this.name = "XApiConfigError";
+  }
+}
+
+export class XApiBearerError extends Error {
+  kind: XApiErrorKind = "bearer_acquisition_failed";
+  status?: number;
+  constructor(message: string, status?: number) {
+    super(message);
+    this.name = "XApiBearerError";
+    this.status = status;
   }
 }
 
@@ -27,6 +53,16 @@ export function isXApiTimeoutError(err: unknown): boolean {
   if (err instanceof XApiTimeoutError) return true;
   const name = String((err as { name?: unknown }).name || "");
   return name === "AbortError" || name === "TimeoutError" || name === "XApiTimeoutError";
+}
+
+export function classifyXApiError(err: unknown): XApiErrorKind {
+  if (err instanceof XApiConfigError) return "missing_credentials";
+  if (err instanceof XApiBearerError) return "bearer_acquisition_failed";
+  if (isXApiTimeoutError(err)) return "timeout";
+  const status = Number((err as { status?: number })?.status || 0);
+  if (status === 429) return "rate_limited";
+  if (status === 401 || status === 403) return "provider_auth_failed";
+  return "provider_failed";
 }
 
 export async function fetchWithTimeout(
@@ -87,33 +123,38 @@ export async function getXAppBearerToken(opts?: {
   const clientId = (process.env.X_CLIENT_ID || process.env.TWITTER_CLIENT_ID || "").trim();
   const clientSecret = (process.env.X_CLIENT_SECRET || process.env.TWITTER_CLIENT_SECRET || "").trim();
   if (!clientId || !clientSecret) {
-    throw new Error(
+    throw new XApiConfigError(
       "Missing X app credentials. Set X_BEARER_TOKEN or X_CLIENT_ID + X_CLIENT_SECRET."
     );
   }
 
   const body = new URLSearchParams({ grant_type: "client_credentials" });
   const fetchImpl = opts?.fetchImpl ?? fetch;
-  const res = await fetchWithTimeout(
-    fetchImpl,
-    "https://api.x.com/2/oauth2/token",
-    {
-      method: "POST",
-      headers: {
-        Authorization: basicAuthHeader(clientId, clientSecret),
-        "Content-Type": "application/x-www-form-urlencoded",
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      fetchImpl,
+      "https://api.x.com/2/oauth2/token",
+      {
+        method: "POST",
+        headers: {
+          Authorization: basicAuthHeader(clientId, clientSecret),
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body,
       },
-      body,
-    },
-    opts?.timeoutMs ?? X_API_REQUEST_TIMEOUT_MS
-  );
+      opts?.timeoutMs ?? X_API_REQUEST_TIMEOUT_MS
+    );
+  } catch (err) {
+    if (isXApiTimeoutError(err)) throw err;
+    throw new XApiBearerError("X client_credentials request failed");
+  }
   if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`X client_credentials failed: ${res.status} ${txt.slice(0, 200)}`);
+    throw new XApiBearerError(`X client_credentials failed: ${res.status}`, res.status);
   }
   const json = (await res.json()) as { access_token?: string };
   const token = String(json.access_token ?? "").trim();
-  if (!token) throw new Error("X client_credentials response missing access_token");
+  if (!token) throw new XApiBearerError("X client_credentials response missing access_token");
   return token;
 }
 

@@ -31,6 +31,11 @@ import {
 } from "./utils/manualEditState";
 import { canUseFullProposalCatalog } from "./utils/fullUniversePreview";
 import {
+  friendlyStanceExplanationError,
+  PARTIAL_STANCE_EXPLANATION_STATUS,
+} from "./utils/stanceExplanationErrors";
+import { applySparseFitCap, sparseSelectedTargetSide } from "./utils/sparseFitCap";
+import {
   filterSeedOnlyAccounts,
   filterSelfReportedAccounts,
   isStanceAnalyst,
@@ -1055,6 +1060,7 @@ export default function App() {
   const [manualEditMode, setManualEditMode] = useState(false);
   const [manualEditTarget, setManualEditTarget] = useState(null);
   const [stanceChoiceOpen, setStanceChoiceOpen] = useState(false);
+  const [stanceChoiceSession, setStanceChoiceSession] = useState(0);
   const [stanceChoiceBusy, setStanceChoiceBusy] = useState(false);
   const [stanceVerifyBusy, setStanceVerifyBusy] = useState(false);
   const [stanceChoiceStatus, setStanceChoiceStatus] = useState("");
@@ -1919,6 +1925,7 @@ export default function App() {
     if (!canManageOwnExplanation) return;
     setStanceChoiceError("");
     setStanceChoiceStatus("");
+    setStanceChoiceSession((n) => n + 1);
     setStanceChoiceOpen(true);
   }
 
@@ -1969,10 +1976,14 @@ export default function App() {
         body: JSON.stringify({ proposal: activeProposalId }),
       });
       if (!res.ok) {
-        let msg = `Failed (${res.status})`;
+        let msg = "We could not remove this explanation right now.";
         try {
           const errData = await res.json();
-          if (errData?.error) msg = String(errData.error);
+          msg = friendlyStanceExplanationError({
+            error: errData?.error,
+            message: errData?.message,
+            fallback: msg,
+          });
         } catch {
           // ignore
         }
@@ -2097,10 +2108,14 @@ export default function App() {
           body: JSON.stringify({ proposal: activeProposalId, confirm_existing: true }),
         });
         if (!res.ok) {
-          let msg = `Failed (${res.status})`;
+          let msg = "We could not update your explanation right now.";
           try {
             const errData = await res.json();
-            if (errData?.error) msg = String(errData.error);
+            msg = friendlyStanceExplanationError({
+              error: errData?.error,
+              message: errData?.message,
+              fallback: msg,
+            });
           } catch {
             // ignore
           }
@@ -2132,11 +2147,14 @@ export default function App() {
           }),
         });
         if (!res.ok) {
-          let msg = `Failed (${res.status})`;
+          let msg = "We could not verify this X post right now. Please try again shortly.";
           try {
             const errData = await res.json();
-            if (errData?.message) msg = String(errData.message);
-            else if (errData?.error) msg = String(errData.error);
+            msg = friendlyStanceExplanationError({
+              error: errData?.error,
+              message: errData?.message,
+              fallback: msg,
+            });
           } catch {
             // ignore
           }
@@ -2151,7 +2169,7 @@ export default function App() {
       } catch (e) {
         const msg = String(e?.message || e);
         if (stanceOk && !stanceFrozen && !stanceUnchanged) {
-          setStanceChoiceStatus("Position saved, but the explanation link was not accepted.");
+          setStanceChoiceStatus(PARTIAL_STANCE_EXPLANATION_STATUS);
         }
         setStanceChoiceError(msg);
       } finally {
@@ -3064,9 +3082,9 @@ export default function App() {
     fx.displaced = [];
   }
 
-  function computeSelectionDisplacement(node) {
+  function computeSelectionDisplacement(node, targetSide = SELECTED_TARGET_SIDE) {
     const nodes = nodesRef.current || [];
-    const targetHalf = SELECTED_TARGET_SIDE / 2;
+    const targetHalf = Math.max(1, targetSide) / 2;
     // Mirror the force-sim collision radius so the ring of space matches what a
     // real top-follower account carves out (diagonal bounding circle + the max
     // influence multiplier), plus a small extra orbit gap.
@@ -3151,8 +3169,12 @@ export default function App() {
     }
     fx.handle = node.handle;
     fx.node = node;
-    fx.targetScale = Math.max(1, SELECTED_TARGET_SIDE / Math.max(1, node.side || 1));
-    fx.displaced = computeSelectionDisplacement(node);
+    const nodes = nodesRef.current || [];
+    const fit = fitRef.current?.scale || 1;
+    const shortSide = Math.min(w || 800, h || 600);
+    const selectedTarget = sparseSelectedTargetSide(nodes.length, shortSide, fit, SELECTED_TARGET_SIDE);
+    fx.targetScale = Math.max(1, selectedTarget / Math.max(1, node.side || 1));
+    fx.displaced = computeSelectionDisplacement(node, selectedTarget);
     animateSelectionTo(1, SELECTED_FX_GROW_MS);
   }
 
@@ -3191,8 +3213,11 @@ export default function App() {
     }
     fx.handle = node.handle;
     fx.node = node;
-    fx.targetScale = Math.max(1, SELECTED_TARGET_SIDE / Math.max(1, node.side || 1));
-    fx.displaced = computeSelectionDisplacement(node);
+    const fit = fitRef.current?.scale || 1;
+    const shortSide = Math.min(w || 800, h || 600);
+    const selectedTarget = sparseSelectedTargetSide(nodes.length, shortSide, fit, SELECTED_TARGET_SIDE);
+    fx.targetScale = Math.max(1, selectedTarget / Math.max(1, node.side || 1));
+    fx.displaced = computeSelectionDisplacement(node, selectedTarget);
     applySelectionU(1);
     drawRef.current();
   }
@@ -5398,7 +5423,22 @@ export default function App() {
       const blobW = Math.max(1, maxX - minX);
       const blobH = Math.max(1, maxY - minY);
       const pad = 28;
-      fitScale = Math.min((cw - pad * 2) / blobW, (ch - pad * 2) / blobH) * 0.96;
+      let nextFitScale = Math.min((cw - pad * 2) / blobW, (ch - pad * 2) / blobH) * 0.96;
+      let maxNodeSide = 1;
+      let visibleFitCount = 0;
+      for (const n of fitNodes) {
+        if (playbackActive && !contributesToPlaybackFit(n)) continue;
+        visibleFitCount += 1;
+        if (n.side > maxNodeSide) maxNodeSide = n.side;
+      }
+      nextFitScale = applySparseFitCap({
+        fitScale: nextFitScale,
+        maxNodeSide,
+        visibleNodeCount: visibleFitCount,
+        viewportWidth: cw,
+        viewportHeight: ch,
+      });
+      fitScale = nextFitScale;
       const blobCx = (minX + maxX) / 2;
       const blobCy = (minY + maxY) / 2;
       fitTx = cw / 2 - blobCx * fitScale;
@@ -7081,7 +7121,7 @@ export default function App() {
       )}
       {stanceChoiceOpen && canManageOwnExplanation ? (
         <StanceChoiceCard
-          key={`stance-card:${activeProposalId}:${meStance}:${meExplanation?.tweet_id || "none"}`}
+          key={`stance-card:${stanceChoiceSession}`}
           open={stanceChoiceOpen}
           mode={meHasStance ? "change" : "choose"}
           currentStance={meStance || ""}
