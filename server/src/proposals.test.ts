@@ -35,6 +35,7 @@ test("enabled proposals include bip110/54/448/460 in display order", () => {
     list.map((p) => p.id),
     ["bip110", "bip54", "bip448", "bip460"]
   );
+  assert.match(list.find((p) => p.id === "bip448")?.description || "", /covenant building blocks/i);
 });
 
 test("resolveProposalAccess allows public galaxies for everyone; draft would stay admin-only", () => {

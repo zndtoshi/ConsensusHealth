@@ -20,6 +20,8 @@ import {
   isValidThemeKey,
 } from "./proposalCatalog.js";
 import { isPrivilegedManualEditorHandle } from "./stanceHistory.js";
+import { canAccessAdminOnlyProposal } from "./proposalAccessPolicy.js";
+import { ensureStanceExplanationTable } from "./stanceExplanations.js";
 
 export {
   DEFAULT_PROPOSAL_ID,
@@ -41,7 +43,7 @@ export type ProposalAccess = {
   allowed: boolean;
 };
 
-/** Resolve proposal from query/body; admin_only / draft proposals require zndtoshi. */
+/** Resolve proposal from query/body; admin_only / draft require admin or full-universe preview. */
 export function resolveProposalAccess(opts: {
   rawProposal: unknown;
   sessionHandle: unknown;
@@ -56,7 +58,7 @@ export function resolveProposalAccess(opts: {
     const seed = listEnabledProposalSeeds().find((p) => p.id === proposalId);
     if (seed) adminOnly = seed.adminOnly;
   }
-  const allowed = !adminOnly || isAdmin;
+  const allowed = !adminOnly || canAccessAdminOnlyProposal(opts.sessionHandle);
   return { proposalId, isAdmin, allowed };
 }
 
@@ -170,6 +172,8 @@ async function ensureSchemaObjects(client: PoolClient): Promise<void> {
   await client.query(
     `CREATE INDEX IF NOT EXISTS idx_ups_history_user_proposal_changed_at ON user_proposal_stance_history (x_user_id, proposal_id, changed_at DESC, id DESC)`
   );
+
+  await ensureStanceExplanationTable(client);
 }
 
 async function cleanupDuplicateProposalHistory(client: PoolClient): Promise<void> {
@@ -338,6 +342,7 @@ export async function loadAccessibleProposals(
   sessionHandle: unknown
 ): Promise<{ isAdmin: boolean; items: PublicProposalDto[] }> {
   const isAdmin = isPrivilegedManualEditorHandle(sessionHandle);
+  const canOpenAdminOnly = canAccessAdminOnlyProposal(sessionHandle);
   const { rows } = await pool.query(
     `
     SELECT
@@ -351,7 +356,7 @@ export async function loadAccessibleProposals(
   const items: PublicProposalDto[] = [];
   for (const r of rows) {
     const adminOnly = Boolean(r.admin_only);
-    if (adminOnly && !isAdmin) continue;
+    if (adminOnly && !canOpenAdminOnly) continue;
     const themeKey = isValidThemeKey(r.theme_key) ? r.theme_key : "nebula-red";
     const seed = listEnabledProposalSeeds().find((p) => p.id === String(r.id));
     const status = resolveProposalStatus(r.status ?? seed?.status);
@@ -397,7 +402,7 @@ export async function resolveProposalAccessAsync(
     return {
       proposalId: DEFAULT_PROPOSAL_ID,
       isAdmin,
-      allowed: !adminOnly || isAdmin,
+      allowed: !adminOnly || canAccessAdminOnlyProposal(opts.sessionHandle),
       known: true,
     };
   }
@@ -415,7 +420,7 @@ export async function resolveProposalAccessAsync(
   return {
     proposalId: resolved,
     isAdmin,
-    allowed: !adminOnly || isAdmin,
+    allowed: !adminOnly || canAccessAdminOnlyProposal(opts.sessionHandle),
     known: true,
   };
 }

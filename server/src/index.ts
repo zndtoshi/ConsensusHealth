@@ -49,6 +49,16 @@ import {
   normalizeRemovedXUserId,
   resolveRemovalTarget,
 } from "./removedCommunityUsers.js";
+import {
+  confirmExplanationForStance,
+  deleteStanceExplanation,
+  loadExplanationsForProposal,
+  loadExplanationsForUser,
+  toPublicExplanation,
+  verifyAndUpsertStanceExplanation,
+} from "./stanceExplanations.js";
+import { createStanceExplanationHandlers } from "./stanceExplanationHandlers.js";
+import { createAdminStanceHandler } from "./adminStanceHandlers.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
@@ -696,18 +706,35 @@ async function loadMergedCommunityUsersWithStance(
   );
   const dbRows = (rows as Record<string, unknown>[]).filter((r) => hasStanceValue(r.stance));
 
+  const explanations = await loadExplanationsForProposal(pool, proposalId);
+  const withExplanations: Record<string, unknown>[] = dbRows.map((r) => {
+    const xUserId = String(r.x_user_id ?? "").trim();
+    const publicExplanation = toPublicExplanation(explanations.get(xUserId) || null, r.stance);
+    return {
+      ...r,
+      stance_explanation: publicExplanation,
+    };
+  });
+
   // BIP110 only: union seed JSON accounts that are not already present as canonical
   // proposal stances. Seeds are never copied into BIP54/BIP448.
   if (proposalId !== DEFAULT_PROPOSAL_ID) {
     const removed = await loadRemovedCommunityUserKeys();
-    return filterOutRemovedCommunityUsers(dbRows, removed);
+    return filterOutRemovedCommunityUsers(withExplanations, removed);
   }
 
   const seededRows = await loadSeededAccountsForCommunity();
-  const mergedRows = mergeCommunityUsers(seededRows, dbRows);
+  const mergedRows = mergeCommunityUsers(seededRows, withExplanations);
   // After merge, prefer DB/canonical stance when present; seed stance remains for
   // seed-only accounts that have no user_proposal_stances row.
-  const withStance = mergedRows.filter((r) => hasStanceValue(r.stance));
+  const withStance = mergedRows
+    .filter((r) => hasStanceValue(r.stance))
+    .map((r) => {
+      if (r.stance_explanation) return r;
+      const xUserId = String(r.x_user_id ?? "").trim();
+      const publicExplanation = toPublicExplanation(explanations.get(xUserId) || null, r.stance);
+      return { ...r, stance_explanation: publicExplanation };
+    });
   const removed = await loadRemovedCommunityUserKeys();
   return filterOutRemovedCommunityUsers(withStance, removed);
 }
@@ -1567,11 +1594,13 @@ app.get("/api/me", async (req, res, next) => {
       const st = normalizeStanceValue(r.stance);
       if (pid in proposal_stances) proposal_stances[pid] = st;
     }
+    const proposal_explanations = await loadExplanationsForUser(pool, user.x_user_id);
     // Canonical: proposal tables only (legacy community_users.stance is mirror, not read).
     res.json({
       ...row,
       stance: proposal_stances.bip110 ?? null,
       proposal_stances,
+      proposal_explanations,
     });
   } catch (err) {
     next(err);
@@ -1707,6 +1736,20 @@ app.post("/api/stance", async (req, res, next) => {
   }
 });
 
+const stanceExplanationHandlers = createStanceExplanationHandlers({
+  getSessionUser,
+  resolveProposalAccess: async ({ rawProposal, sessionHandle }) =>
+    resolveProposalAccessAsync(pool, { rawProposal, sessionHandle }),
+  pool,
+  normalizeStanceValue,
+  verifyAndUpsertStanceExplanation,
+  confirmExplanationForStance,
+  deleteStanceExplanation,
+});
+
+app.put("/api/stance-explanation", stanceExplanationHandlers.putStanceExplanation);
+app.delete("/api/stance-explanation", stanceExplanationHandlers.deleteStanceExplanationHandler);
+
 app.post("/api/admin/remove-user", async (req, res, next) => {
   try {
     const user = getSessionUser(req);
@@ -1817,114 +1860,21 @@ app.post("/api/admin/remove-user", async (req, res, next) => {
   }
 });
 
-app.post("/api/admin/stance", async (req, res, next) => {
-  try {
-    const user = getSessionUser(req);
-    if (!user || !isPrivilegedManualEditorHandle(user.handle)) {
-      if (process.env.NODE_ENV !== "production") {
-        console.log("[admin-stance] forbidden", { requester: normalizeHandle(user?.handle) || null });
-      }
-      res.status(403).json({ error: "forbidden" });
-      return;
-    }
-
-    const requestedStance = normalizeStanceValue(req.body?.stance);
-    if (!requestedStance) {
-      res.status(400).json({ error: "invalid_stance" });
-      return;
-    }
-    const reqXUserId = String(req.body?.x_user_id ?? "").trim();
-    const reqHandle = normalizeHandle(req.body?.handle);
-    if (!reqXUserId && !reqHandle) {
-      res.status(400).json({ error: "target_required" });
-      return;
-    }
-    const access = await resolveProposalAccessAsync(pool, {
-      rawProposal: req.body?.proposal ?? req.body?.proposal_id,
-      sessionHandle: user.handle,
-    });
-    if (!access.known) {
-      res.status(400).json({ error: "unknown_proposal" });
-      return;
-    }
-    if (!access.allowed) {
-      res.status(403).json({ error: "forbidden_proposal" });
-      return;
-    }
-
-    const editingSelf =
-      (reqHandle && reqHandle === normalizeHandle(user.handle)) ||
-      (reqXUserId && reqXUserId === String(user.x_user_id));
-    const proposalMeta = getProposalById(access.proposalId);
-    if (editingSelf && isFinalProposalStatus(proposalMeta?.status)) {
-      res.status(409).json({
-        error: "bip110_stances_frozen",
-        message: "BIP-110 positions remain preserved as a final snapshot.",
-      });
-      return;
-    }
-
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      let existingRow: Record<string, unknown> | null = null;
-      if (reqXUserId) {
-        const byId = await client.query("SELECT * FROM community_users WHERE x_user_id = $1 LIMIT 1", [reqXUserId]);
-        existingRow = (byId.rows[0] ?? null) as Record<string, unknown> | null;
-      }
-      if (!existingRow && reqHandle) {
-        const byHandle = await client.query(
-          "SELECT * FROM community_users WHERE lower(coalesce(handle, '')) = $1 LIMIT 1",
-          [reqHandle]
-        );
-        existingRow = (byHandle.rows[0] ?? null) as Record<string, unknown> | null;
-      }
-
-      const resolvedHandle = normalizeHandle(existingRow?.handle ?? reqHandle);
-      if (!resolvedHandle) {
-        res.status(400).json({ error: "target_handle_required" });
-        await client.query("ROLLBACK");
-        return;
-      }
-      const resolvedXUserId = String(
-        existingRow?.x_user_id ?? (reqXUserId || `manual:${resolvedHandle}`)
-      ).trim();
-
-      const result = await upsertStanceWithHistory(client, {
-        xUserId: resolvedXUserId,
-        handle: resolvedHandle,
-        name: existingRow?.name ? String(existingRow.name) : null,
-        avatarUrl: existingRow?.avatar_url ? String(existingRow.avatar_url) : null,
-        followersCount:
-          typeof existingRow?.followers_count === "number"
-            ? (existingRow.followers_count as number)
-            : Number(existingRow?.followers_count || 0) || null,
-        stance: requestedStance,
-        changedBy: "admin",
-        proposalId: access.proposalId,
-      });
-      await client.query("COMMIT");
-      if (process.env.NODE_ENV !== "production") {
-        console.log("[admin-stance] saved", {
-          requester: normalizeHandle(user.handle),
-          target_handle: resolvedHandle,
-          target_x_user_id: resolvedXUserId,
-          proposal_id: access.proposalId,
-          changed: result.changed,
-          next_stance: requestedStance,
-        });
-      }
-      res.json(result.row);
-    } catch (e) {
-      await client.query("ROLLBACK");
-      throw e;
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    next(err);
-  }
-});
+app.post(
+  "/api/admin/stance",
+  createAdminStanceHandler({
+    getSessionUser,
+    isPrivilegedManualEditorHandle,
+    normalizeHandle,
+    normalizeStanceValue,
+    resolveProposalAccess: async ({ rawProposal, sessionHandle }) =>
+      resolveProposalAccessAsync(pool, { rawProposal, sessionHandle }),
+    getProposalById,
+    isFinalProposalStatus,
+    pool,
+    upsertStanceWithHistory,
+  })
+);
 
 app.get("/api/stance-playback-sequence", async (req, res, next) => {
   try {

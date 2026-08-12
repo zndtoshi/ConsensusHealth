@@ -86,7 +86,7 @@ test("distant galaxies are every accessible non-active proposal", () => {
 test("proposal subtitles explain what each galaxy covers", () => {
   assert.equal(FALLBACK_PROPOSALS.find((p) => p.id === "bip110")?.description, "Reduced Data Temporary Softfork");
   assert.match(FALLBACK_PROPOSALS.find((p) => p.id === "bip54")?.description || "", /Consensus Cleanup/);
-  assert.match(FALLBACK_PROPOSALS.find((p) => p.id === "bip448")?.description || "", /rebindable transactions/i);
+  assert.match(FALLBACK_PROPOSALS.find((p) => p.id === "bip448")?.description || "", /covenant building blocks/i);
   assert.equal(
     FALLBACK_PROPOSALS.find((p) => p.id === "bip460")?.description,
     "Cross-Input Signature Aggregation"

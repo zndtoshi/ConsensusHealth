@@ -23,7 +23,13 @@ import { resolveCanvasDpr } from "./utils/canvasDpr";
 import { createGraphIdleScheduler } from "./utils/graphIdleScheduler";
 import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./utils/glowRendering";
 import { fetchCommunityUsersResult } from "./api/community";
-import { applyManualStanceUpdate, isPrivilegedManualEditor, removeAccountFromList } from "./utils/manualEditState";
+import {
+  applyManualStanceUpdate,
+  isPrivilegedManualEditor,
+  publicExplanationForStance,
+  removeAccountFromList,
+} from "./utils/manualEditState";
+import { canUseFullProposalCatalog } from "./utils/fullUniversePreview";
 import {
   filterSeedOnlyAccounts,
   filterSelfReportedAccounts,
@@ -32,6 +38,7 @@ import {
 import { assertHaloAvatarAdmin, isHaloAvatarAdmin } from "./utils/haloAvatarAdmin";
 import { HaloAvatarModal } from "./components/HaloAvatarModal";
 import { StanceChoiceCard } from "./components/StanceChoiceCard";
+import { snippetStanceExplanation } from "./utils/stanceExplanationSnippet";
 import {
   DEFAULT_PROPOSAL_ID,
   FALLBACK_PROPOSALS,
@@ -1049,6 +1056,9 @@ export default function App() {
   const [manualEditTarget, setManualEditTarget] = useState(null);
   const [stanceChoiceOpen, setStanceChoiceOpen] = useState(false);
   const [stanceChoiceBusy, setStanceChoiceBusy] = useState(false);
+  const [stanceVerifyBusy, setStanceVerifyBusy] = useState(false);
+  const [stanceChoiceStatus, setStanceChoiceStatus] = useState("");
+  const [stanceChoiceError, setStanceChoiceError] = useState("");
   const [manualEditChoice, setManualEditChoice] = useState("neutral");
   const [manualEditBusy, setManualEditBusy] = useState(false);
   const [manualEditError, setManualEditError] = useState("");
@@ -1411,6 +1421,12 @@ export default function App() {
     [activeProposalId, proposalCatalog]
   );
   const canChooseOwnStance = me?.authenticated === true && isOngoingProposal(activeProposal);
+  const canManageOwnExplanation =
+    me?.authenticated === true &&
+    (canChooseOwnStance || (isFinalProposal(activeProposal) && meHasStance));
+  const meExplanation = me?.authenticated
+    ? me?.proposal_explanations?.[activeProposalId] || null
+    : null;
   const statsActionLabel = statisticsActionLabel(activeProposal);
   const statsModalCopy = statisticsModalCopy(activeProposal);
   const manualEditTargetIsSelf =
@@ -1445,10 +1461,10 @@ export default function App() {
         setProposalCatalogReady(true);
       } catch {
         if (!cancelled) {
-          const canUseAdminFallback =
-            me?.authenticated === true && isPrivilegedManualEditor(me?.handle);
+          const canUseFullFallback =
+            me?.authenticated === true && canUseFullProposalCatalog(me?.handle);
           setProposalCatalog(
-            canUseAdminFallback ? FALLBACK_PROPOSALS : FALLBACK_PROPOSALS.filter((p) => !p.adminOnly)
+            canUseFullFallback ? FALLBACK_PROPOSALS : FALLBACK_PROPOSALS.filter((p) => !p.adminOnly)
           );
           setProposalCatalogReady(true);
         }
@@ -1606,13 +1622,6 @@ export default function App() {
   const followerFilterActive =
     plebsMode || influencersMode || joinDateFilterActive || seedOnlyMode || selfReportedMode;
 
-  const defaultAccountFilterActive =
-    !plebsMode &&
-    !influencersMode &&
-    !joinDateFilterActive &&
-    !seedOnlyMode &&
-    !selfReportedMode;
-
   const accountByHandle = useMemo(() => {
     const m = new Map();
     for (const a of visibleAccounts) {
@@ -1687,6 +1696,16 @@ export default function App() {
     const account = accountByHandle.get(key) || null;
     return getAccountStanceValue(account || { handle: key }, labels);
   }, [selectedHandle, accountByHandle, labels]);
+  const selectedHeaderExplanation = useMemo(() => {
+    if (!selectedHandle) return null;
+    const key = normalizeHandle(selectedHandle);
+    const account = accountByHandle.get(key) || null;
+    const exp = account?.stance_explanation;
+    if (!exp?.tweet_text || !exp?.canonical_url) return null;
+    const stance = getAccountStanceValue(account || { handle: key }, labels);
+    if (exp.stance_at_verification && stance && exp.stance_at_verification !== stance) return null;
+    return exp;
+  }, [selectedHandle, accountByHandle, labels, activeProposalId]);
   const donationAddress = String(me?.donation_btc_address || "bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7").trim();
   const statisticsData = useMemo(() => {
     const num = (v) => {
@@ -1897,22 +1916,57 @@ export default function App() {
   }
 
   function openOwnStanceChoice() {
-    if (!canChooseOwnStance) return;
+    if (!canManageOwnExplanation) return;
+    setStanceChoiceError("");
+    setStanceChoiceStatus("");
     setStanceChoiceOpen(true);
   }
 
-  async function saveOwnStanceChoice(uiStance, apiStance) {
-    if (!canChooseOwnStance || stanceChoiceBusy) return;
-    setStanceChoiceBusy(true);
+  function patchOwnExplanationState(explanation) {
+    const handleNorm = normalizeHandle(me?.handle);
+    setMe((prev) => ({
+      ...prev,
+      proposal_explanations: {
+        ...(prev?.proposal_explanations || {}),
+        [activeProposalId]: explanation
+          ? {
+              ...explanation,
+              matches_current_stance:
+                explanation.matches_current_stance ??
+                Boolean(
+                  explanation.stance_at_verification &&
+                    normalizedStance(prev?.proposal_stances?.[activeProposalId] || prev?.stance) ===
+                      explanation.stance_at_verification
+                ),
+            }
+          : null,
+      },
+    }));
+    setAccounts((prev) =>
+      prev.map((account) => {
+        if (normalizeHandle(account?.handle) !== handleNorm) return account;
+        const publicExp =
+          explanation &&
+          explanation.stance_at_verification &&
+          normalizedStance(account?.stance || account?.position) === explanation.stance_at_verification
+            ? explanation
+            : null;
+        return { ...account, stance_explanation: publicExp };
+      })
+    );
+  }
+
+  async function removeOwnExplanation() {
+    if (!me?.authenticated || stanceChoiceBusy || stanceVerifyBusy) return false;
+    setStanceVerifyBusy(true);
+    setStanceChoiceError("");
+    setStanceChoiceStatus("");
     try {
-      const res = await fetch(`${API_BASE}/api/stance`, {
-        method: "POST",
+      const res = await fetch(`${API_BASE}/api/stance-explanation`, {
+        method: "DELETE",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({
-          stance: apiStance,
-          proposal: activeProposalId,
-        }),
+        body: JSON.stringify({ proposal: activeProposalId }),
       });
       if (!res.ok) {
         let msg = `Failed (${res.status})`;
@@ -1924,41 +1978,210 @@ export default function App() {
         }
         throw new Error(msg);
       }
-      const data = await res.json();
-      const targetHandleNorm = normalizeHandle(data?.handle || me?.handle);
-      const next = normalizedStance(data?.stance || uiStance);
-      setLabels((prev) => ({ ...prev, [targetHandleNorm]: next }));
-      setAccounts((prev) => {
-        const exists = prev.some((account) => normalizeHandle(account?.handle) === targetHandleNorm);
-        const updated = applyManualStanceUpdate(prev, targetHandleNorm, next);
-        if (exists) return updated;
-        return [
-          ...updated,
-          {
-            ...data,
-            handle: targetHandleNorm,
-            stance: next,
-            position: next,
-          },
-        ];
-      });
-      setMe((prev) => ({
-        ...prev,
-        proposal_stances: {
-          ...(prev?.proposal_stances || {}),
-          [activeProposalId]: next,
-        },
-      }));
-      await refreshStatsNow();
-      setStanceChoiceOpen(false);
+      patchOwnExplanationState(null);
+      setStanceChoiceStatus("Explanation removed.");
+      return true;
     } catch (e) {
-      if (!import.meta.env.PROD) {
-        // eslint-disable-next-line no-console
-        console.warn("[own-stance] failed", String(e?.message || e));
-      }
+      setStanceChoiceError(String(e?.message || e));
+      return false;
     } finally {
-      setStanceChoiceBusy(false);
+      setStanceVerifyBusy(false);
     }
+  }
+
+  async function saveOwnStanceChoice(payload) {
+    if (!canManageOwnExplanation || stanceChoiceBusy || stanceVerifyBusy) return;
+    const {
+      uiStance,
+      apiStance,
+      tweetUrl = "",
+      explanationAction = "none",
+      stanceFrozen = false,
+    } = payload || {};
+
+    setStanceChoiceError("");
+    setStanceChoiceStatus("");
+
+    const stanceUnchanged = normalizedStance(uiStance) === normalizedStance(meStance);
+    let stanceOk = true;
+
+    if (!stanceFrozen && !stanceUnchanged) {
+      setStanceChoiceBusy(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/stance`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            stance: apiStance,
+            proposal: activeProposalId,
+          }),
+        });
+        if (!res.ok) {
+          let msg = `Failed (${res.status})`;
+          try {
+            const errData = await res.json();
+            if (errData?.error) msg = String(errData.error);
+          } catch {
+            // ignore
+          }
+          throw new Error(msg);
+        }
+        const data = await res.json();
+        const targetHandleNorm = normalizeHandle(data?.handle || me?.handle);
+        const next = normalizedStance(data?.stance || uiStance);
+        setLabels((prev) => ({ ...prev, [targetHandleNorm]: next }));
+        setAccounts((prev) => {
+          const exists = prev.some((account) => normalizeHandle(account?.handle) === targetHandleNorm);
+          const updated = applyManualStanceUpdate(prev, targetHandleNorm, next);
+          suppressNodePublicExplanation(targetHandleNorm, next);
+          if (exists) return updated;
+          return [
+            ...updated,
+            {
+              ...data,
+              handle: targetHandleNorm,
+              stance: next,
+              position: next,
+              stance_explanation: null,
+            },
+          ];
+        });
+        setMe((prev) => {
+          const prevExp = prev?.proposal_explanations?.[activeProposalId] || null;
+          return {
+            ...prev,
+            proposal_stances: {
+              ...(prev?.proposal_stances || {}),
+              [activeProposalId]: next,
+            },
+            proposal_explanations: {
+              ...(prev?.proposal_explanations || {}),
+              [activeProposalId]: prevExp
+                ? {
+                    ...prevExp,
+                    matches_current_stance: prevExp.stance_at_verification === next,
+                  }
+                : null,
+            },
+          };
+        });
+        await refreshStatsNow();
+      } catch (e) {
+        stanceOk = false;
+        setStanceChoiceError(String(e?.message || e));
+        if (!import.meta.env.PROD) {
+          // eslint-disable-next-line no-console
+          console.warn("[own-stance] failed", String(e?.message || e));
+        }
+      } finally {
+        setStanceChoiceBusy(false);
+      }
+      if (!stanceOk) return;
+    }
+
+    const wantsUrl =
+      (explanationAction === "attach" || explanationAction === "replace") && String(tweetUrl).trim();
+    if (explanationAction === "remove") {
+      const removed = await removeOwnExplanation();
+      if (removed) setStanceChoiceOpen(false);
+      return;
+    }
+    if (explanationAction === "confirm") {
+      setStanceVerifyBusy(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/stance-explanation`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ proposal: activeProposalId, confirm_existing: true }),
+        });
+        if (!res.ok) {
+          let msg = `Failed (${res.status})`;
+          try {
+            const errData = await res.json();
+            if (errData?.error) msg = String(errData.error);
+          } catch {
+            // ignore
+          }
+          throw new Error(msg);
+        }
+        const data = await res.json();
+        patchOwnExplanationState({
+          ...(data?.explanation || {}),
+          matches_current_stance: true,
+        });
+        setStanceChoiceOpen(false);
+      } catch (e) {
+        setStanceChoiceError(String(e?.message || e));
+      } finally {
+        setStanceVerifyBusy(false);
+      }
+      return;
+    }
+    if (wantsUrl) {
+      setStanceVerifyBusy(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/stance-explanation`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            proposal: activeProposalId,
+            tweet_url: String(tweetUrl).trim(),
+          }),
+        });
+        if (!res.ok) {
+          let msg = `Failed (${res.status})`;
+          try {
+            const errData = await res.json();
+            if (errData?.message) msg = String(errData.message);
+            else if (errData?.error) msg = String(errData.error);
+          } catch {
+            // ignore
+          }
+          throw new Error(msg);
+        }
+        const data = await res.json();
+        patchOwnExplanationState({
+          ...(data?.explanation || {}),
+          matches_current_stance: true,
+        });
+        setStanceChoiceOpen(false);
+      } catch (e) {
+        const msg = String(e?.message || e);
+        if (stanceOk && !stanceFrozen && !stanceUnchanged) {
+          setStanceChoiceStatus("Position saved, but the explanation link was not accepted.");
+        }
+        setStanceChoiceError(msg);
+      } finally {
+        setStanceVerifyBusy(false);
+      }
+      return;
+    }
+
+    setStanceChoiceOpen(false);
+  }
+
+  function suppressNodePublicExplanation(handleNorm, nextStance) {
+    const target = normalizeHandle(handleNorm);
+    if (!target) return;
+    const nodes = nodesRef.current || [];
+    let changed = false;
+    for (const n of nodes) {
+      if (normalizeHandle(n.handle) !== target) continue;
+      const nextExp = publicExplanationForStance(n.stanceExplanation, nextStance);
+      if (n.stanceExplanation !== nextExp) {
+        n.stanceExplanation = nextExp;
+        changed = true;
+      }
+    }
+    const hover = hoverRef.current;
+    if (hover && normalizeHandle(hover.handle) === target) {
+      hover.stanceExplanation = publicExplanationForStance(hover.stanceExplanation, nextStance);
+      updateHoverOverlay(hover);
+    }
+    if (changed) scheduleDraw();
   }
 
   async function saveManualStanceEdit() {
@@ -1998,6 +2221,7 @@ export default function App() {
           return (targetId && accountId === targetId) || normalizeHandle(account?.handle) === targetHandleNorm;
         });
         const updated = applyManualStanceUpdate(prev, targetHandleNorm, next);
+        suppressNodePublicExplanation(targetHandleNorm, next);
         if (exists) return updated;
         return [
           ...updated,
@@ -2007,17 +2231,30 @@ export default function App() {
             handle: targetHandleNorm,
             stance: next,
             position: next,
+            stance_explanation: null,
           },
         ];
       });
       if (manualEditTargetIsSelf) {
-        setMe((prev) => ({
-          ...prev,
-          proposal_stances: {
-            ...(prev?.proposal_stances || {}),
-            [activeProposalId]: next,
-          },
-        }));
+        setMe((prev) => {
+          const prevExp = prev?.proposal_explanations?.[activeProposalId] || null;
+          return {
+            ...prev,
+            proposal_stances: {
+              ...(prev?.proposal_stances || {}),
+              [activeProposalId]: next,
+            },
+            proposal_explanations: {
+              ...(prev?.proposal_explanations || {}),
+              [activeProposalId]: prevExp
+                ? {
+                    ...prevExp,
+                    matches_current_stance: prevExp.stance_at_verification === next,
+                  }
+                : null,
+            },
+          };
+        });
       }
       await refreshStatsNow();
       setManualEditTarget(null);
@@ -2793,6 +3030,8 @@ export default function App() {
   const tooltipFollowersRef = useRef(null);
   const tooltipAgeRef = useRef(null);
   const tooltipBioRef = useRef(null);
+  const tooltipExplanationRef = useRef(null);
+  const tooltipExplanationLabelRef = useRef(null);
   const tooltipSelfRef = useRef(null);
   const historyCacheRef = useRef(new Map());
   const historyDelayTimerRef = useRef(0);
@@ -3070,6 +3309,7 @@ export default function App() {
           followers: followerInfo.followers,
           bio: String(a.bio ?? "").trim() || null,
           accountCreatedAt: a.accountCreatedAt ?? a.account_created_at ?? null,
+          stanceExplanation: a.stance_explanation || null,
           hasUserStanceChange: Boolean(a.hasUserStanceChange),
           side,
           half: side / 2,
@@ -3783,6 +4023,17 @@ export default function App() {
     if (tooltipBioRef.current) {
       tooltipBioRef.current.style.display = bio ? "block" : "none";
       tooltipBioRef.current.textContent = bio;
+    }
+    const explanationSnippet = snippetStanceExplanation(
+      nextHover.stanceExplanation?.tweet_text,
+      160
+    );
+    if (tooltipExplanationLabelRef.current) {
+      tooltipExplanationLabelRef.current.style.display = explanationSnippet ? "block" : "none";
+    }
+    if (tooltipExplanationRef.current) {
+      tooltipExplanationRef.current.style.display = explanationSnippet ? "block" : "none";
+      tooltipExplanationRef.current.textContent = explanationSnippet;
     }
     if (tooltipSelfRef.current) {
       tooltipSelfRef.current.style.display = isSelfHover ? "inline-block" : "none";
@@ -5814,6 +6065,7 @@ export default function App() {
           tweetCount: n.tweetCount,
           bio: n.bio,
           accountCreatedAt: n.accountCreatedAt,
+          stanceExplanation: n.stanceExplanation || null,
         }
       : null;
     hoverRef.current = nextHover;
@@ -6053,7 +6305,7 @@ export default function App() {
         ...styles.page,
         ...(adminGalaxiesEnabled && activeProposal?.visualTheme
           ? {
-              background: `radial-gradient(ellipse 120% 100% at 50% 0%, ${activeProposal.visualTheme.nebulaFrom} 0%, ${activeProposal.visualTheme.nebulaTo} 55%, #000 100%)`,
+              background: `radial-gradient(ellipse 85% 38% at 50% -8%, ${activeProposal.visualTheme.nebulaFrom} 0%, ${activeProposal.visualTheme.nebulaTo} 42%, #000 72%)`,
             }
           : null),
       }}
@@ -6159,36 +6411,58 @@ export default function App() {
             </Suspense>
           ) : null}
           {selectedHandle ? (
-            <div className="selectedUserCard" role="status" aria-live="polite">
-              <img
-                src={selectedHeaderAvatarSrc}
-                alt=""
-                loading="eager"
-                decoding="async"
-                referrerPolicy="no-referrer"
-                onError={(e) => {
-                  const fallback = missingAvatarSrcUrl();
-                  if (canonicalAvatarSrc(e.currentTarget.src) !== fallback) e.currentTarget.src = fallback;
-                }}
-                className="selectedUserCard__avatar"
-              />
-              <div className="selectedUserCard__meta">
-                <a
-                  href={`https://x.com/${encodeURIComponent(selectedHandle)}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="selectedUserCard__handle"
-                  title="Open profile on X"
-                >
-                  @{selectedHandle}
-                </a>
-                <span
-                  className="selectedUserCard__stance"
-                  style={{ color: stanceHeaderColor(selectedHeaderStance) }}
-                >
-                  {selectedHeaderStance || "unlabeled"}
-                </span>
+            <div
+              className={`selectedUserCard${selectedHeaderExplanation ? " selectedUserCard--withExplanation" : ""}`}
+              role="status"
+              aria-live="polite"
+            >
+              <div className="selectedUserCard__identity">
+                <img
+                  src={selectedHeaderAvatarSrc}
+                  alt=""
+                  loading="eager"
+                  decoding="async"
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    const fallback = missingAvatarSrcUrl();
+                    if (canonicalAvatarSrc(e.currentTarget.src) !== fallback) e.currentTarget.src = fallback;
+                  }}
+                  className="selectedUserCard__avatar"
+                />
+                <div className="selectedUserCard__meta">
+                  <a
+                    href={`https://x.com/${encodeURIComponent(selectedHandle)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="selectedUserCard__handle"
+                    title="Open profile on X"
+                  >
+                    @{selectedHandle}
+                  </a>
+                  <span
+                    className="selectedUserCard__stance"
+                    style={{ color: stanceHeaderColor(selectedHeaderStance) }}
+                  >
+                    {selectedHeaderStance || "unlabeled"}
+                  </span>
+                </div>
               </div>
+              {selectedHeaderExplanation ? (
+                <div className="selectedUserCard__explanation">
+                  <div className="selectedUserCard__explanationLabel">Stance explanation</div>
+                  <div className="selectedUserCard__explanationText">
+                    {String(selectedHeaderExplanation.tweet_text || "")}
+                  </div>
+                  <a
+                    className="selectedUserCard__explanationLink"
+                    href={selectedHeaderExplanation.canonical_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    View post on X
+                  </a>
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -6382,17 +6656,20 @@ export default function App() {
                   style={{ ...styles.stanceSegment, gridTemplateColumns: "1fr" }}
                   aria-label={`Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}`}
                 >
-                  <span
+                  <button
+                    type="button"
                     className={`stanceSeg stanceSeg--solo stanceSeg--locked ${meStanceToolbar.className} is-active`}
                     title={
                       isFinalProposal(activeProposal)
-                        ? `Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}. This proposal is a final locked snapshot.`
+                        ? `Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}. Manage your stance explanation.`
                         : `Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}.`
                     }
+                    onClick={canManageOwnExplanation ? openOwnStanceChoice : undefined}
+                    disabled={!canManageOwnExplanation}
                   >
                     <span aria-hidden="true">🔒</span>
                     {meStanceToolbar.label}
-                  </span>
+                  </button>
                 </div>
               ) : (
                 <span
@@ -6552,7 +6829,7 @@ export default function App() {
                     travel={galaxyTravel}
                     fromProposal={getProposalById(galaxyTravel?.from, proposalCatalog)}
                     toProposal={getProposalById(galaxyTravel?.to, proposalCatalog)}
-                    showDistantGalaxies={defaultAccountFilterActive}
+                    showDistantGalaxies={!equalAvatarSizeEnabled}
                   />
                 </Suspense>
               ) : null}
@@ -6594,6 +6871,10 @@ export default function App() {
                 <div ref={tooltipFollowersRef} style={{ opacity: 0.9 }} />
                 <div ref={tooltipAgeRef} style={styles.tooltipAge} />
                 <div ref={tooltipBioRef} style={styles.tooltipBio} />
+                <div ref={tooltipExplanationLabelRef} style={styles.tooltipExplanationLabel}>
+                  Stance explanation
+                </div>
+                <div ref={tooltipExplanationRef} style={styles.tooltipExplanation} />
               </div>
               {historyPanel && canViewAvatarStanceHistory ? (
                 <div
@@ -6798,15 +7079,27 @@ export default function App() {
           />
         </Suspense>
       )}
-      {stanceChoiceOpen && canChooseOwnStance ? (
+      {stanceChoiceOpen && canManageOwnExplanation ? (
         <StanceChoiceCard
+          key={`stance-card:${activeProposalId}:${meStance}:${meExplanation?.tweet_id || "none"}`}
           open={stanceChoiceOpen}
           mode={meHasStance ? "change" : "choose"}
           currentStance={meStance || ""}
           busy={stanceChoiceBusy}
+          verifyBusy={stanceVerifyBusy}
+          stanceFrozen={isFinalProposal(activeProposal)}
+          existingExplanation={meExplanation}
+          statusMessage={stanceChoiceStatus}
+          errorMessage={stanceChoiceError}
           proposalLabel={activeProposal?.title || "proposal"}
-          onSelect={saveOwnStanceChoice}
-          onDismiss={() => setStanceChoiceOpen(false)}
+          onSave={saveOwnStanceChoice}
+          onRemoveExplanation={removeOwnExplanation}
+          onDismiss={() => {
+            if (stanceChoiceBusy || stanceVerifyBusy) return;
+            setStanceChoiceOpen(false);
+            setStanceChoiceError("");
+            setStanceChoiceStatus("");
+          }}
         />
       ) : null}
       {manualUserPickerOpen && isPrivilegedEditor ? (
@@ -7409,6 +7702,23 @@ const styles = {
     maxHeight: "3.9em",
     overflow: "hidden",
     textOverflow: "ellipsis",
+  },
+  tooltipExplanationLabel: {
+    display: "none",
+    marginTop: 6,
+    fontSize: 10,
+    fontWeight: 700,
+    letterSpacing: "0.04em",
+    textTransform: "uppercase",
+    opacity: 0.72,
+  },
+  tooltipExplanation: {
+    display: "none",
+    marginTop: 2,
+    lineHeight: 1.3,
+    opacity: 0.92,
+    maxHeight: "3.9em",
+    overflow: "hidden",
   },
   side: {
     borderLeft: "1px solid rgba(0,0,0,0.08)",

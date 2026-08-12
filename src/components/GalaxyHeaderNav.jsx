@@ -176,7 +176,9 @@ export function GalaxyHeaderNav({
                 className="galaxyHeaderNav__current"
                 style={{
                   color: theme?.accent,
-                  textShadow: theme ? `0 0 18px ${theme.accentSoft}` : undefined,
+                  textShadow: theme
+                    ? `0 0 10px ${theme.accentSoft}, 0 0 22px ${theme.accentSoft}`
+                    : undefined,
                 }}
               >
                 {current.title}

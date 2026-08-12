@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { looksLikeStanceExplanationUrl } from "../utils/stanceExplanationUrl";
+import { snippetStanceExplanation } from "../utils/stanceExplanationSnippet";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const cardSrc = readFileSync(join(root, "src", "components", "StanceChoiceCard.jsx"), "utf8");
@@ -22,12 +24,14 @@ test("card visual tone reuses new-stances-like glass panel classes", () => {
   assert.match(cssSrc, /rgba\(34,\s*197,\s*94/);
 });
 
-test("App presents BIP-110 as a locked final snapshot", () => {
+test("App presents BIP-110 as a locked final snapshot with explanation management", () => {
   assert.doesNotMatch(appSrc, /archiveBanner/);
   assert.doesNotMatch(appSrc, /FINAL SNAPSHOT/);
   assert.match(appSrc, /meHasStance && meStanceToolbar/);
   assert.match(appSrc, /isFinalProposal\(activeProposal\)/);
   assert.match(appSrc, /StanceChoiceCard/);
+  assert.match(appSrc, /canManageOwnExplanation/);
+  assert.match(appSrc, /stanceFrozen/);
   assert.doesNotMatch(appSrc, /onClick=\{\(\) => setStanceChoiceOpen/);
 });
 
@@ -38,28 +42,57 @@ test("BIP-110 concluded copy lives in the galaxy header hover tooltip", () => {
   assert.match(headerSrc, /Ongoing proposal\. Current positions are self-reported/);
 });
 
-test("self-service stance writes are enabled for ongoing proposals; final stays frozen", () => {
+test("self-service stance writes are enabled for ongoing proposals; final stays frozen for everyone", () => {
   const userRoute = serverSrc.indexOf('app.post("/api/stance"');
-  const adminRoute = serverSrc.indexOf('app.post("/api/admin/stance"');
+  const adminRoute = serverSrc.search(/app\.post\(\s*"\/api\/admin\/stance"/);
   assert.ok(userRoute >= 0);
   assert.ok(adminRoute >= 0);
   assert.match(serverSrc.slice(userRoute, userRoute + 1200), /proposal_stances_frozen|isFinalProposalStatus/);
   assert.match(serverSrc, /SELF_STANCE_UPDATES_ENABLED:\s*boolean\s*=\s*true/);
-  assert.match(serverSrc.slice(adminRoute, adminRoute + 900), /isPrivilegedManualEditorHandle/);
+  assert.match(serverSrc, /createAdminStanceHandler/);
+  assert.match(serverSrc, /isPrivilegedManualEditorHandle/);
+  const adminHandlerSrc = readFileSync(join(root, "server", "src", "adminStanceHandlers.ts"), "utf8");
+  assert.match(adminHandlerSrc, /isFinalProposalStatus/);
+  assert.match(adminHandlerSrc, /proposal_stances_frozen/);
+  assert.doesNotMatch(adminHandlerSrc, /editingSelf/);
   assert.match(appSrc, /Set user position/);
   assert.match(appSrc, /Edit positions on graph/);
   assert.match(appSrc, /\/api\/stance/);
   assert.match(appSrc, /saveOwnStanceChoice/);
 });
 
-test("own stance chooser is available on ongoing proposals only", () => {
+test("stance card includes optional verified X explanation URL flow", () => {
+  assert.match(cardSrc, /Link to your explanation on X/);
+  assert.match(cardSrc, /Only a post published by your connected X account is accepted/);
+  assert.match(cardSrc, /Change explanation/);
+  assert.match(cardSrc, /Remove explanation/);
+  assert.match(cardSrc, /onSave/);
+  assert.match(appSrc, /\/api\/stance-explanation/);
+  assert.match(serverSrc, /app\.put\("\/api\/stance-explanation"/);
+  assert.match(serverSrc, /app\.delete\("\/api\/stance-explanation"/);
+});
+
+test("looksLikeStanceExplanationUrl accepts only basic status URLs", () => {
+  assert.equal(looksLikeStanceExplanationUrl("https://x.com/alice/status/123"), true);
+  assert.equal(looksLikeStanceExplanationUrl("https://t.co/abc"), false);
+  assert.equal(looksLikeStanceExplanationUrl("https://x.com/i/web/status/1"), false);
+});
+
+test("hover and selected card render plain-text explanation surfaces", () => {
+  assert.match(appSrc, /Stance explanation/);
+  assert.match(appSrc, /snippetStanceExplanation/);
+  assert.match(appSrc, /selectedUserCard__explanationText/);
+  assert.match(appSrc, /View post on X/);
+  assert.match(cssSrc, /selectedUserCard__explanationText/);
+  assert.match(cssSrc, /min\(28vh,\s*220px\)/);
+  assert.equal(snippetStanceExplanation("short"), "short");
+  assert.match(snippetStanceExplanation("x".repeat(200), 40), /…$/);
+});
+
+test("own stance chooser is available on ongoing proposals; final can manage explanations", () => {
   assert.match(appSrc, /canChooseOwnStance = me\?\.authenticated === true && isOngoingProposal\(activeProposal\)/);
+  assert.match(appSrc, /canManageOwnExplanation/);
   assert.match(appSrc, /openOwnStanceChoice/);
   assert.match(appSrc, /Choose your position/);
   assert.match(appSrc, /allowAbsentFromGalaxy/);
-  const adminRoute = serverSrc.indexOf('app.post("/api/admin/stance"');
-  const routeSrc = serverSrc.slice(adminRoute, adminRoute + 2200);
-  assert.match(routeSrc, /editingSelf/);
-  assert.match(routeSrc, /isFinalProposalStatus/);
-  assert.match(routeSrc, /bip110_stances_frozen/);
 });

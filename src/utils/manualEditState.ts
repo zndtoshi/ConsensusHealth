@@ -15,6 +15,18 @@ export function isPrivilegedManualEditor(handle: unknown): boolean {
   return normalizeHandle(handle) === "zndtoshi";
 }
 
+/** Clear public explanation when it no longer matches the account's current stance. */
+export function publicExplanationForStance(
+  explanation: unknown,
+  currentStance: unknown
+): Record<string, unknown> | null {
+  if (!explanation || typeof explanation !== "object") return null;
+  const verified = String((explanation as { stance_at_verification?: unknown }).stance_at_verification || "");
+  const stance = String(currentStance || "");
+  if (!verified || !stance || verified !== stance) return null;
+  return explanation as Record<string, unknown>;
+}
+
 export function applyManualStanceUpdate<T extends AccountRecord>(
   accounts: T[],
   targetHandle: string,
@@ -31,6 +43,9 @@ export function applyManualStanceUpdate<T extends AccountRecord>(
       ...a,
       stance: nextStance,
       position: nextStance,
+      // Keep server-owned explanation records for the owner, but hide mismatched
+      // public DTOs from hover/selected surfaces immediately after stance edits.
+      stance_explanation: publicExplanationForStance(a.stance_explanation, nextStance),
     };
   });
   return changed ? out : accounts;

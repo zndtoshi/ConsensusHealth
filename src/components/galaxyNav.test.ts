@@ -29,16 +29,19 @@ test("brand area no longer keeps a legacy BIP-110 badge link", () => {
   assert.doesNotMatch(appSrc, /title="View the official BIP-110 proposal on GitHub"/);
 });
 
-test("selected avatar card has no close X button", () => {
+test("selected avatar card has no close X button and can show full explanation", () => {
   const appSrc = fs.readFileSync(path.join(here, "..", "App.jsx"), "utf8");
   const cssSrc = fs.readFileSync(path.join(here, "..", "index.css"), "utf8");
   assert.match(appSrc, /selectedUserCard/);
   assert.match(appSrc, /selectedUserCard__avatar/);
   assert.match(appSrc, /selectedUserCard__handle/);
   assert.match(appSrc, /selectedUserCard__stance/);
+  assert.match(appSrc, /selectedUserCard__explanation/);
+  assert.match(appSrc, /selectedHeaderExplanation/);
   assert.doesNotMatch(appSrc, /selectedUserCard__close/);
   assert.doesNotMatch(appSrc, /Clear selected user/);
   assert.doesNotMatch(cssSrc, /\.selectedUserCard__close\b/);
+  assert.match(cssSrc, /selectedUserCard__explanationText/);
 });
 
 test("mobile header stacks brand, galaxy title, and search without absolute overlap", () => {
@@ -103,8 +106,14 @@ test("distant galaxies are interactive travel shortcuts with capped neighbors", 
   assert.match(cssSrc, /\.distantGalaxy:hover/);
   assert.match(cssSrc, /scale\(calc\(var\(--galaxy-scale, 1\) \* 1\.08\)\)/);
   assert.match(cssSrc, /--gx-par-fx/);
-  assert.match(appSrc, /defaultAccountFilterActive/);
-  assert.match(appSrc, /showDistantGalaxies=\{defaultAccountFilterActive\}/);
+  assert.match(appSrc, /showDistantGalaxies=\{!equalAvatarSizeEnabled\}/);
+  assert.doesNotMatch(appSrc, /showDistantGalaxies=\{defaultAccountFilterActive\}/);
+  assert.match(appSrc, /equalAvatarSizeEnabled/);
+  // Other account filters must not control distant-galaxy visibility.
+  assert.doesNotMatch(
+    appSrc,
+    /showDistantGalaxies=\{[^}]*plebsMode|showDistantGalaxies=\{[^}]*joinDateFilterActive|showDistantGalaxies=\{[^}]*followerFilterActive/
+  );
   assert.match(appSrc, /statsActionLabel/);
   assert.match(appSrc, /statsModalCopy/);
   assert.match(appSrc, /statsForProposalId/);

@@ -1,12 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { applyManualStanceUpdate, isPrivilegedManualEditor, removeAccountFromList } from "./manualEditState";
+import {
+  applyManualStanceUpdate,
+  isPrivilegedManualEditor,
+  publicExplanationForStance,
+  removeAccountFromList,
+} from "./manualEditState";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 test("privileged manual editor is only zndtoshi", () => {
   assert.equal(isPrivilegedManualEditor("zndtoshi"), true);
   assert.equal(isPrivilegedManualEditor("@zndtoshi"), true);
   assert.equal(isPrivilegedManualEditor("ZndToshi "), true);
   assert.equal(isPrivilegedManualEditor("someone_else"), false);
+  assert.equal(isPrivilegedManualEditor("hampus_s"), false);
 });
 
 test("manual stance update preserves profile stats and avatar", () => {
@@ -27,6 +36,39 @@ test("manual stance update preserves profile stats and avatar", () => {
   assert.equal(updated[0]?.avatar_url, "https://pbs.twimg.com/profile_images/x.jpg");
   assert.equal(updated[0]?.avatar_path, "/avatars/niftynei.jpg");
   assert.equal(updated[0]?.name, "Nifty");
+});
+
+test("admin/manual stance change suppresses mismatched public explanation immediately", () => {
+  const original = [
+    {
+      handle: "alice",
+      stance: "approve",
+      stance_explanation: {
+        tweet_id: "1",
+        tweet_text: "old approve explanation",
+        canonical_url: "https://x.com/alice/status/1",
+        stance_at_verification: "approve",
+      },
+    },
+  ];
+  const updated = applyManualStanceUpdate(original, "alice", "against");
+  assert.equal(updated[0]?.stance, "against");
+  assert.equal(updated[0]?.stance_explanation, null);
+  assert.equal(
+    publicExplanationForStance(original[0]?.stance_explanation, "against"),
+    null
+  );
+  assert.equal(
+    publicExplanationForStance(original[0]?.stance_explanation, "approve")?.tweet_id,
+    "1"
+  );
+
+  const appSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "App.jsx"), "utf8");
+  assert.match(appSrc, /suppressNodePublicExplanation/);
+  assert.match(appSrc, /saveManualStanceEdit/);
+  const manualSave = appSrc.slice(appSrc.indexOf("async function saveManualStanceEdit"));
+  assert.match(manualSave.slice(0, 2500), /applyManualStanceUpdate/);
+  assert.match(manualSave.slice(0, 2500), /suppressNodePublicExplanation/);
 });
 
 test("manual stance update changes only matching handle", () => {

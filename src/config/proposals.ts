@@ -91,7 +91,8 @@ export const FALLBACK_PROPOSALS: ProposalConfig[] = [
     bipNumber: 448,
     shortName: "BIP448",
     title: "BIP-448",
-    description: "Taproot-native rebindable transactions for scalable payment protocols",
+    description:
+      "Taproot-native rebindable transactions and covenant building blocks for scalable payment protocols",
     order: 2,
     enabled: true,
     adminOnly: false,

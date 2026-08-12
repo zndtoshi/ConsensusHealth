@@ -147,6 +147,23 @@ button:focus-visible {
   -webkit-backdrop-filter: blur(12px);
 }
 
+.selectedUserCard--withExplanation {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: min(420px, calc(100vw - 24px));
+  max-width: min(420px, calc(100vw - 24px));
+  padding: 10px;
+}
+
+.selectedUserCard__identity {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
 .selectedUserCard__avatar {
   width: 34px;
   height: 34px;
@@ -185,6 +202,51 @@ button:focus-visible {
   letter-spacing: 0.02em;
   text-transform: capitalize;
   text-shadow: 0 1px 0 rgba(0, 0, 0, 0.75);
+}
+
+.selectedUserCard__explanation {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 8px;
+}
+
+.selectedUserCard__explanationLabel {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(226, 232, 240, 0.7);
+}
+
+.selectedUserCard__explanationText {
+  margin: 0;
+  max-height: min(28vh, 220px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.selectedUserCard__explanationLink {
+  color: #93c5fd;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.selectedUserCard__explanationLink:hover,
+.selectedUserCard__explanationLink:focus-visible {
+  color: #bfdbfe;
+  outline: none;
+  text-decoration: underline;
 }
 
 @media (min-width: 721px) {
@@ -544,7 +606,7 @@ button:focus-visible {
 
 .stanceChoiceCard {
   position: relative;
-  width: min(360px, 100%);
+  width: min(420px, 100%);
   padding: 22px 20px 18px;
   border-radius: 22px;
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -642,10 +704,129 @@ button:focus-visible {
   border-color: rgba(255, 255, 255, 0.28);
 }
 
+.stanceChoiceCard__urlBlock,
+.stanceChoiceCard__existing,
+.stanceChoiceCard__explainDecision {
+  margin-top: 14px;
+  text-align: left;
+}
+
+.stanceChoiceCard__urlLabel,
+.stanceChoiceCard__existingLabel {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(241, 245, 249, 0.92);
+}
+
+.stanceChoiceCard__hint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: rgba(148, 163, 184, 0.95);
+}
+
+.stanceChoiceCard__urlInput {
+  width: 100%;
+  margin-top: 8px;
+  box-sizing: border-box;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(2, 6, 23, 0.45);
+  color: #e2e8f0;
+  font-size: 12px;
+  padding: 10px 12px;
+}
+
+.stanceChoiceCard__urlInput:focus-visible {
+  outline: 2px solid rgba(147, 197, 253, 0.7);
+  outline-offset: 1px;
+}
+
+.stanceChoiceCard__existingLink {
+  display: block;
+  margin-top: 6px;
+  color: #93c5fd;
+  font-size: 12px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.stanceChoiceCard__existingActions,
+.stanceChoiceCard__footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.stanceChoiceCard__secondary,
+.stanceChoiceCard__save {
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e2e8f0;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.stanceChoiceCard__save {
+  background: rgba(59, 130, 246, 0.22);
+  border-color: rgba(147, 197, 253, 0.35);
+}
+
+.stanceChoiceCard__secondary:disabled,
+.stanceChoiceCard__save:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.stanceChoiceCard__explainDecision {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.stanceChoiceCard__explainDecision legend {
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(226, 232, 240, 0.86);
+}
+
+.stanceChoiceCard__radio {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(226, 232, 240, 0.9);
+  cursor: pointer;
+}
+
+.stanceChoiceCard__status {
+  margin-top: 10px;
+  min-height: 1.2em;
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  color: rgba(226, 232, 240, 0.82);
+}
+
+.stanceChoiceCard__error {
+  color: #fca5a5;
+}
+
 .stanceChoiceCard__dismiss {
   appearance: none;
   -webkit-appearance: none;
-  margin-top: 12px;
+  margin-top: 0;
   padding: 6px 10px;
   border: none;
   background: transparent;
