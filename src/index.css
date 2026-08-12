@@ -1809,7 +1809,8 @@ html[data-browser="firefox"] .stanceGlow {
 .distantGalaxy__label {
   position: absolute;
   left: 50%;
-  top: 0;
+  /* Sit just above the visible ellipse instead of floating at the button edge. */
+  top: 22px;
   width: 160px;
   transform: translateX(-50%);
   display: grid;

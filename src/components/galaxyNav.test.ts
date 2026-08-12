@@ -111,6 +111,7 @@ test("distant galaxies are interactive travel shortcuts with capped neighbors", 
   assert.match(distantSrc, /Travel to/);
   assert.doesNotMatch(distantSrc, /Travel affordance|Travel »/);
   assert.match(distantSrc, /distantGalaxy__label/);
+  assert.match(cssSrc, /\.distantGalaxy__label\s*\{[\s\S]*?top:\s*22px/);
   assert.match(cssSrc, /\.distantGalaxy:hover/);
   assert.match(cssSrc, /scale\(calc\(var\(--galaxy-scale, 1\) \* 1\.08\)\)/);
   assert.match(cssSrc, /--gx-par-fx/);
