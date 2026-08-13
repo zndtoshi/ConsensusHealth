@@ -39,30 +39,18 @@ async function installCommunityFailure(
   body: Record<string, unknown>,
   headers: Record<string, string> = {}
 ) {
-  await page.goto("/bip/110");
-  await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
-  await page.evaluate(
-    ({ mockedStatus, mockedBody, mockedHeaders }) => {
-      const nativeFetch = window.fetch.bind(window);
-      window.fetch = (input, init) => {
-        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-        if (url.includes("/api/community")) {
-          return Promise.resolve(
-            new Response(JSON.stringify(mockedBody), {
-              status: mockedStatus,
-              headers: { "content-type": "application/json", ...mockedHeaders },
-            })
-          );
-        }
-        return nativeFetch(input, init);
-      };
-    },
-    { mockedStatus: status, mockedBody: body, mockedHeaders: headers }
-  );
-}
-
-async function travelToMockedBip54(page: Page) {
-  await page.getByRole("button", { name: /Travel to BIP54/i }).click();
+  let intercepted = 0;
+  await page.route(/\/api\/community(?:\?|$)/, async (route) => {
+    intercepted += 1;
+    await route.fulfill({
+      status,
+      contentType: "application/json",
+      headers,
+      body: JSON.stringify(body),
+    });
+  });
+  await page.goto("/bip/54");
+  await expect.poll(() => intercepted, { timeout: 30_000 }).toBeGreaterThan(0);
 }
 
 test("CI requires E2E_REAL_BACKEND===1", () => {
@@ -192,7 +180,7 @@ test.describe("4 — auto stance prompt rules", () => {
   }
 
   test("logged out never shows writable stance card", async ({ page }) => {
-    await travelToMockedBip54(page);
+    await page.goto("/bip/54");
     await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(async () => stanceChoiceDialog(page).count(), { timeout: 5_000 })
@@ -386,7 +374,7 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
 
   test("cancel pending OAuth before callback does not create a session", async ({ page }) => {
     await ackPrivacyDisclosure(page);
-    await travelToMockedBip54(page);
+    await page.goto("/bip/54");
     await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
     const pending = await page.context().request.get("/auth/x/login?mode=popup", {
       maxRedirects: 0,
@@ -551,50 +539,22 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
   });
 });
 
-test.describe("8 — delete account via UI + keyboard", () => {
+test.describe("8 — account menu", () => {
   test("self-service account deletion is hidden", async ({ page }) => {
     const e2eUser = "del_ui";
     const handle = e2eHandleForUser(e2eUser);
     await mockOAuthLogin(page, { e2eUser, path: "/bip/54" });
 
+    const stanceDialog = stanceChoiceDialog(page);
+    if (await stanceDialog.isVisible().catch(() => false)) {
+      await page.keyboard.press("Escape");
+      await expect(stanceDialog).toHaveCount(0);
+    }
+
     const menuBtn = page.getByRole("button", { name: new RegExp(`Account menu for @${handle}`, "i") });
     await menuBtn.click();
     await expect(page.getByRole("menuitem", { name: /Delete my account and data/i })).toHaveCount(0);
     await expect(page.getByRole("dialog", { name: /Delete my account and data/i })).toHaveCount(0);
-    return;
-    await page.getByRole("menuitem", { name: /Delete my account and data/i }).click();
-
-    const dialog = page.getByRole("dialog", { name: /Delete my account and data/i });
-    await expect(dialog).toBeVisible();
-    await expect(dialog.locator("input")).toBeFocused();
-
-    await page.keyboard.press("Escape");
-    await expect(dialog).toHaveCount(0);
-    await expect(menuBtn).toBeFocused();
-
-    await menuBtn.click();
-    await page.getByRole("menuitem", { name: /Delete my account and data/i }).click();
-    await expect(page.getByRole("dialog", { name: /Delete my account and data/i })).toBeVisible();
-    await page.getByLabel(/Confirm handle/i).fill(handle);
-    await page.getByRole("button", { name: "Delete account", exact: true }).click();
-
-    await expect
-      .poll(async () => (await fetchMe(page)).body, { timeout: 30_000 })
-      .toBeNull();
-
-    await expect(page.getByRole("button", { name: new RegExp(`Account menu for @${handle}`, "i") })).toHaveCount(0);
-    await expect(page.locator(".selectedUserCard")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /Login with/i })).toBeVisible();
-
-    const handles = await communityHandles(page, "bip54");
-    expect(handles).not.toContain(handle);
-
-    // Tombstone: re-login creates a new session, but prior bip54 row is gone and seed-style id stays suppressible.
-    await mockOAuthLogin(page, { e2eUser, path: "/bip/54" });
-    const me2 = await fetchMe(page);
-    expect((me2.body as { handle?: string }).handle).toBe(handle);
-    // Fresh account should not inherit the deleted stance.
-    expect((me2.body as { proposal_stances?: Record<string, string> }).proposal_stances?.bip54 == null).toBeTruthy();
   });
 });
 
@@ -606,7 +566,6 @@ test.describe("9 — failure polish + real dual rate limits", () => {
       { error: "Internal server error" },
       { "x-request-id": "e2e-500" }
     );
-    await travelToMockedBip54(page);
     await expect(page.getByText("Temporarily unavailable")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("alert")).toContainText(/trouble loading/i);
     await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
@@ -619,14 +578,12 @@ test.describe("9 — failure polish + real dual rate limits", () => {
       { error: "rate_limited", message: "Too many requests. Please wait and try again." },
       { "Retry-After": "30", "x-request-id": "e2e-429" }
     );
-    await page.goto("/bip/54");
     await expect(page.getByText("Temporarily unavailable")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
   });
 
   test("community 503 (not ready) shows friendly maintenance UI", async ({ page }) => {
     await installCommunityFailure(page, 503, { ok: false, error: "not_ready" });
-    await page.goto("/bip/54");
     await expect(page.getByText("Temporarily unavailable")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
   });
@@ -648,20 +605,17 @@ test.describe("9 — failure polish + real dual rate limits", () => {
     expect(result.body).toMatchObject({ ok: false, error: "not_ready" });
   });
 
-  test("offline community load shows maintenance + Retry", async ({ page, context }) => {
-    await page.goto("/bip/110");
-    await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
-    await context.setOffline(true);
-    await page.getByRole("button", { name: /Travel to BIP54/i }).click();
-    await expect(page.getByText(/Temporarily unavailable|Consensus Health/i).first()).toBeVisible({
-      timeout: 30_000,
+  test("aborted community request shows maintenance + Retry", async ({ page }) => {
+    let intercepted = 0;
+    await page.route(/\/api\/community(?:\?|$)/, async (route) => {
+      intercepted += 1;
+      await route.abort("internetdisconnected");
     });
-    const alert = page.getByRole("alert");
-    if (await alert.isVisible().catch(() => false)) {
-      await expect(alert).toContainText(/trouble loading/i);
-      await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
-    }
-    await context.setOffline(false);
+    await page.goto("/bip/54");
+    await expect.poll(() => intercepted, { timeout: 30_000 }).toBeGreaterThan(0);
+    await expect(page.getByText("Temporarily unavailable")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("alert")).toContainText(/trouble loading/i);
+    await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
   });
 
   test("real dual IP/account stance 429 with Retry-After", async ({ page, browser, testClientIp }, testInfo) => {
