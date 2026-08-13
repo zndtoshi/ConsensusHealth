@@ -56,11 +56,11 @@ test("BIP header has no hover info dialog; status is inline in the dropdown", ()
 });
 
 test("self-service stance writes are enabled for ongoing proposals; final stays frozen for everyone", () => {
-  const userRoute = serverSrc.indexOf('app.post("/api/stance"');
+  const userRoute = serverSrc.search(/app\.post\(\s*\n?\s*"\/api\/stance"/);
   const adminRoute = serverSrc.search(/app\.post\(\s*"\/api\/admin\/stance"/);
   assert.ok(userRoute >= 0);
   assert.ok(adminRoute >= 0);
-  assert.match(serverSrc.slice(userRoute, userRoute + 1200), /proposal_stances_frozen|isFinalProposalStatus/);
+  assert.match(serverSrc.slice(userRoute, userRoute + 1600), /proposal_stances_frozen|isFinalProposalStatus/);
   assert.match(serverSrc, /SELF_STANCE_UPDATES_ENABLED:\s*boolean\s*=\s*true/);
   assert.match(serverSrc, /createAdminStanceHandler/);
   assert.match(serverSrc, /isPrivilegedManualEditorHandle/);
@@ -86,17 +86,24 @@ test("stance card includes optional verified X explanation URL flow", () => {
   assert.match(cardSrc, /explanationAction[\s\S]*attach[\s\S]*none/);
   assert.match(appSrc, /\/api\/stance-explanation/);
   assert.match(appSrc, /wantsUrl/);
-  assert.match(serverSrc, /app\.put\("\/api\/stance-explanation"/);
-  assert.match(serverSrc, /app\.delete\("\/api\/stance-explanation"/);
+  assert.match(serverSrc, /app\.put\(\s*\n?\s*"\/api\/stance-explanation"/);
+  assert.match(serverSrc, /app\.delete\(\s*\n?\s*"\/api\/stance-explanation"/);
 });
 
-test("stance card renders canonical GitHub link for the active proposal", () => {
+test("stance card renders About section and full BIP GitHub link in both modes", () => {
+  assert.match(cardSrc, /proposalAbout = null/);
+  assert.match(cardSrc, /stanceChoiceCard__about/);
+  assert.match(cardSrc, /stanceChoiceCard__scrollBody/);
+  assert.match(cardSrc, /Read the full BIP on GitHub/);
   assert.match(cardSrc, /proposalGithubUrl/);
-  assert.match(cardSrc, /Read \$\{proposalLabel\} on GitHub/);
   assert.match(cardSrc, /rel="noopener noreferrer"/);
   assert.match(cardSrc, /target="_blank"/);
+  assert.match(cardSrc, /mode === "change"/);
+  assert.match(appSrc, /proposalAbout=\{activeProposalAbout\}/);
   assert.match(appSrc, /proposalGithubUrl=\{activeProposalGithubUrl\}/);
-  assert.match(appSrc, /proposalGithubUrl\(activeProposal/);
+  assert.match(appSrc, /buildProposalAbout\(activeProposal\)/);
+  assert.match(cssSrc, /\.stanceChoiceCard__scrollBody\s*\{/);
+  assert.match(cssSrc, /\.stanceChoiceCard__about\s*\{/);
   const proposalsSrc = readFileSync(join(root, "src", "config", "proposals.ts"), "utf8");
   assert.match(proposalsSrc, /bip54:[\s\S]*bip-0054/);
   assert.match(proposalsSrc, /bip110:[\s\S]*bip-0110/);

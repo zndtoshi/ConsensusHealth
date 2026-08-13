@@ -6,7 +6,19 @@ const { Pool } = require("pg");
 // Reuse project env loading convention (server/.env), but require PROD_DATABASE_URL for safety.
 dotenv.config({ path: path.resolve(__dirname, "../server/.env") });
 
-const JSON_PATH = path.resolve(__dirname, "../users_bio_export.json");
+function resolveBioExportPath() {
+  const fromArg = process.argv.slice(2).find((a) => a && !a.startsWith("-"));
+  const fromEnv = String(process.env.BIO_EXPORT_PATH || "").trim();
+  const chosen = String(fromArg || fromEnv || "").trim();
+  if (!chosen) {
+    fatal(
+      "Missing bio export path. Pass a CLI path argument or set BIO_EXPORT_PATH to the users_bio_export.json file."
+    );
+  }
+  return path.resolve(chosen);
+}
+
+const JSON_PATH = resolveBioExportPath();
 const TARGET_TABLE = (process.env.TARGET_TABLE || "public.community_users").trim();
 const DRY_RUN = String(process.env.DRY_RUN || "").trim() === "1";
 const INSPECT_TABLES = String(process.env.INSPECT_TABLES || "").trim() === "1";
@@ -73,7 +85,7 @@ function lowerTrimHandle(v) {
 
 function readUsersFromExport() {
   if (!fs.existsSync(JSON_PATH)) {
-    fatal(`Missing export file: ${JSON_PATH}`);
+    fatal(`Missing export file: ${JSON_PATH} (set BIO_EXPORT_PATH or pass a CLI path)`);
   }
   const parsed = JSON.parse(fs.readFileSync(JSON_PATH, "utf8"));
   const users = Array.isArray(parsed?.users) ? parsed.users : [];

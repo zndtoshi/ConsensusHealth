@@ -14,7 +14,6 @@ import {
 } from "./profileEnrichment.js";
 import {
   decodeStanceHistoryCursor,
-  encodeStanceHistoryCursor,
   isPrivilegedManualEditorHandle,
   normalizeStanceValue,
   type ChangedByValue,
@@ -38,13 +37,8 @@ import {
 } from "./avatarStorage.js";
 import { clampNewStancesLimit, queryNewStanceEvents } from "./newStances.js";
 import { runStatsQueries } from "./proposalStats.js";
+import { coerceXUserIdToDigitString } from "./xUserId.js";
 import {
-  coerceXUserIdToDigitString,
-  coerceXUserIdKey,
-  parseJsonPreservingSnowflakeIds,
-} from "./xUserId.js";
-import {
-  filterOutRemovedCommunityUsers,
   normalizeRemovedHandle,
   normalizeRemovedXUserId,
   resolveRemovalTarget,
@@ -52,19 +46,89 @@ import {
 import {
   confirmExplanationForStance,
   deleteStanceExplanation,
-  loadExplanationsForProposal,
   loadExplanationsForUser,
-  toPublicExplanation,
   verifyAndUpsertStanceExplanation,
 } from "./stanceExplanations.js";
 import { createStanceExplanationHandlers } from "./stanceExplanationHandlers.js";
 import { createAdminStanceHandler } from "./adminStanceHandlers.js";
+import { assertProductionEnv } from "./security/envValidation.js";
+import {
+  assertNoTestSwitchesInProduction,
+  resolveE2eServeDist,
+  resolveForceListen,
+  resolveHelmetProd,
+  resolveXOauthMock,
+} from "./security/testMode.js";
+import { buildCorsOriginAllowlist, createCorsOptions } from "./security/corsOrigins.js";
+import {
+  createHelmetMiddleware,
+  createPermissionsPolicyMiddleware,
+} from "./security/httpSecurity.js";
+import {
+  createAccountDeletionRateLimiters,
+  createAdminWriteRateLimiters,
+  createAuthRateLimiter,
+  createAvatarProxyRateLimiter,
+  createGeneralApiRateLimiter,
+  createStanceExplanationWriteRateLimiters,
+  createStanceWriteRateLimiters,
+  createStatsReadRateLimiter,
+} from "./security/rateLimits.js";
+import {
+  cleanupExpiredOAuthStates,
+  consumeOAuthState,
+  ensureOAuthStateTable,
+  saveOAuthState,
+} from "./oauthStateStore.js";
+import { renderAuthPopupPage } from "./oauthPopupPage.js";
+export { renderAuthPopupPage } from "./oauthPopupPage.js";
+import { createAccountDeletionHandler } from "./accountDeletion.js";
+import { ensurePrivacySuppressionsTable } from "./privacySuppressions.js";
+import { createHealthRouter } from "./healthRoutes.js";
+import {
+  loadMergedCommunityUsersWithStance as loadMergedCommunityUsersWithStanceShared,
+  loadSeededAccountsForCommunity as loadSeededAccountsForCommunityShared,
+  mapStanceHistoryPublicRow,
+  queryRecentStanceHistoryPage as queryRecentStanceHistoryPageShared,
+} from "./communityPublicSurfaces.js";
+import {
+  createRequestIdMiddleware,
+  createRequestLoggingMiddleware,
+  logOAuthProviderFailure,
+} from "./requestLogging.js";
+import { gracefulShutdown } from "./gracefulShutdown.js";
+import { initErrorMonitoring, type ErrorMonitoringHandle } from "./errorMonitoring.js";
+import {
+  assertClientIpConfig,
+  clientIpRateLimitKey,
+  createOriginLockMiddleware,
+  type ClientIpConfig,
+} from "./security/clientIp.js";
+import { getContactEmail } from "./security/envValidation.js";
+import {
+  E2E_USER_COOKIE,
+  isConsensusHealthE2E,
+  parseE2EUserKey,
+  resolveE2EMockIdentity,
+} from "./e2eMockIdentity.js";
+import { fileURLToPath } from "node:url";
 
 dotenv.config({ path: path.resolve(process.cwd(), "server", ".env") });
 
 const PORT = Number(process.env.PORT || 8787);
 const NODE_ENV = process.env.NODE_ENV || "development";
 const IS_PROD = NODE_ENV === "production";
+const E2E_SERVE_DIST = resolveE2eServeDist(process.env);
+const X_OAUTH_MOCK = resolveXOauthMock(process.env);
+const FORCE_LISTEN = resolveForceListen(process.env);
+const HELMET_IS_PROD = resolveHelmetProd(process.env);
+/** Per-login e2e_user + related hooks — only when strict test mode already enabled mock OAuth. */
+const CONSENSUSHEALTH_E2E = X_OAUTH_MOCK && isConsensusHealthE2E(process.env);
+
+assertProductionEnv(process.env);
+assertNoTestSwitchesInProduction(process.env);
+const clientIpConfig: ClientIpConfig = assertClientIpConfig(process.env, { isProd: IS_PROD });
+
 const APP_ORIGIN_ENV = (process.env.APP_ORIGIN || "").trim();
 const APP_URL_ENV = (process.env.APP_URL || "").trim();
 const DIST_PATH = path.resolve(process.cwd(), "dist");
@@ -74,6 +138,12 @@ const TWITTER_CLIENT_SECRET = process.env.X_CLIENT_SECRET || process.env.TWITTER
 // Used as a fallback when X /users/me omits bio or created_at (also available in prod).
 const PROFILE_ENRICHMENT_KEY = resolveTwitterApiKey();
 const SESSION_TTL_DAYS = Number(process.env.SESSION_TTL_DAYS || 30);
+/** Operator-declared backup retention policy (days); exposed via public-config / Privacy. */
+const BACKUP_RETENTION_DAYS_RAW = Number(process.env.BACKUP_RETENTION_DAYS || 7);
+const BACKUP_RETENTION_DAYS =
+  Number.isFinite(BACKUP_RETENTION_DAYS_RAW) && BACKUP_RETENTION_DAYS_RAW > 0
+    ? Math.floor(BACKUP_RETENTION_DAYS_RAW)
+    : 7;
 const SESSION_SECRET = process.env.SESSION_SECRET || "";
 const STATS_CACHE_TTL_MS = 45_000;
 // BIP-110 has concluded. Keep identity/session infrastructure active for future BIPs,
@@ -150,92 +220,45 @@ const ensureLocalAvatar = createEnsureLocalAvatar(
   createNodeAvatarDeps({ pool, avatarsDir: AVATARS_DIR, isAllowedHost: isAllowedAvatarHost })
 );
 
-function withWwwVariant(origin: string): string[] {
-  try {
-    const url = new URL(origin);
-    const host = url.hostname.toLowerCase();
-    if (host.startsWith("www.")) {
-      const noWww = host.slice(4);
-      return [origin, `${url.protocol}//${noWww}${url.port ? `:${url.port}` : ""}`];
-    }
-    return [origin, `${url.protocol}//www.${host}${url.port ? `:${url.port}` : ""}`];
-  } catch {
-    return [origin];
-  }
-}
-
-function buildAllowedOrigins(): Set<string> {
-  const set = new Set<string>();
-  const add = (value: string): void => {
-    const v = value.trim();
-    if (!v) return;
-    for (const item of withWwwVariant(v)) set.add(item);
-  };
-  add(APP_ORIGIN_ENV);
-  add(APP_URL_ENV);
-  set.add("http://localhost:5173");
-  return set;
-}
-
-const allowedOrigins = buildAllowedOrigins();
+const allowedOrigins = buildCorsOriginAllowlist(process.env, { isProd: IS_PROD });
 
 const app = express();
-app.set("trust proxy", 1);
+app.set("trust proxy", clientIpConfig.trustProxyHops);
+app.disable("x-powered-by");
 app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin) {
-        callback(null, true);
-        return;
-      }
-      if (allowedOrigins.has(origin)) {
-        callback(null, true);
-        return;
-      }
-      callback(new Error("Not allowed by CORS"));
-    },
-    credentials: true,
+  createHelmetMiddleware({
+    isProd: HELMET_IS_PROD,
+    // HTTP E2E keeps prod CSP without HSTS / upgrade-insecure-requests.
+    enforceHttpsRedirects: IS_PROD,
   })
 );
+app.use(createPermissionsPolicyMiddleware());
+app.use(createOriginLockMiddleware(clientIpConfig));
+app.use(cors(createCorsOptions({ env: process.env, isProd: IS_PROD, allowlist: allowedOrigins })));
+app.use(createRequestIdMiddleware());
+app.use(createRequestLoggingMiddleware());
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser(SESSION_SECRET));
 
-type PendingAuth = {
-  code_verifier: string;
-  createdAt: number;
-  mode?: "popup" | "redirect";
-};
+const rateLimitUserId = (req: Request): string | null => getSessionUser(req)?.x_user_id ?? null;
+const rateLimitClientIp = (req: Request) => clientIpRateLimitKey(req, clientIpConfig);
+app.use("/api", createGeneralApiRateLimiter({ getClientIpKey: rateLimitClientIp }));
+app.use("/auth", createAuthRateLimiter({ getClientIpKey: rateLimitClientIp }));
+app.use(
+  "/api/admin",
+  ...createAdminWriteRateLimiters({ getXUserId: rateLimitUserId, getClientIpKey: rateLimitClientIp })
+);
 
-// postMessage/BroadcastChannel contract shared with the frontend (src/utils/authPopup.js).
-const OAUTH_MESSAGE_SOURCE = "consensushealth-oauth";
-const OAUTH_CHANNEL_NAME = "consensushealth-oauth";
-
-/**
- * Minimal self-closing page returned to the OAuth popup. It notifies the opener
- * (via postMessage + BroadcastChannel) that auth finished, then closes itself.
- * No sensitive data is passed; the opener re-reads the session from /api/me.
- */
-function renderAuthPopupPage(status: "success" | "error", frontendOrigin: string): string {
-  const payload = JSON.stringify({ source: OAUTH_MESSAGE_SOURCE, status });
-  const origin = JSON.stringify(frontendOrigin || "*");
-  const channel = JSON.stringify(OAUTH_CHANNEL_NAME);
-  const label = status === "success" ? "Signed in." : "Sign-in failed.";
-  return `<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${label}</title></head>
-<body style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#0b0f1a;color:#e5e7eb;display:grid;place-items:center;height:100vh;margin:0">
-<div>${label} You can close this window.</div>
-<script>
-(function(){
-  var msg = ${payload};
-  try { if (window.opener && !window.opener.closed) window.opener.postMessage(msg, ${origin}); } catch (e) {}
-  try { var bc = new BroadcastChannel(${channel}); bc.postMessage(msg); bc.close(); } catch (e) {}
-  setTimeout(function(){ try { window.close(); } catch (e) {} }, 120);
-})();
-</script>
-</body>
-</html>`;
-}
+// CSP-safe OAuth popup helper (also copied into dist/public by Vite).
+const PUBLIC_PATH = path.resolve(process.cwd(), "public");
+app.get("/auth/popup-complete.js", (_req, res) => {
+  const fromPublic = path.join(PUBLIC_PATH, "auth", "popup-complete.js");
+  const fromDist = path.join(DIST_PATH, "auth", "popup-complete.js");
+  const file = fs.existsSync(fromPublic) ? fromPublic : fromDist;
+  res.type("application/javascript");
+  res.setHeader("Cache-Control", "public, max-age=3600");
+  res.sendFile(file);
+});
 
 /**
  * Terminate the OAuth callback: for popup logins return the self-closing page;
@@ -263,8 +286,6 @@ type SessionUser = {
   stance: string | null;
   equal_avatar_size: boolean;
 };
-
-const pendingAuth = new Map<string, PendingAuth>();
 
 function isAllowedAvatarHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
@@ -501,338 +522,24 @@ function computeOAuthRedirectUri(req: Request): string {
   return `${computeOAuthBase(req)}/auth/x/callback`;
 }
 
-let seededAccountsCache: Record<string, unknown>[] | null = null;
-
-async function loadSeededAccountsForCommunity(): Promise<Record<string, unknown>[]> {
-  if (seededAccountsCache) return seededAccountsCache;
-  const candidates = [
-    path.resolve(process.cwd(), "public", "data", "accounts_stanced.json"),
-    path.resolve(DIST_PATH, "data", "accounts_stanced.json"),
-  ];
-  for (const p of candidates) {
-    try {
-      const raw = await fs.promises.readFile(p, "utf-8");
-      const data = parseJsonPreservingSnowflakeIds(raw);
-      if (Array.isArray(data)) {
-        seededAccountsCache = data as Record<string, unknown>[];
-        return seededAccountsCache;
-      }
-    } catch {
-      // try next candidate
-    }
-  }
-  return [];
-}
-
-function hasStanceValue(value: unknown): boolean {
-  return normalizeStanceValue(value) !== null;
-}
-
-function mergeCommunityUsers(
-  seededRows: Record<string, unknown>[],
-  dbRows: Record<string, unknown>[]
-): Record<string, unknown>[] {
-  const isNonEmptyString = (value: unknown): value is string =>
-    typeof value === "string" && value.trim().length > 0;
-  const toNonEmptyString = (value: unknown): string | null => {
-    if (!isNonEmptyString(value)) return null;
-    return value.trim();
-  };
-  const toNormalizedHandle = (value: unknown): string | null => {
-    const normalized = normalizeHandle(value);
-    return normalized || null;
-  };
-  const toFiniteFollowers = (value: unknown): number | null => {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n < 0) return null;
-    return Math.trunc(n);
-  };
-  const toAccountCreatedAt = (row: Record<string, unknown>): string | null =>
-    toNonEmptyString(row.account_created_at ?? row.accountCreatedAt);
-  const toAvatarUrl = (row: Record<string, unknown>): string | null =>
-    toNonEmptyString(
-      row.avatar_url ??
-      row.avatarUrl ??
-      row.profile_image_url ??
-      row.profileImageUrl
-    );
-  const chooseString = (
-    existing: string | null,
-    incoming: string | null,
-    source: "seeded" | "db"
-  ): string | null => {
-    if (source === "db") return incoming ?? existing;
-    return existing ?? incoming;
-  };
-  const chooseFollowers = (
-    existing: number | null,
-    incoming: number | null,
-    source: "seeded" | "db"
-  ): number | null => {
-    if (source === "db") {
-      if (incoming != null && (incoming > 0 || existing == null || existing <= 0)) return incoming;
-      return existing;
-    }
-    if (existing != null) return existing;
-    return incoming;
-  };
-
-  const byHandle = new Map<string, Record<string, unknown>>();
-  const byXid = new Map<string, Record<string, unknown>>();
-  const merged: Record<string, unknown>[] = [];
-
-  const upsert = (raw: Record<string, unknown>, source: "seeded" | "db"): void => {
-    const incomingHandle = toNormalizedHandle(raw?.handle ?? raw?.username ?? raw?.screen_name);
-    const incomingXUserId =
-      coerceXUserIdToDigitString(raw?.x_user_id ?? raw?.xUserId) ??
-      coerceXUserIdKey(raw?.x_user_id ?? raw?.xUserId);
-    if (!incomingHandle && !incomingXUserId) return;
-
-    let rec =
-      (incomingXUserId && byXid.get(incomingXUserId)) ||
-      (incomingHandle && byHandle.get(incomingHandle)) ||
-      null;
-    if (!rec) {
-      rec = {};
-      merged.push(rec);
-    }
-
-    // Fill missing non-protected fields without clobbering existing values.
-    for (const [key, value] of Object.entries(raw)) {
-      const existing = rec[key];
-      if (existing == null || (typeof existing === "string" && existing.trim() === "")) {
-        rec[key] = value;
-      }
-    }
-
-    const existingHandle = toNormalizedHandle(rec.handle ?? rec.username ?? rec.screen_name);
-    const existingXUserId =
-      coerceXUserIdToDigitString(rec.x_user_id ?? rec.xUserId) ??
-      coerceXUserIdKey(rec.x_user_id ?? rec.xUserId);
-    const bestHandle = chooseString(existingHandle, incomingHandle, source);
-    const bestXUserId = chooseString(existingXUserId, incomingXUserId, source);
-    if (bestHandle) rec.handle = bestHandle;
-    if (bestXUserId) rec.x_user_id = bestXUserId;
-
-    const existingName = toNonEmptyString(rec.name);
-    const incomingName = toNonEmptyString(raw.name);
-    const bestName = chooseString(existingName, incomingName, source);
-    if (bestName) rec.name = bestName;
-
-    const existingBio = toNonEmptyString(rec.bio);
-    const incomingBio = toNonEmptyString(raw.bio ?? raw.bio_snippet ?? raw.description);
-    const bestBio = chooseString(existingBio, incomingBio, source);
-    if (bestBio) rec.bio = bestBio;
-
-    const existingAvatarUrl = toAvatarUrl(rec);
-    const incomingAvatarUrl = toAvatarUrl(raw);
-    const bestAvatarUrl = chooseString(existingAvatarUrl, incomingAvatarUrl, source);
-    if (bestAvatarUrl) rec.avatar_url = bestAvatarUrl;
-
-    const existingFollowers = toFiniteFollowers(rec.followers_count);
-    const incomingFollowers = toFiniteFollowers(raw.followers_count);
-    const bestFollowers = chooseFollowers(existingFollowers, incomingFollowers, source);
-    if (bestFollowers != null) rec.followers_count = bestFollowers;
-
-    const existingAccountCreatedAt = toNonEmptyString(rec.account_created_at ?? rec.accountCreatedAt);
-    const incomingAccountCreatedAt = toAccountCreatedAt(raw);
-    const bestAccountCreatedAt = chooseString(existingAccountCreatedAt, incomingAccountCreatedAt, source);
-    if (bestAccountCreatedAt) {
-      rec.account_created_at = bestAccountCreatedAt;
-      rec.accountCreatedAt = bestAccountCreatedAt;
-    }
-
-    const stanceNorm = normalizeStanceValue(source === "db" ? (raw.stance ?? rec.stance) : (rec.stance ?? raw.stance));
-    if (stanceNorm) rec.stance = stanceNorm;
-
-    if (source === "db") {
-      rec.accountCreatedAt = rec.accountCreatedAt ?? rec.account_created_at ?? null;
-    }
-
-    const finalHandle = toNormalizedHandle(rec.handle ?? rec.username ?? rec.screen_name);
-    const finalXUserId =
-      coerceXUserIdToDigitString(rec.x_user_id ?? rec.xUserId) ??
-      coerceXUserIdKey(rec.x_user_id ?? rec.xUserId);
-    if (finalXUserId) byXid.set(finalXUserId, rec);
-    if (finalHandle) byHandle.set(finalHandle, rec);
-  };
-
-  for (const r of seededRows) upsert(r, "seeded");
-  for (const r of dbRows) upsert(r, "db");
-  return merged;
-}
-
-async function loadRemovedCommunityUserKeys(): Promise<{ handles: Set<string>; xUserIds: Set<string> }> {
-  const { rows } = await pool.query(`SELECT handle, x_user_id FROM removed_community_users`);
-  const handles = new Set<string>();
-  const xUserIds = new Set<string>();
-  for (const row of rows as Array<{ handle?: unknown; x_user_id?: unknown }>) {
-    const handle = normalizeRemovedHandle(row.handle);
-    const xUserId = normalizeRemovedXUserId(row.x_user_id);
-    if (handle) handles.add(handle);
-    if (xUserId) xUserIds.add(xUserId);
-  }
-  return { handles, xUserIds };
-}
-
 async function loadMergedCommunityUsersWithStance(
   proposalId: ProposalId = DEFAULT_PROPOSAL_ID
 ): Promise<Record<string, unknown>[]> {
-  // Canonical: proposal-scoped stances only (no community_users.stance reads).
-  const { rows } = await pool.query(
-    `
-    SELECT
-      cu.x_user_id,
-      cu.handle,
-      cu.name,
-      cu.avatar_url,
-      cu.avatar_path,
-      cu.followers_count,
-      cu.bio,
-      cu.account_created_at,
-      cu.account_created_at AS "accountCreatedAt",
-      ups.stance,
-      (user_changed.x_user_id IS NOT NULL) AS "hasUserStanceChange"
-    FROM user_proposal_stances ups
-    INNER JOIN community_users cu ON cu.x_user_id = ups.x_user_id
-    LEFT JOIN (
-      SELECT DISTINCT x_user_id
-      FROM user_proposal_stance_history
-      WHERE changed_by = 'user' AND proposal_id = $1
-    ) user_changed ON user_changed.x_user_id = cu.x_user_id
-    WHERE ups.proposal_id = $1
-    `,
-    [proposalId]
-  );
-  const dbRows = (rows as Record<string, unknown>[]).filter((r) => hasStanceValue(r.stance));
-
-  const explanations = await loadExplanationsForProposal(pool, proposalId);
-  const withExplanations: Record<string, unknown>[] = dbRows.map((r) => {
-    const xUserId = String(r.x_user_id ?? "").trim();
-    const publicExplanation = toPublicExplanation(explanations.get(xUserId) || null, r.stance);
-    return {
-      ...r,
-      stance_explanation: publicExplanation,
-    };
+  return loadMergedCommunityUsersWithStanceShared(pool, proposalId, {
+    loadSeededAccounts: () =>
+      loadSeededAccountsForCommunityShared([
+        path.resolve(process.cwd(), "public", "data", "accounts_stanced.json"),
+        path.resolve(DIST_PATH, "data", "accounts_stanced.json"),
+      ]),
   });
-
-  // BIP110 only: union seed JSON accounts that are not already present as canonical
-  // proposal stances. Seeds are never copied into BIP54/BIP448.
-  if (proposalId !== DEFAULT_PROPOSAL_ID) {
-    const removed = await loadRemovedCommunityUserKeys();
-    return filterOutRemovedCommunityUsers(withExplanations, removed);
-  }
-
-  const seededRows = await loadSeededAccountsForCommunity();
-  const mergedRows = mergeCommunityUsers(seededRows, withExplanations);
-  // After merge, prefer DB/canonical stance when present; seed stance remains for
-  // seed-only accounts that have no user_proposal_stances row.
-  const withStance = mergedRows
-    .filter((r) => hasStanceValue(r.stance))
-    .map((r) => {
-      if (r.stance_explanation) return r;
-      const xUserId = String(r.x_user_id ?? "").trim();
-      const publicExplanation = toPublicExplanation(explanations.get(xUserId) || null, r.stance);
-      return { ...r, stance_explanation: publicExplanation };
-    });
-  const removed = await loadRemovedCommunityUserKeys();
-  return filterOutRemovedCommunityUsers(withStance, removed);
-}
-
-function mapStanceHistoryPublicRow(r: Record<string, unknown>) {
-  const followersRaw = r.followers_count;
-  let followers_count: number | null = null;
-  if (followersRaw != null && followersRaw !== "") {
-    const n = Number(followersRaw);
-    if (Number.isFinite(n) && n >= 0) followers_count = Math.trunc(n);
-  }
-  const changedAt = new Date(String(r.changed_at)).toISOString();
-  const id = Number(r.id);
-  const previousRaw = r.previous_stance ?? r.from;
-  const newRaw = r.new_stance ?? r.to;
-  const previous_stance =
-    previousRaw == null || previousRaw === "" ? null : String(previousRaw);
-  const new_stance = String(newRaw ?? "");
-  return {
-    id: Number.isFinite(id) ? Math.trunc(id) : 0,
-    handle: r.handle ? normalizeHandle(r.handle) : null,
-    display_name: r.name != null && String(r.name).trim() ? String(r.name) : null,
-    followers_count,
-    previous_stance,
-    new_stance,
-    from: previous_stance,
-    to: new_stance,
-    changed_at: changedAt,
-    changed_by: r.changed_by ? String(r.changed_by) : null,
-  };
 }
 
 async function queryRecentStanceHistoryPage(args: {
   limit: number;
   cursor?: { changed_at: string; id: number } | null;
   proposalId?: ProposalId;
-}): Promise<{
-  items: ReturnType<typeof mapStanceHistoryPublicRow>[];
-  next_cursor: string | null;
-  has_more: boolean;
-}> {
-  const proposalId = args.proposalId || DEFAULT_PROPOSAL_ID;
-  const limit = Math.max(1, Math.min(50, Math.trunc(args.limit) || 10));
-  const params: Array<string | number> = [proposalId];
-  let cursorSql = "";
-  if (args.cursor) {
-    params.push(args.cursor.changed_at);
-    params.push(args.cursor.id);
-    cursorSql = `AND (l.changed_at, l.id) < ($${params.length - 1}::timestamptz, $${params.length}::int)`;
-  }
-  params.push(limit + 1);
-  // Canonical: user_proposal_stance_history for every proposal (including BIP110).
-  const { rows } = await pool.query(
-    `
-    WITH latest AS (
-      SELECT
-        sh.id,
-        sh.x_user_id,
-        sh.previous_stance,
-        sh.new_stance,
-        sh.changed_at,
-        sh.changed_by,
-        ROW_NUMBER() OVER (
-          PARTITION BY sh.x_user_id
-          ORDER BY sh.changed_at DESC, sh.id DESC
-        ) AS rn
-      FROM user_proposal_stance_history sh
-      WHERE sh.proposal_id = $1
-    )
-    SELECT
-      l.id,
-      cu.handle,
-      cu.name,
-      cu.followers_count,
-      l.previous_stance,
-      l.new_stance,
-      l.changed_at,
-      l.changed_by
-    FROM latest l
-    LEFT JOIN community_users cu ON cu.x_user_id = l.x_user_id
-    WHERE l.rn = 1
-    ${cursorSql}
-    ORDER BY l.changed_at DESC, l.id DESC
-    LIMIT $${params.length}
-    `,
-    params
-  );
-
-  const has_more = rows.length > limit;
-  const pageRows = has_more ? rows.slice(0, limit) : rows;
-  const items = pageRows.map((r) => mapStanceHistoryPublicRow(r as Record<string, unknown>));
-  const last = items[items.length - 1];
-  const next_cursor =
-    has_more && last
-      ? encodeStanceHistoryCursor({ changed_at: last.changed_at, id: last.id })
-      : null;
-
-  return { items, next_cursor, has_more };
+}) {
+  return queryRecentStanceHistoryPageShared(pool, args);
 }
 
 async function initDb(): Promise<void> {
@@ -965,10 +672,13 @@ async function initDb(): Promise<void> {
 
   // Multi-BIP proposal tables + BIP110 backfill (idempotent).
   await ensureProposalSchema(pool);
+  await ensureOAuthStateTable(pool);
+  await ensurePrivacySuppressionsTable(pool);
 }
 
 async function cleanupExpiredSessions(): Promise<void> {
   await pool.query(`DELETE FROM sessions WHERE expires_at < now()`);
+  await cleanupExpiredOAuthStates(pool);
 }
 
 function getSessionUser(req: Request): SessionUser | null {
@@ -1034,11 +744,18 @@ async function startXAuth(req: Request, res: Response): Promise<void> {
     return;
   }
   const state = uuidv4();
+  const browser_nonce = uuidv4();
   const code_verifier = createCodeVerifier();
   const challenge = createCodeChallenge(code_verifier);
   const isPopup = String(req.query.mode || "") === "popup";
-  pendingAuth.set(state, { code_verifier, createdAt: Date.now(), mode: isPopup ? "popup" : "redirect" });
-  res.cookie("consensushealth_oauth_state", state, {
+  await saveOAuthState(pool, {
+    state,
+    code_verifier,
+    mode: isPopup ? "popup" : "redirect",
+    browser_nonce,
+  });
+  // Browser binding cookie (value = browser_nonce; verified on callback).
+  res.cookie("consensushealth_oauth_state", browser_nonce, {
     httpOnly: true,
     sameSite: "lax",
     secure: cookieSecure(req),
@@ -1046,7 +763,7 @@ async function startXAuth(req: Request, res: Response): Promise<void> {
     maxAge: 10 * 60 * 1000,
   });
   // Remember popup mode so the callback returns a self-closing page instead of a
-  // full-page redirect (robust even if the in-memory pending record is missing).
+  // full-page redirect (robust even if the pending DB record is missing).
   res.cookie("consensushealth_oauth_mode", isPopup ? "popup" : "redirect", {
     httpOnly: true,
     sameSite: "lax",
@@ -1054,6 +771,23 @@ async function startXAuth(req: Request, res: Response): Promise<void> {
     path: "/",
     maxAge: 10 * 60 * 1000,
   });
+
+  // E2E-only: optional per-login mock identity via ?e2e_user=… (never in production).
+  if (CONSENSUSHEALTH_E2E) {
+    const e2eKey = parseE2EUserKey(req.query.e2e_user);
+    if (e2eKey) {
+      res.cookie(E2E_USER_COOKIE, e2eKey, {
+        signed: true,
+        httpOnly: true,
+        sameSite: "lax",
+        secure: cookieSecure(req),
+        path: "/",
+        maxAge: 10 * 60 * 1000,
+      });
+    } else {
+      res.clearCookie(E2E_USER_COOKIE, { path: "/" });
+    }
+  }
 
   const base = computeOAuthBase(req);
   const redirectUri = `${base}/auth/x/callback`;
@@ -1066,8 +800,34 @@ async function startXAuth(req: Request, res: Response): Promise<void> {
   url.searchParams.set("code_challenge", challenge);
   url.searchParams.set("code_challenge_method", "S256");
 
-  console.log("[oauth] base=%s redirect_uri=%s", base, redirectUri);
-  console.log("[OAuth] authorize url:", url.toString());
+  // Never log state, challenge, code, verifier, or the full authorize URL.
+  let redirectOrigin = "";
+  let redirectPath = "/auth/x/callback";
+  try {
+    const u = new URL(redirectUri);
+    redirectOrigin = u.origin;
+    redirectPath = u.pathname || redirectPath;
+  } catch {
+    redirectOrigin = "(invalid)";
+  }
+  console.log(
+    JSON.stringify({
+      event: "oauth_authorize_redirect",
+      provider: "x",
+      redirect_origin: redirectOrigin,
+      redirect_path: redirectPath,
+      mode: isPopup ? "popup" : "redirect",
+      mock: X_OAUTH_MOCK || undefined,
+    })
+  );
+  if (X_OAUTH_MOCK) {
+    // Deterministic local/E2E path — no real X credentials or authorize URL.
+    const mockCallback = new URL(`${base}/auth/x/callback`);
+    mockCallback.searchParams.set("code", "mock_oauth_code");
+    mockCallback.searchParams.set("state", state);
+    res.redirect(mockCallback.toString());
+    return;
+  }
   res.redirect(url.toString());
 }
 
@@ -1133,10 +893,11 @@ app.get("/auth/x/callback", async (req, res, next) => {
   try {
     const code = String(req.query.code || "");
     const state = String(req.query.state || "");
-    const isPopup = String(req.cookies?.consensushealth_oauth_mode || "") === "popup";
+    // Cookie mode is only a fallback when no pending row is consumed.
+    const modeCookiePopup = String(req.cookies?.consensushealth_oauth_mode || "") === "popup";
     res.clearCookie("consensushealth_oauth_mode", { path: "/" });
     if (!code || !state) {
-      if (isPopup) {
+      if (modeCookiePopup) {
         finishAuthResult(req, res, false, true);
         return;
       }
@@ -1144,70 +905,103 @@ app.get("/auth/x/callback", async (req, res, next) => {
       return;
     }
     const stateCookie = String(req.cookies?.consensushealth_oauth_state || "");
-    const pending = pendingAuth.get(state);
-    pendingAuth.delete(state);
+    // Atomic: state + browser nonce + unexpired. Wrong browser does not burn the row.
+    const pending = await consumeOAuthState(pool, state, stateCookie);
     res.clearCookie("consensushealth_oauth_state", { path: "/" });
-    if (!pending || stateCookie !== state || Date.now() - pending.createdAt > 10 * 60 * 1000) {
-      console.error("[OAuth] Invalid/expired state", { hasPending: Boolean(pending), stateCookiePresent: Boolean(stateCookie) });
-      finishAuthResult(req, res, false, isPopup);
+    if (!pending) {
+      console.error("[OAuth] Invalid/expired state or browser mismatch", {
+        stateCookiePresent: Boolean(stateCookie),
+      });
+      finishAuthResult(req, res, false, modeCookiePopup);
       return;
     }
+    const isPopup = pending.mode === "popup";
 
     const redirectUri = computeOAuthRedirectUri(req);
-    const tokenBody = new URLSearchParams({
-      code,
-      grant_type: "authorization_code",
-      client_id: TWITTER_CLIENT_ID,
-      redirect_uri: redirectUri,
-      code_verifier: pending.code_verifier,
-    });
+    let data: {
+      id?: string;
+      username?: string;
+      name?: string;
+      profile_image_url?: string;
+      description?: string;
+      created_at?: string;
+      public_metrics?: { followers_count?: number };
+    } | undefined;
 
-    const tokenRes = await fetch("https://api.x.com/2/oauth2/token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        Authorization: getBearerTokenBasicAuthHeader(TWITTER_CLIENT_ID, TWITTER_CLIENT_SECRET),
-      },
-      body: tokenBody,
-    });
-    if (!tokenRes.ok) {
-      const txt = await tokenRes.text();
-      console.error("[OAuth] Token exchange failed:", tokenRes.status, txt);
-      finishAuthResult(req, res, false, isPopup);
-      return;
-    }
-    const tokenJson = (await tokenRes.json()) as { access_token?: string };
-    const accessToken = tokenJson.access_token;
-    if (!accessToken) {
-      console.error("[OAuth] Token response missing access_token");
-      finishAuthResult(req, res, false, isPopup);
-      return;
-    }
-
-    const meRes = await fetch(
-      "https://api.x.com/2/users/me?user.fields=profile_image_url,public_metrics,description,created_at",
-      {
-        headers: { Authorization: `Bearer ${accessToken}` },
+    if (X_OAUTH_MOCK && code === "mock_oauth_code") {
+      const e2eKey =
+        CONSENSUSHEALTH_E2E
+          ? parseE2EUserKey(req.signedCookies?.[E2E_USER_COOKIE])
+          : null;
+      if (CONSENSUSHEALTH_E2E) {
+        res.clearCookie(E2E_USER_COOKIE, { path: "/" });
       }
-    );
-    if (!meRes.ok) {
-      const txt = await meRes.text();
-      console.error("[OAuth] /users/me failed:", meRes.status, txt);
-      finishAuthResult(req, res, false, isPopup);
-      return;
-    }
-    const meJson = (await meRes.json()) as {
-      data?: {
-        id?: string;
-        username?: string;
-        name?: string;
-        profile_image_url?: string;
-        description?: string;
-        created_at?: string;
-        public_metrics?: { followers_count?: number };
+      const mock = resolveE2EMockIdentity(e2eKey);
+      data = {
+        id: mock.id,
+        username: mock.handle,
+        name: mock.name,
+        profile_image_url: String(process.env.X_OAUTH_MOCK_AVATAR || "").trim() || undefined,
+        description: "mock oauth user",
+        created_at: "2020-01-01T00:00:00.000Z",
+        public_metrics: { followers_count: 42 },
       };
-    };
-    const data = meJson.data;
+    } else {
+      const tokenBody = new URLSearchParams({
+        code,
+        grant_type: "authorization_code",
+        client_id: TWITTER_CLIENT_ID,
+        redirect_uri: redirectUri,
+        code_verifier: pending.code_verifier,
+      });
+
+      const tokenRes = await fetch("https://api.x.com/2/oauth2/token", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: getBearerTokenBasicAuthHeader(TWITTER_CLIENT_ID, TWITTER_CLIENT_SECRET),
+        },
+        body: tokenBody,
+      });
+      if (!tokenRes.ok) {
+        const txt = await tokenRes.text();
+        logOAuthProviderFailure("[OAuth] Token exchange failed", tokenRes.status, txt);
+        finishAuthResult(req, res, false, isPopup);
+        return;
+      }
+      const tokenJson = (await tokenRes.json()) as { access_token?: string };
+      const accessToken = tokenJson.access_token;
+      if (!accessToken) {
+        console.error("[OAuth] Token response missing access_token");
+        finishAuthResult(req, res, false, isPopup);
+        return;
+      }
+
+      const meRes = await fetch(
+        "https://api.x.com/2/users/me?user.fields=profile_image_url,public_metrics,description,created_at",
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }
+      );
+      if (!meRes.ok) {
+        const txt = await meRes.text();
+        logOAuthProviderFailure("[OAuth] /users/me failed", meRes.status, txt);
+        finishAuthResult(req, res, false, isPopup);
+        return;
+      }
+      const meJson = (await meRes.json()) as {
+        data?: {
+          id?: string;
+          username?: string;
+          name?: string;
+          profile_image_url?: string;
+          description?: string;
+          created_at?: string;
+          public_metrics?: { followers_count?: number };
+        };
+      };
+      data = meJson.data;
+    }
     if (!data?.id || !data?.username) {
       console.error("[OAuth] /users/me missing required fields");
       finishAuthResult(req, res, false, isPopup);
@@ -1502,7 +1296,10 @@ app.use(
   })
 );
 
-app.get("/api/avatar-proxy", async (req, res, next) => {
+app.get(
+  "/api/avatar-proxy",
+  createAvatarProxyRateLimiter({ getClientIpKey: rateLimitClientIp }),
+  async (req, res, next) => {
   try {
     const rawUrl = String(req.query.url ?? "").trim();
     if (!rawUrl) {
@@ -1633,7 +1430,33 @@ app.post("/api/me/preferences", async (req, res, next) => {
   }
 });
 
-app.post("/api/stance", async (req, res, next) => {
+app.post(
+  "/api/me/delete",
+  ...createAccountDeletionRateLimiters({
+    getXUserId: rateLimitUserId,
+    getClientIpKey: rateLimitClientIp,
+  }),
+  createAccountDeletionHandler({
+    pool,
+    getSessionUser,
+    avatarsDir: AVATARS_DIR,
+    invalidateStatsCache,
+    clearSessionCookie: (res) => {
+      res.clearCookie("consensushealth_session", { path: "/" });
+      if (process.env.NODE_ENV !== "production") {
+        res.clearCookie("consensushealth_dev_user", { path: "/" });
+      }
+    },
+  })
+);
+
+app.post(
+  "/api/stance",
+  ...createStanceWriteRateLimiters({
+    getXUserId: rateLimitUserId,
+    getClientIpKey: rateLimitClientIp,
+  }),
+  async (req, res, next) => {
   try {
     if (!SELF_STANCE_UPDATES_ENABLED) {
       res.status(409).json({
@@ -1747,8 +1570,22 @@ const stanceExplanationHandlers = createStanceExplanationHandlers({
   deleteStanceExplanation,
 });
 
-app.put("/api/stance-explanation", stanceExplanationHandlers.putStanceExplanation);
-app.delete("/api/stance-explanation", stanceExplanationHandlers.deleteStanceExplanationHandler);
+app.put(
+  "/api/stance-explanation",
+  ...createStanceExplanationWriteRateLimiters({
+    getXUserId: rateLimitUserId,
+    getClientIpKey: rateLimitClientIp,
+  }),
+  stanceExplanationHandlers.putStanceExplanation
+);
+app.delete(
+  "/api/stance-explanation",
+  ...createStanceExplanationWriteRateLimiters({
+    getXUserId: rateLimitUserId,
+    getClientIpKey: rateLimitClientIp,
+  }),
+  stanceExplanationHandlers.deleteStanceExplanationHandler
+);
 
 app.post("/api/admin/remove-user", async (req, res, next) => {
   try {
@@ -1876,7 +1713,10 @@ app.post(
   })
 );
 
-app.get("/api/stance-playback-sequence", async (req, res, next) => {
+app.get(
+  "/api/stance-playback-sequence",
+  createStatsReadRateLimiter({ getClientIpKey: rateLimitClientIp }),
+  async (req, res, next) => {
   try {
     const user = getSessionUser(req);
     const access = await resolveProposalAccessAsync(pool, {
@@ -1931,7 +1771,10 @@ app.get("/api/stance-playback-sequence", async (req, res, next) => {
   }
 });
 
-app.get("/api/stances/new", async (req, res, next) => {
+app.get(
+  "/api/stances/new",
+  createStatsReadRateLimiter({ getClientIpKey: rateLimitClientIp }),
+  async (req, res, next) => {
   try {
     const user = getSessionUser(req);
     const access = await resolveProposalAccessAsync(pool, {
@@ -1968,7 +1811,10 @@ app.get("/api/stances/new", async (req, res, next) => {
   }
 });
 
-app.get("/api/stance-history", async (req, res, next) => {
+app.get(
+  "/api/stance-history",
+  createStatsReadRateLimiter({ getClientIpKey: rateLimitClientIp }),
+  async (req, res, next) => {
   try {
     const user = getSessionUser(req);
     const access = await resolveProposalAccessAsync(pool, {
@@ -2120,7 +1966,10 @@ app.get("/api/stance-history", async (req, res, next) => {
   }
 });
 
-app.get("/api/stats", async (req, res, next) => {
+app.get(
+  "/api/stats",
+  createStatsReadRateLimiter({ getClientIpKey: rateLimitClientIp }),
+  async (req, res, next) => {
   try {
     const user = getSessionUser(req);
     const access = await resolveProposalAccessAsync(pool, {
@@ -2292,15 +2141,27 @@ app.post("/auth/logout", async (req, res, next) => {
   }
 });
 
-app.get("/api/health", (_req, res) => {
-  res.status(200).json({
-    ok: true,
-    service: "consensushealth-api",
-    time: new Date().toISOString(),
+app.use(
+  "/api",
+  createHealthRouter({
+    pool,
+    serviceName: "consensushealth-api",
+  })
+);
+
+app.get("/api/public-config", (_req, res) => {
+  const contactEmail = getContactEmail();
+  const ttl = Number.isFinite(SESSION_TTL_DAYS) && SESSION_TTL_DAYS > 0 ? Math.floor(SESSION_TTL_DAYS) : 30;
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    contact_email: contactEmail,
+    session_ttl_days: ttl,
+    backup_retention_days: BACKUP_RETENTION_DAYS,
+    trust_proxy_mode: clientIpConfig.mode,
   });
 });
 
-if (IS_PROD) {
+if (IS_PROD || E2E_SERVE_DIST) {
   if (!fs.existsSync(DIST_PATH)) {
     console.warn(`[ConsensusHealth server] dist folder not found at ${DIST_PATH}. Run: npm run build`);
   } else {
@@ -2324,8 +2185,11 @@ if (IS_PROD) {
   }
 }
 
+const errorMonitor: ErrorMonitoringHandle = await initErrorMonitoring(process.env);
+
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
-  console.error("UNHANDLED_ERROR:", err);
+  console.error("UNHANDLED_ERROR:", err instanceof Error ? err.message : "error");
+  errorMonitor.captureException(err, { route: "unhandled" });
   res.status(500).json({ error: "Internal server error" });
 });
 
@@ -2333,11 +2197,20 @@ await initDb();
 await cleanupExpiredSessions();
 logConfig();
 
-app.listen(PORT, () => {
-  console.log("ConsensusHealth API running");
-  console.log("Using database:", connectionString.replace(/:(?:[^@]*)@/, ":***@"));
-  console.log(`ConsensusHealth server listening on http://localhost:${PORT}`);
-  if (IS_PROD) {
-    console.log(`[ConsensusHealth server] Serving frontend from: ${DIST_PATH}`);
-  }
-});
+export { app, pool, initDb };
+
+const isDirectRun =
+  Boolean(process.argv[1]) &&
+  path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1]);
+
+if (isDirectRun || FORCE_LISTEN) {
+  const server = app.listen(PORT, () => {
+    console.log("ConsensusHealth API running");
+    console.log("Using database:", connectionString.replace(/:(?:[^@]*)@/, ":***@"));
+    console.log(`ConsensusHealth server listening on http://localhost:${PORT}`);
+    if (IS_PROD || E2E_SERVE_DIST) {
+      console.log(`[ConsensusHealth server] Serving frontend from: ${DIST_PATH}`);
+    }
+  });
+  gracefulShutdown(server, pool);
+}

@@ -24,6 +24,7 @@ export async function fetchCommunityUsers(opts?: FetchCommunityUsersOptions): Pr
 export async function fetchCommunityUsersResult(opts?: FetchCommunityUsersOptions): Promise<{
   ok: boolean;
   users: CommunityUser[];
+  requestId?: string | null;
 }> {
   try {
     const base = ((import.meta as any).env?.VITE_API_BASE || "").replace(/\/$/, "");
@@ -34,10 +35,11 @@ export async function fetchCommunityUsersResult(opts?: FetchCommunityUsersOption
       credentials: "include",
       signal: opts?.signal,
     });
-    if (!res.ok) return { ok: false, users: [] };
+    const requestId = res.headers.get("x-request-id") || res.headers.get("X-Request-Id") || null;
+    if (!res.ok) return { ok: false, users: [], requestId };
     const data = await res.json();
     const users = Array.isArray(data) ? data : Array.isArray(data?.accounts) ? data.accounts : [];
-    return { ok: true, users };
+    return { ok: true, users, requestId };
   } catch (err) {
     if ((err as { name?: string })?.name === "AbortError") return { ok: false, users: [] };
     console.warn("[ConsensusHealth] failed to load community users:", err);

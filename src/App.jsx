@@ -47,6 +47,10 @@ import {
 import { assertHaloAvatarAdmin, isHaloAvatarAdmin } from "./utils/haloAvatarAdmin";
 import { HaloAvatarModal } from "./components/HaloAvatarModal";
 import { StanceChoiceCard } from "./components/StanceChoiceCard";
+import { buildProposalAbout } from "./utils/proposalAbout";
+import { InfoPages } from "./components/InfoPages";
+import { DeleteAccountDialog } from "./components/DeleteAccountDialog";
+import { parseInfoPagePath } from "./utils/infoPagePath";
 import { snippetStanceExplanation } from "./utils/stanceExplanationSnippet";
 import {
   DEFAULT_PROPOSAL_ID,
@@ -155,7 +159,6 @@ import {
   computeFlightScreenPos,
   computeStagingLayouts,
   computeStagingPanelBounds,
-  easeInOutCubic,
   getIntroPhase,
   headingOpacityForPhase,
   panelFlightExitDurationMs,
@@ -188,6 +191,10 @@ import {
   startWaapiFlightAnimation,
 } from "./utils/newStancesFlight";
 
+// Reachable debug helpers (App source contract + optional filter-transition tooling).
+void parseDebugFilterTransitions;
+void prefersFilterReducedMotion;
+
 // Lazily loaded so the Statistics UI (StatisticsCards, CSV export) and the QR
 // library (qrcode.react) are split into separate chunks fetched only on demand.
 const StatisticsModal = lazy(() =>
@@ -213,16 +220,6 @@ function formatNum(n) {
 }
 function safeLower(s) {
   return (s ?? "").toString().toLowerCase();
-}
-
-function formatAccountAge(accountCreatedAt) {
-  if (!accountCreatedAt) return "";
-  const created = new Date(accountCreatedAt);
-  if (!Number.isFinite(created.getTime())) return "";
-  const now = Date.now();
-  const diffMs = Math.max(0, now - created.getTime());
-  const years = Math.floor(diffMs / (365.25 * 24 * 60 * 60 * 1000));
-  return `${years}y on X`;
 }
 
 function normalizeAccountCreatedAt(value) {
@@ -362,14 +359,6 @@ function getAccountStanceValue(account, labelsMap) {
   const handle = normalizeHandle(account?.handle ?? account?.username ?? account?.screen_name);
   const override = getStanceForHandle(labelsMap, handle);
   return normalizedStance(override || account?.stance || account?.position || "neutral");
-}
-
-function hasAccountStance(account, labelsMap) {
-  const handle = normalizeHandle(account?.handle ?? account?.username ?? account?.screen_name);
-  const override = getStanceForHandle(labelsMap, handle);
-  if (override) return true;
-  const raw = String(account?.stance ?? account?.position ?? "").trim();
-  return raw.length > 0;
 }
 
 const LABELS_STORAGE_KEY = "consensushealth:bip110:labels:v1";
@@ -671,18 +660,6 @@ const SELECTED_GAP_PX = 8;
 const SELECTED_FX_GROW_MS = 280;
 const SELECTED_FX_SHRINK_MS = 240;
 
-function parseCsv(url) {
-  return new Promise((resolve, reject) => {
-    Papa.parse(url, {
-      download: true,
-      header: true,
-      skipEmptyLines: true,
-      complete: (res) => resolve(res.data),
-      error: (err) => reject(err),
-    });
-  });
-}
-
 function getBase() {
   const raw = typeof import.meta !== "undefined" && import.meta.env && import.meta.env.BASE_URL;
   const base = (raw ?? "/").replace(/\/$/, "") || "";
@@ -748,8 +725,7 @@ async function loadAccounts(proposalId = DEFAULT_PROPOSAL_ID, signal) {
   const communityOk = Boolean(communityResult?.ok);
   const community = Array.isArray(communityResult?.users) ? communityResult.users : [];
   const isDevRuntime =
-    (typeof process !== "undefined" && process.env && process.env.NODE_ENV !== "production") ||
-    (typeof import.meta !== "undefined" && import.meta.env && !import.meta.env.PROD);
+    typeof import.meta !== "undefined" && import.meta.env && !import.meta.env.PROD;
   const merged = [];
   const byHandle = new Map();
   const byXid = new Map();
@@ -915,7 +891,14 @@ async function loadAccounts(proposalId = DEFAULT_PROPOSAL_ID, signal) {
         upsert(a, "seeded");
       }
     }
+  } else if (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.PROD) {
+    // Production must not fall back to static seed (bypasses privacy suppressions).
+    const maintenance = new Error("community_unavailable");
+    maintenance.code = "community_unavailable";
+    maintenance.requestId = communityResult?.requestId || null;
+    throw maintenance;
   } else {
+    // Dev-only fixture fallback when /api/community is unreachable.
     for (const a of Array.isArray(seeded) ? seeded : []) upsert(a, "seeded");
     for (const c of Array.isArray(community) ? community : []) upsert(c, "community");
   }
@@ -998,6 +981,7 @@ export default function App() {
 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [errRequestId, setErrRequestId] = useState("");
   const [accounts, setAccounts] = useState([]); // [{handle, followers_count, seed_follow_count, ...}]
   const [mentions, setMentions] = useState([]); // tweet rows
   const [selectedHandle, setSelectedHandle] = useState(null);
@@ -1074,12 +1058,12 @@ export default function App() {
   );
   const [filterAriaStatus, setFilterAriaStatus] = useState("");
   const [equalAvatarSizeEnabled, setEqualAvatarSizeEnabled] = useState(false);
-  const [dimOthersEnabled, setDimOthersEnabled] = useState(false);
+  const [dimOthersEnabled] = useState(false);
   const [historyPlaybackPlaying, setHistoryPlaybackPlaying] = useState(false);
   const [historyPlaybackHasFinishedOnce, setHistoryPlaybackHasFinishedOnce] = useState(false);
   /** Server-reported stance playback rows; null = not loaded (non-admin or not fetched). */
   const [stancePlaybackSequenceCount, setStancePlaybackSequenceCount] = useState(null);
-  const [pulseSelectedEnabled, setPulseSelectedEnabled] = useState(false);
+  const [pulseSelectedEnabled] = useState(false);
   const [manualEditMode, setManualEditMode] = useState(false);
   const [manualEditTarget, setManualEditTarget] = useState(null);
   const [stanceChoiceOpen, setStanceChoiceOpen] = useState(false);
@@ -1340,7 +1324,6 @@ export default function App() {
       setStatsData(data);
       setStatsForProposalId(activeProposalId);
       if (!(typeof import.meta !== "undefined" && import.meta.env && import.meta.env.PROD)) {
-        // eslint-disable-next-line no-console
         console.log("[stats] timing", {
           mount_to_request_start_ms: mountToStartMs,
           frontend_request_ms: Math.round(performance.now() - requestStarted),
@@ -1468,6 +1451,159 @@ export default function App() {
     () => proposalGithubUrl(activeProposal?.id || activeProposalId),
     [activeProposal?.id, activeProposalId]
   );
+  const activeProposalAbout = useMemo(() => buildProposalAbout(activeProposal), [activeProposal]);
+  const [infoPagePath, setInfoPagePath] = useState(() =>
+    typeof window !== "undefined" ? parseInfoPagePath(window.location.pathname) : null
+  );
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
+  const [deleteAccountError, setDeleteAccountError] = useState("");
+  const deleteAccountInvokerRef = useRef(null);
+  const [dataReloadToken, setDataReloadToken] = useState(0);
+  const stanceSuspendedForInfoRef = useRef(false);
+  const [firstVoteDisclosureAck, setFirstVoteDisclosureAck] = useState(() => {
+    try {
+      return localStorage.getItem("ch_privacy_disclosure_v1") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const contactEmailRaw = String((import.meta.env && import.meta.env.VITE_CONTACT_EMAIL) || "").trim();
+  const [contactEmail, setContactEmail] = useState(
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmailRaw) ? contactEmailRaw : ""
+  );
+  const [sessionTtlDays, setSessionTtlDays] = useState(30);
+  const [backupRetentionDays, setBackupRetentionDays] = useState(7);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/public-config`, { credentials: "same-origin" });
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (cancelled || !data || typeof data !== "object") return;
+        const email = String(data.contact_email || "").trim();
+        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) setContactEmail(email);
+        const ttl = Number(data.session_ttl_days);
+        if (Number.isFinite(ttl) && ttl > 0) setSessionTtlDays(Math.floor(ttl));
+        const backupDays = Number(data.backup_retention_days);
+        if (Number.isFinite(backupDays) && backupDays > 0) {
+          setBackupRetentionDays(Math.floor(backupDays));
+        }
+      } catch {
+        /* keep build-time / defaults */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const ackFirstVoteDisclosure = useCallback(() => {
+    setFirstVoteDisclosureAck(true);
+    try {
+      localStorage.setItem("ch_privacy_disclosure_v1", "1");
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const openInfoPage = useCallback((page) => {
+    const next = parseInfoPagePath(`/${page}`) || page;
+    if (!next) return;
+    // Avoid two aria-modal dialogs: suspend stance choice while legal pages are open.
+    setStanceChoiceOpen((wasOpen) => {
+      if (wasOpen) stanceSuspendedForInfoRef.current = true;
+      return false;
+    });
+    if (typeof window !== "undefined") {
+      const target = `/${next}`;
+      const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (current !== `${target}${window.location.search}${window.location.hash}`) {
+        window.history.pushState({ infoPage: next }, "", target);
+      }
+    }
+    setInfoPagePath(next);
+    setProfileMenuOpen(false);
+  }, []);
+
+  const closeInfoPage = useCallback(() => {
+    if (typeof window !== "undefined") {
+      writeProposalIdToLocation(activeProposalId, false, proposalCatalog);
+    }
+    setInfoPagePath(null);
+    if (stanceSuspendedForInfoRef.current) {
+      stanceSuspendedForInfoRef.current = false;
+      setStanceChoiceOpen(true);
+    }
+  }, [activeProposalId, proposalCatalog]);
+
+  const confirmDeleteAccount = useCallback(
+    async ({ confirmHandle }) => {
+      setDeleteAccountBusy(true);
+      setDeleteAccountError("");
+      const handleNorm = normalizeHandle(confirmHandle);
+      const deletedXId = String(me?.x_user_id || "").trim();
+      try {
+        const res = await fetch(`${API_BASE}/api/me/delete`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ confirm_handle: confirmHandle }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setDeleteAccountError(
+            String(data?.message || data?.error || `Delete failed (${res.status})`)
+          );
+          return;
+        }
+        setMe({ authenticated: false });
+        setAccounts((prev) =>
+          (Array.isArray(prev) ? prev : []).filter((row) => {
+            const h = normalizeHandle(row?.handle);
+            const id = String(row?.x_user_id ?? "").trim();
+            if (handleNorm && h === handleNorm) return false;
+            if (deletedXId && id === deletedXId) return false;
+            return true;
+          })
+        );
+        setLabels((prev) => {
+          if (!handleNorm || !prev || typeof prev !== "object") return {};
+          if (!(handleNorm in prev)) return prev;
+          const next = { ...prev };
+          delete next[handleNorm];
+          return next;
+        });
+        setSelectedHandle(null);
+        setHistoryPanel(null);
+        setStatsData(null);
+        setStatsForProposalId(null);
+        setStatsError("");
+        setShowStatsModal(false);
+        setDeleteAccountOpen(false);
+        setProfileMenuOpen(false);
+        setHaloAvatarOpen(false);
+        try {
+          forceClearHoverUi();
+        } catch {
+          /* hover helpers may not be ready on first paint */
+        }
+        setDataReloadToken((n) => n + 1);
+      } catch (e) {
+        console.error("[ConsensusHealth] account deletion failed", {
+          message: String(e?.message || e || "delete_failed").slice(0, 200),
+        });
+        setDeleteAccountError("Could not delete your account. Please try again.");
+      } finally {
+        setDeleteAccountBusy(false);
+      }
+    },
+    // forceClearHoverUi is declared later in this component; capture by binding.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- hover clear is best-effort
+    [me?.x_user_id]
+  );
   const meExplanation = me?.authenticated
     ? me?.proposal_explanations?.[activeProposalId] || null
     : null;
@@ -1549,6 +1685,8 @@ export default function App() {
     return () => {
       cancelled = true;
     };
+    // Full `me` would retrigger on every profile field change; auth+handle gate catalog.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional narrow deps
   }, [me?.authenticated, me?.handle]);
 
   useEffect(() => {
@@ -1781,7 +1919,7 @@ export default function App() {
     const stance = getAccountStanceValue(account || { handle: key }, labels);
     if (exp.stance_at_verification && stance && exp.stance_at_verification !== stance) return null;
     return exp;
-  }, [selectedHandle, accountByHandle, labels, activeProposalId]);
+  }, [selectedHandle, accountByHandle, labels]);
   const donationAddress = String(me?.donation_btc_address || "bc1qxum7h6z90ynk889j0vr9j7pasqxj9f7qgeqxq7").trim();
   const statisticsData = useMemo(() => {
     const num = (v) => {
@@ -1875,12 +2013,8 @@ export default function App() {
 
     const adam = rows.find((u) => normalizeHandle(u.handle) === "adam3us");
     const isProd =
-      (typeof process !== "undefined" &&
-        process.env &&
-        process.env.NODE_ENV === "production") ||
-      (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.PROD);
+      typeof import.meta !== "undefined" && import.meta.env && import.meta.env.PROD;
     if (!isProd && adam) {
-      // eslint-disable-next-line no-console
       console.log("[stats] adam3us", { stance: adam.stance, followers: adam.followers, raw: adam.raw });
     }
 
@@ -2153,7 +2287,6 @@ export default function App() {
         stanceOk = false;
         setStanceChoiceError(String(e?.message || e));
         if (!import.meta.env.PROD) {
-          // eslint-disable-next-line no-console
           console.warn("[own-stance] failed", String(e?.message || e));
         }
       } finally {
@@ -2348,7 +2481,6 @@ export default function App() {
       await refreshStatsNow();
       setManualEditTarget(null);
       if (!import.meta.env.PROD) {
-        // eslint-disable-next-line no-console
         console.log("[manual-edit] saved", {
           target: targetHandleNorm,
           nextStance: next,
@@ -2358,7 +2490,6 @@ export default function App() {
       const msg = String(e?.message || e);
       setManualEditError(msg);
       if (!import.meta.env.PROD) {
-        // eslint-disable-next-line no-console
         console.warn("[manual-edit] failed", {
           target: manualEditTarget?.handle || null,
           stance: manualEditChoice,
@@ -2416,7 +2547,6 @@ export default function App() {
       await refreshStatsNow();
       setManualEditTarget(null);
       if (!import.meta.env.PROD) {
-        // eslint-disable-next-line no-console
         console.log("[manual-edit] removed", {
           target: targetHandleNorm,
           x_user_id: targetXUserId || null,
@@ -2426,7 +2556,6 @@ export default function App() {
       const msg = String(e?.message || e);
       setManualEditError(msg);
       if (!import.meta.env.PROD) {
-        // eslint-disable-next-line no-console
         console.warn("[manual-edit] remove failed", {
           target: manualEditTarget?.handle || null,
           error: msg,
@@ -2659,6 +2788,7 @@ export default function App() {
       try {
         setLoading(true);
         setErr("");
+        setErrRequestId("");
         // Popup-blocked login fallback: if we just came back from a full-page
         // OAuth redirect, restore the previously loaded dataset instead of
         // refetching the whole graph.
@@ -2678,7 +2808,15 @@ export default function App() {
         setAccounts(accountsFiltered);
         setLabels({});
       } catch (e) {
-        if (!dead && !controller.signal.aborted) setErr(String(e?.message || e));
+        if (!dead && !controller.signal.aborted) {
+          console.error("[ConsensusHealth] accounts load failed", {
+            code: e?.code || null,
+            message: String(e?.message || e || "load_failed").slice(0, 160),
+            requestId: e?.requestId || null,
+          });
+          setErr("unavailable");
+          setErrRequestId(String(e?.requestId || "").trim());
+        }
       } finally {
         if (!dead && !controller.signal.aborted) setLoading(false);
       }
@@ -2687,10 +2825,13 @@ export default function App() {
       dead = true;
       controller.abort();
     };
-  }, [activeProposalId, adminGalaxiesEnabled, proposalAccessReady, proposalCatalog]);
+  }, [activeProposalId, adminGalaxiesEnabled, proposalAccessReady, proposalCatalog, dataReloadToken]);
 
   useEffect(() => {
     function onPopState() {
+      const info = parseInfoPagePath(window.location.pathname);
+      setInfoPagePath(info);
+      if (info) return;
       const next = normalizeIncomingProposalId(
         readProposalIdFromLocation(proposalCatalog),
         adminGalaxiesEnabled,
@@ -2818,7 +2959,7 @@ export default function App() {
       map.get(key).push(t);
     }
     // sort per handle by created_at desc when possible (string sort ok for ISO-ish)
-    for (const [k, arr] of map.entries()) {
+    for (const [, arr] of map.entries()) {
       arr.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
     }
     return map;
@@ -2970,17 +3111,6 @@ export default function App() {
     return out;
   }, [visibleAccounts, search, tweetCountByHandle, labels]);
 
-  const selectedTweets = useMemo(() => {
-    if (!selectedHandle) return [];
-    return mentionsByHandle.get(selectedHandle) || [];
-  }, [mentionsByHandle, selectedHandle]);
-
-  const visibleCount = useMemo(() => {
-    return visibleAccounts.filter(
-      (a) => (tweetCountByHandle.get(a.handle) || 0) > 0 || hasAccountStance(a, labels)
-    ).length;
-  }, [visibleAccounts, tweetCountByHandle, labels]);
-
   // Preload avatars once accounts are available. Priority 1: missing placeholder +
   // largest accounts (likely initially visible). Priority 2: the rest. Bounded
   // concurrency lives in avatarCache — never await the full set before painting.
@@ -3001,7 +3131,6 @@ export default function App() {
   // Build nodes for simulation
   const nodesRef = useRef([]);
   const simRef = useRef(null);
-  const transformRef = useRef({ tx: 0, ty: 0, s: 1 });
   const avatarCacheRef = useRef(new Map());
   const glowCacheRef = useRef(new Map());
   const drawRef = useRef(() => {});
@@ -3396,7 +3525,6 @@ export default function App() {
         const hasStance = Boolean(seedStance);
         if (hasStance && resolvedAvatar === missingSrc && !import.meta.env.PROD) {
           const dbgFields = collectAvatarFieldValues(a);
-          // eslint-disable-next-line no-console
           console.log("[avatar-missing][stance-node]", {
             handle: normalizeHandle(a.handle),
             matchedAccountKey: String(a.x_user_id || normalizeHandle(a.handle) || ""),
@@ -3515,7 +3643,6 @@ export default function App() {
             if (warnedHandles.has(handle)) continue;
             warnedHandles.add(handle);
             if (!import.meta.env.PROD) {
-              // eslint-disable-next-line no-console
               console.warn("[avatar-load-failed]", {
                 handle,
                 avatarUrl: key,
@@ -3862,14 +3989,16 @@ export default function App() {
   }, [selectedHandle]);
 
   useEffect(() => {
+    const intro = newStancesIntroRef.current;
     return () => {
       if (zoomCueRafRef.current) cancelAnimationFrame(zoomCueRafRef.current);
       if (drawRafRef.current) cancelAnimationFrame(drawRafRef.current);
       if (settleRafRef.current) cancelAnimationFrame(settleRafRef.current);
-      const intro = newStancesIntroRef.current;
-      if (intro.rafId) cancelAnimationFrame(intro.rafId);
-      intro.rafId = 0;
-      intro.active = false;
+      if (intro?.rafId) cancelAnimationFrame(intro.rafId);
+      if (intro) {
+        intro.rafId = 0;
+        intro.active = false;
+      }
     };
   }, []);
 
@@ -3940,6 +4069,7 @@ export default function App() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- forceClearHoverUi declared later
   }, [historyPanel]);
 
   useEffect(
@@ -4194,7 +4324,6 @@ export default function App() {
   function logFilterTransitionDebug(extra = {}) {
     const ft = filterTransitionRef.current;
     if (!ft.debug) return;
-    // eslint-disable-next-line no-console
     console.info(
       formatFilterTransitionDebug({
         previousVisibleCount: ft.prevCount,
@@ -4512,7 +4641,6 @@ export default function App() {
       if (!ft.rafId) ft.rafId = requestAnimationFrame(filterTransitionTick);
     }
     if (debug) {
-      // eslint-disable-next-line no-console
       console.info(
         `[filterTransitions] start tier=${tier.id} enter=${diff.entering.length} exit=${diff.exiting.length} retained=${diff.retained.length} durationMs=${durationMs}`
       );
@@ -6053,6 +6181,12 @@ export default function App() {
     }
   }
 
+  // Retained for optional re-enable of filter flights / stance-lists chrome / debug hooks.
+  void beginFilterMembershipTransition;
+  void applyStanceListsView;
+  void parseDebugFilterTransitions;
+  void prefersFilterReducedMotion;
+
   function beginHistoryPlayback() {
     const pb = historyPlaybackRef.current;
     if (pb.rafId) cancelAnimationFrame(pb.rafId);
@@ -6246,7 +6380,6 @@ export default function App() {
       setManualEditChoice(currentStance);
       setManualEditError("");
       if (!import.meta.env.PROD) {
-        // eslint-disable-next-line no-console
         console.log("[manual-edit] selected", {
           handle: targetHandle || n.handle,
           x_user_id: String(account?.x_user_id ?? ""),
@@ -6396,6 +6529,16 @@ export default function App() {
     };
   }, [stanceListsViewEnabled, loading, err]);
 
+  const infoPagesOverlay = infoPagePath ? (
+    <InfoPages
+      page={infoPagePath}
+      contactEmail={contactEmail}
+      sessionTtlDays={sessionTtlDays}
+      backupRetentionDays={backupRetentionDays}
+      onClose={closeInfoPage}
+    />
+  ) : null;
+
   if (loading) {
     return (
       <div style={styles.page}>
@@ -6403,6 +6546,7 @@ export default function App() {
           <div style={styles.title}>Consensus Health</div>
           <div style={styles.sub}>Loading data…</div>
         </div>
+        {infoPagesOverlay}
       </div>
     );
   }
@@ -6412,18 +6556,33 @@ export default function App() {
       <div style={styles.page}>
         <div style={styles.header}>
           <div style={styles.title}>Consensus Health</div>
-          <div style={styles.sub}>(local)</div>
+          <div style={styles.sub}>Temporarily unavailable</div>
         </div>
-        <div style={styles.errBox}>
-          <div style={{ fontWeight: 700, marginBottom: 8 }}>Failed to load data files</div>
-          <div style={{ whiteSpace: "pre-wrap" }}>{err}</div>
-          <div style={{ marginTop: 12, opacity: 0.8 }}>
-            Expected files:
-            <div>/public/data/accounts_stanced.json</div>
-            <div>/public/data/mentions_bip110.csv</div>
-            Run: <code>powershell -ExecutionPolicy Bypass -File scripts\sync-data.ps1</code>
+        <div style={styles.errBox} role="alert">
+          <div style={{ fontWeight: 700, marginBottom: 8 }}>Consensus Health is having trouble loading</div>
+          <div style={{ whiteSpace: "pre-wrap", marginBottom: 10 }}>
+            The community map or readiness check failed. This is usually temporary — try again in a
+            moment.
           </div>
+          {errRequestId ? (
+            <div style={{ whiteSpace: "pre-wrap", opacity: 0.75, marginBottom: 12, fontSize: 12 }}>
+              Reference: {errRequestId}
+            </div>
+          ) : null}
+          <button
+            type="button"
+            className="toolbarBtn"
+            onClick={() => {
+              setErr("");
+              setErrRequestId("");
+              setLoading(true);
+              setDataReloadToken((n) => n + 1);
+            }}
+          >
+            Retry
+          </button>
         </div>
+        {infoPagesOverlay}
       </div>
     );
   }
@@ -6829,7 +6988,6 @@ export default function App() {
                       const fallback = missingAvatarSrcUrl();
                       if (canonicalAvatarSrc(e.currentTarget.src) !== fallback) e.currentTarget.src = fallback;
                       if (!import.meta.env.PROD) {
-                        // eslint-disable-next-line no-console
                         console.warn("[avatar-load-failed]", {
                           handle: normalizeHandle(me.handle),
                           avatarUrl: me.avatar_url || "",
@@ -6845,6 +7003,44 @@ export default function App() {
                 {profileMenuOpen && (
                   <div style={styles.profileMenu} role="menu" aria-label="Account">
                     <div style={styles.profileMenuHandle}>@{me.handle}</div>
+                    <div style={styles.optionsDivider} role="separator" />
+                    <button
+                      type="button"
+                      className="optionsMenuAction"
+                      role="menuitem"
+                      onClick={() => openInfoPage("privacy")}
+                    >
+                      <span>Privacy</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="optionsMenuAction"
+                      role="menuitem"
+                      onClick={() => openInfoPage("terms")}
+                    >
+                      <span>Terms</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="optionsMenuAction"
+                      role="menuitem"
+                      onClick={() => openInfoPage("how-it-works")}
+                    >
+                      <span>How it works</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="optionsMenuAction"
+                      role="menuitem"
+                      onClick={() => {
+                        deleteAccountInvokerRef.current = document.activeElement;
+                        setProfileMenuOpen(false);
+                        setDeleteAccountError("");
+                        setDeleteAccountOpen(true);
+                      }}
+                    >
+                      <span>Delete my account and data</span>
+                    </button>
                     <div style={styles.optionsDivider} role="separator" />
                     {canDownloadHaloAvatar ? (
                       <button
@@ -7170,6 +7366,17 @@ export default function App() {
         ) : (
           <div>Size of avatars is proportional to number of followers.</div>
         )}
+        <div className="legalFooterLinks" aria-label="Site information">
+          <button type="button" onClick={() => openInfoPage("privacy")}>
+            Privacy
+          </button>
+          <button type="button" onClick={() => openInfoPage("terms")}>
+            Terms
+          </button>
+          <button type="button" onClick={() => openInfoPage("how-it-works")}>
+            How it works
+          </button>
+        </div>
       </div>
       <div style={styles.bottomControls}>
         <button type="button" className="toolbarBtn" onClick={openStatsModal}>
@@ -7225,6 +7432,43 @@ export default function App() {
           errorMessage={stanceChoiceError}
           proposalLabel={activeProposal?.title || "proposal"}
           proposalGithubUrl={activeProposalGithubUrl}
+          proposalAbout={activeProposalAbout}
+          disclosureNotice={
+            !meHasStance && !firstVoteDisclosureAck ? (
+              <>
+                Stances are public. See{" "}
+                <button
+                  type="button"
+                  className="stanceChoiceCard__disclosureLink"
+                  onClick={() => {
+                    ackFirstVoteDisclosure();
+                    openInfoPage("privacy");
+                  }}
+                >
+                  Privacy
+                </button>{" "}
+                and{" "}
+                <button
+                  type="button"
+                  className="stanceChoiceCard__disclosureLink"
+                  onClick={() => {
+                    ackFirstVoteDisclosure();
+                    openInfoPage("terms");
+                  }}
+                >
+                  Terms
+                </button>
+                .
+                <button
+                  type="button"
+                  className="stanceChoiceCard__disclosureAck"
+                  onClick={ackFirstVoteDisclosure}
+                >
+                  Got it
+                </button>
+              </>
+            ) : null
+          }
           onSave={saveOwnStanceChoice}
           onRemoveExplanation={removeOwnExplanation}
           onDismiss={() => {
@@ -7241,6 +7485,21 @@ export default function App() {
           }}
         />
       ) : null}
+      {infoPagesOverlay}
+      <DeleteAccountDialog
+        key={deleteAccountOpen ? `delete:${normalizeHandle(me?.handle || "")}` : "delete:closed"}
+        open={deleteAccountOpen}
+        handle={me?.handle || ""}
+        busy={deleteAccountBusy}
+        errorMessage={deleteAccountError}
+        returnFocusRef={deleteAccountInvokerRef}
+        onConfirm={confirmDeleteAccount}
+        onCancel={() => {
+          if (deleteAccountBusy) return;
+          setDeleteAccountOpen(false);
+          setDeleteAccountError("");
+        }}
+      />
       {manualUserPickerOpen && isPrivilegedEditor ? (
         <div style={styles.modalBackdrop} onClick={() => setManualUserPickerOpen(false)}>
           <div style={{ ...styles.manualEditCard, width: "min(440px, calc(100vw - 32px))" }} onClick={(e) => e.stopPropagation()}>
@@ -7362,7 +7621,6 @@ export default function App() {
                 const fallback = missingAvatarSrcUrl();
                 if (canonicalAvatarSrc(e.currentTarget.src) !== fallback) e.currentTarget.src = fallback;
                 if (!import.meta.env.PROD) {
-                  // eslint-disable-next-line no-console
                   console.warn("[avatar-load-failed]", {
                     handle: "zndtoshi",
                     avatarUrl: donateAvatarSrc,
@@ -7588,7 +7846,7 @@ const styles = {
     position: "absolute",
     top: "calc(100% + 6px)",
     right: 0,
-    minWidth: 180,
+    minWidth: 220,
     padding: 8,
     borderRadius: 10,
     border: "1px solid rgba(255,255,255,0.18)",
@@ -7897,9 +8155,11 @@ const styles = {
     margin: 16,
     padding: 16,
     borderRadius: 14,
-    border: "1px solid rgba(0,0,0,0.12)",
-    background: "#fff",
+    border: "1px solid rgba(255,255,255,0.14)",
+    background: "rgba(15,23,42,0.92)",
+    color: "#e2e8f0",
     fontSize: 13,
+    maxWidth: 520,
   },
   pill: {
     padding: "6px 10px",

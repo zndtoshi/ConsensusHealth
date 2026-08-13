@@ -18,7 +18,13 @@
     "start": "node server/dist/index.js",
     "lint": "eslint .",
     "test": "tsx --test server/src/**/*.test.ts src/**/*.test.ts",
-    "test:integration": "tsx --test server/src/integration/*.ts",
+    "test:integration": "node scripts/require-integration-passes.mjs",
+    "test:e2e": "playwright test",
+    "test:db:up": "node scripts/print-disposable-postgres.mjs",
+    "lint:launch": "node scripts/lint-launch.mjs",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "smoke:static": "node scripts/launch-static-smoke.mjs",
+    "og:generate": "node scripts/generate-og-card.mjs",
     "preview": "vite preview",
     "prune:stanced": "node scripts/prune_to_stanced_accounts.js"
   },
@@ -28,13 +34,15 @@
     "d3-force": "^3.0.0",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.6.2",
+    "helmet": "^8.3.0",
     "node-html-parser": "^9.0.1",
     "papaparse": "^5.5.3",
     "pg": "^8.20.0",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
@@ -51,6 +59,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "@playwright/test": "^1.55.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vite": "^7.3.1"

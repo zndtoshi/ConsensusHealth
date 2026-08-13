@@ -27,6 +27,10 @@ export function StanceChoiceCard({
   onDismiss,
   proposalLabel = "BIP-110",
   proposalGithubUrl = null,
+  /** Structured active-proposal info from the catalog (choose + change modes). */
+  proposalAbout = null,
+  /** Optional one-line privacy/terms notice (first vote). */
+  disclosureNotice = null,
 }) {
   const formId = useId();
   const [draftStance, setDraftStance] = useState(currentStance || "");
@@ -37,18 +41,24 @@ export function StanceChoiceCard({
 
   if (!open) return null;
 
+  const aboutTitle = String(proposalAbout?.title || proposalLabel || "proposal").trim();
+  const aboutDescription = String(proposalAbout?.description || "").trim();
+  const aboutStatusLabel = String(proposalAbout?.statusLabel || "").trim();
+  const aboutStatusDetail = String(proposalAbout?.statusDetail || "").trim();
+  const aboutHeading = String(proposalAbout?.heading || `About ${aboutTitle}`).trim();
+  const githubHref = String(proposalAbout?.githubUrl || proposalGithubUrl || "").trim();
+
   const title = stanceFrozen
     ? "Your stance explanation"
     : mode === "change"
       ? "Change your stance"
       : "Choose your stance";
   const subtitle = stanceFrozen
-    ? `${proposalLabel} positions are locked. You can still manage a verified X explanation.`
+    ? `${aboutTitle} positions are locked. You can still manage a verified X explanation.`
     : mode === "change"
-      ? `Pick a new position on ${proposalLabel}.`
-      : `Welcome. Where do you stand on ${proposalLabel}?`;
+      ? `Pick a new position on ${aboutTitle}.`
+      : `Welcome. Where do you stand on ${aboutTitle}?`;
   const canDismiss = typeof onDismiss === "function";
-  const githubHref = String(proposalGithubUrl || "").trim();
   const hasExisting = Boolean(existingExplanation?.canonical_url);
   const stanceChanged =
     Boolean(draftStance) && Boolean(currentStance) && draftStance !== currentStance;
@@ -125,17 +135,45 @@ export function StanceChoiceCard({
         <p id={`${formId}-subtitle`} className="stanceChoiceCard__subtitle">
           {subtitle}
         </p>
-        {githubHref ? (
-          <a
-            className="stanceChoiceCard__github"
-            href={githubHref}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label={`Read ${proposalLabel} on GitHub`}
-          >
-            {`Read ${proposalLabel} on GitHub`}
-          </a>
+        {disclosureNotice ? (
+          <div className="stanceChoiceCard__disclosure" role="note">
+            {disclosureNotice}
+          </div>
         ) : null}
+
+        <div className="stanceChoiceCard__scrollBody">
+          {(aboutDescription || aboutStatusDetail || githubHref) ? (
+            <section
+              className="stanceChoiceCard__about"
+              aria-labelledby={`${formId}-about-heading`}
+            >
+              <h3 id={`${formId}-about-heading`} className="stanceChoiceCard__aboutHeading">
+                {aboutHeading}
+              </h3>
+              {aboutStatusLabel ? (
+                <p className="stanceChoiceCard__aboutStatus">
+                  <span className="stanceChoiceCard__aboutStatusPill">{aboutStatusLabel}</span>
+                  {aboutStatusDetail ? (
+                    <span className="stanceChoiceCard__aboutStatusDetail">{aboutStatusDetail}</span>
+                  ) : null}
+                </p>
+              ) : null}
+              {aboutDescription ? (
+                <p className="stanceChoiceCard__aboutDesc">{aboutDescription}</p>
+              ) : null}
+              {githubHref ? (
+                <a
+                  className="stanceChoiceCard__github"
+                  href={githubHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`Read the full ${aboutTitle} on GitHub`}
+                >
+                  Read the full BIP on GitHub
+                </a>
+              ) : null}
+            </section>
+          ) : null}
 
         <div className="stanceChoiceCard__actions" role="group" aria-label="Stance options">
           {CHOICES.map((choice) => {
@@ -275,6 +313,7 @@ export function StanceChoiceCard({
             ) : null}
           </div>
         ) : null}
+        </div>
 
         <div className="stanceChoiceCard__status" aria-live="polite">
           {busy ? <span>Saving position…</span> : null}

@@ -26,4 +26,14 @@ export default defineConfig([
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
     },
   },
+  /**
+   * App.jsx is included in lint:launch (not omitted). Refresh export rule is
+   * unsuitable for this root module; hooks rules stay enforced.
+   */
+  {
+    files: ['src/App.jsx'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])

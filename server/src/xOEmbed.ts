@@ -10,6 +10,7 @@
 
 import { fetchWithTimeout, isXApiTimeoutError, X_API_REQUEST_TIMEOUT_MS } from "./xApiUsers.js";
 import { extractTweetTextFromOEmbedHtml } from "./oembedTweetText.js";
+import { isConsensusHealthE2E } from "./e2eMockIdentity.js";
 
 export const X_OEMBED_ENDPOINT = "https://publish.x.com/oembed";
 export const X_OEMBED_MAX_BODY_BYTES = 256_000;
@@ -131,6 +132,18 @@ export async function verifyPublicPostViaOEmbed(args: {
   const expectedTweetId = String(args.expectedTweetId ?? "").trim();
   if (!expectedHandle || !/^\d{1,30}$/.test(expectedTweetId)) {
     return { ok: false, reason: "oembed_malformed", statusHint: 502 };
+  }
+
+  // CONSENSUSHEALTH_E2E + X_OAUTH_MOCK (never production): skip live publish.x.com.
+  if (isConsensusHealthE2E(process.env)) {
+    return {
+      ok: true,
+      tweetId: expectedTweetId,
+      authorHandle: expectedHandle,
+      tweetText: `E2E mock explanation from @${expectedHandle}`,
+      responseUrl: args.canonicalPostUrl,
+      verificationMethod: "x_oembed_author_handle",
+    };
   }
 
   const endpoint = new URL(X_OEMBED_ENDPOINT);

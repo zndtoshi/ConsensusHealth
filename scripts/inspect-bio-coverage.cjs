@@ -83,7 +83,15 @@ async function main() {
       sample_matched_without_bio: matchedNoBio.slice(0, 25),
     };
 
-    const outPath = path.resolve(__dirname, "../users_bio_coverage_report.json");
+    const fromArg = process.argv.slice(2).find((a) => a && !a.startsWith("-"));
+    const fromEnv = String(process.env.BIO_EXPORT_PATH || process.env.BIO_COVERAGE_PATH || "").trim();
+    const chosen = String(fromArg || fromEnv || "").trim();
+    if (!chosen) {
+      throw new Error(
+        "Missing coverage report path. Pass a CLI path or set BIO_EXPORT_PATH / BIO_COVERAGE_PATH."
+      );
+    }
+    const outPath = path.resolve(chosen);
     fs.writeFileSync(outPath, JSON.stringify(report, null, 2), "utf8");
     console.log(JSON.stringify(report, null, 2));
     console.log(`Coverage report written to ${outPath}`);

@@ -26,3 +26,32 @@ server/.env
 
 # Local Cursor implementation brief (never commit)
 commands.txt
+
+# Local HTTP/auth curl fixtures (never commit)
+cookies.txt
+login.json
+login2.json
+stance.json
+delete.json
+*.cookiejar
+.env
+.env.*
+!.env.example
+!server/env.example
+
+# Generated operational reports/exports (never commit).
+# users.json remains tracked as the intentional enrich:profiles seed input.
+users_bio_export.json
+users_bio_coverage_report.json
+backfill_bio_mismatch_report.json
+
+# Playwright / test artifacts (never commit)
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+**/test-results/
+**/*-snapshots/__diff_output__/
+*.png.actual
+*.webm
+trace.zip

@@ -2,6 +2,8 @@
 
 ConsensusHealth is a Vite frontend + Node/Express backend service with Postgres and X OAuth.
 
+Public site: [https://consensus.health](https://consensus.health)
+
 ## Development
 
 Install dependencies:
@@ -44,7 +46,12 @@ The server will:
 
 - serve API routes (`/api/*`, `/auth/*`, `/dev/*`)
 - serve static frontend files from `dist/`
-- return `dist/index.html` for non-API SPA routes
+- return `dist/index.html` for non-API SPA routes (including `/privacy`, `/terms`, `/how-it-works`, `/bip/*`)
+
+Health:
+
+- `GET /api/health` — liveness
+- `GET /api/ready` — readiness (Postgres)
 
 ## Environment Variables
 
@@ -61,8 +68,33 @@ Required/important variables:
 - `FRONTEND_BASE_URL` - OAuth post-login redirect base
   - dev: `http://localhost:5173`
   - same-origin production: set to your site origin (or leave unset to use `APP_ORIGIN`)
-- `SESSION_SECRET` - signed cookie secret
+- `SESSION_SECRET` - signed cookie secret (**≥ 32 characters** in production; no placeholders)
 - `X_CLIENT_ID`, `X_CLIENT_SECRET`, `X_REDIRECT_URI` - X OAuth settings
+- `CONTACT_EMAIL` - privacy / security contact shown in ops validation; pair with `VITE_CONTACT_EMAIL` for the Privacy page in the web build
+- `VITE_CONTACT_EMAIL` - frontend contact string for Privacy
+- `VITE_API_BASE` - optional API origin for split local dev (empty when same-origin)
+
+Account deletion (authenticated):
+
+```http
+POST /api/me/delete
+Content-Type: application/json
+
+{ "confirm_handle": "yourhandle" }
+```
+
+Rate limiting notes live in `server/env.example` and `server/src/security/rateLimits.ts`.
+
+## Launch docs
+
+- [docs/launch-runbook.md](docs/launch-runbook.md) — health, backups, rollback, env, OG limitations
+- [docs/launch-smoke-checklist.md](docs/launch-smoke-checklist.md) — post-deploy smoke (CI runs Playwright real-backend E2E)
+
+```bash
+npm run build:web
+node scripts/launch-static-smoke.mjs
+node scripts/check-secrets.mjs
+```
 
 ## Render Deployment (single web service)
 
@@ -72,5 +104,6 @@ Typical Render settings:
 - Start command: `npm run start`
 - Add env vars from `server/env.example` (except local-only defaults)
 - Ensure `APP_URL` is set (for example: `https://consensus.health`)
+- Set `CONTACT_EMAIL` and build-time `VITE_CONTACT_EMAIL`
 
 After deploy, opening the service URL should load the frontend app, and API routes remain available under the same origin.

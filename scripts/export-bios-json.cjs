@@ -88,7 +88,15 @@ async function main() {
 
     const withBio = merged.filter((r) => r.has_bio).length;
     const inDb = merged.filter((r) => r.in_db).length;
-    const outPath = path.resolve(__dirname, "../users_bio_export.json");
+    const fromArg = process.argv.slice(2).find((a) => a && !a.startsWith("-"));
+    const fromEnv = String(process.env.BIO_EXPORT_PATH || "").trim();
+    const chosen = String(fromArg || fromEnv || "").trim();
+    if (!chosen) {
+      throw new Error(
+        "Missing export output path. Pass a CLI path or set BIO_EXPORT_PATH (e.g. ./users_bio_export.json)."
+      );
+    }
+    const outPath = path.resolve(chosen);
     fs.writeFileSync(
       outPath,
       JSON.stringify(

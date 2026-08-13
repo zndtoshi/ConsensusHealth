@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, codex/launch-verification]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: consensushealth
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/consensushealth
+      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/consensushealth
+      SESSION_SECRET: ci_session_secret_at_least_32_chars_long
+      APP_URL: http://localhost:8787
+      APP_ORIGIN: http://localhost:5173
+      CONTACT_EMAIL: ci@example.com
+      VITE_CONTACT_EMAIL: ci@example.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Secret / artifact scan
+        run: node scripts/check-secrets.mjs
+
+      - name: Lint launch / security surfaces
+        run: node scripts/lint-launch.mjs
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Integration tests (Postgres)
+        run: node scripts/require-integration-passes.mjs
+
+      - name: Build
+        run: npm run build
+
+      - name: Static path smoke
+        run: node scripts/launch-static-smoke.mjs
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright launch smoke (real API + dist)
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/consensushealth
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/consensushealth
+          SESSION_SECRET: ci_session_secret_at_least_32_chars_long
+          CONTACT_EMAIL: privacy@example.com
+          # Dummy X creds — server requires them even with X_OAUTH_MOCK=1 (set in playwright.config).
+          X_CLIENT_ID: ci_e2e_x_client_id
+          X_CLIENT_SECRET: ci_e2e_x_client_secret
+        run: |
+          set -euo pipefail
+          npx playwright test --reporter=list | tee playwright-ci.log
+          # Fail if any core test was skipped (CI must run the real backend suite).
+          skipped="$(grep -Eo '[0-9]+ skipped' playwright-ci.log | tail -n1 | awk '{print $1}')"
+          passed="$(grep -Eo '[0-9]+ passed' playwright-ci.log | tail -n1 | awk '{print $1}')"
+          if [[ -n "${skipped:-}" && "${skipped}" != "0" ]]; then
+            echo "Playwright CI: skips are not allowed (skipped=${skipped})"
+            exit 1
+          fi
+          if [[ -z "${passed:-}" || "${passed}" == "0" ]]; then
+            echo "Playwright CI: expected nonzero passes (passed=${passed:-0})"
+            exit 1
+          fi

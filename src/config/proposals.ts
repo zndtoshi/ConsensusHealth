@@ -106,7 +106,8 @@ export const FALLBACK_PROPOSALS: ProposalConfig[] = [
     bipNumber: 460,
     shortName: "BIP460",
     title: "BIP-460",
-    description: "Cross-Input Signature Aggregation",
+    description:
+      "Cross-Input Signature Aggregation — improves transaction efficiency and can strengthen privacy by aggregating signatures across inputs",
     order: 3,
     enabled: true,
     adminOnly: false,

@@ -1,6 +1,6 @@
 /**
  * Database integration tests for Consensus Universe migrations.
- * Requires TEST_DATABASE_URL. Skips cleanly when unset.
+ * Requires TEST_DATABASE_URL (mandatory via npm run test:integration).
  *
  *   TEST_DATABASE_URL=postgres://... npm run test:integration
  *
@@ -14,12 +14,10 @@ import {
   CONSENSUS_UNIVERSE_MIGRATION_VERSION,
   ensureProposalSchema,
 } from "../proposals.js";
+import { getRequiredTestDatabaseUrl } from "./helpers.js";
 
-const TEST_DATABASE_URL = (process.env.TEST_DATABASE_URL || "").trim();
-
-function requirePool(): Pool | null {
-  if (!TEST_DATABASE_URL) return null;
-  return new Pool({ connectionString: TEST_DATABASE_URL, max: 4 });
+function requirePool(): Pool {
+  return new Pool({ connectionString: getRequiredTestDatabaseUrl(), max: 4 });
 }
 
 async function resetUniverseTables(pool: Pool): Promise<void> {
@@ -62,12 +60,8 @@ async function resetUniverseTables(pool: Pool): Promise<void> {
   await pool.query(`TRUNCATE stance_history RESTART IDENTITY CASCADE`).catch(() => undefined);
 }
 
-test("integration: ensureProposalSchema is idempotent and records version", async (t) => {
+test("integration: ensureProposalSchema is idempotent and records version", async () => {
   const pool = requirePool();
-  if (!pool) {
-    t.skip("TEST_DATABASE_URL not set");
-    return;
-  }
   try {
     await resetUniverseTables(pool);
     await pool.query(
@@ -136,12 +130,8 @@ test("integration: ensureProposalSchema is idempotent and records version", asyn
   }
 });
 
-test("integration: concurrent migrations do not duplicate history", async (t) => {
+test("integration: concurrent migrations do not duplicate history", async () => {
   const pool = requirePool();
-  if (!pool) {
-    t.skip("TEST_DATABASE_URL not set");
-    return;
-  }
   try {
     await resetUniverseTables(pool);
     await pool.query(
@@ -165,12 +155,8 @@ test("integration: concurrent migrations do not duplicate history", async (t) =>
   }
 });
 
-test("integration: independent proposal stances + first-position scoping", async (t) => {
+test("integration: independent proposal stances + first-position scoping", async () => {
   const pool = requirePool();
-  if (!pool) {
-    t.skip("TEST_DATABASE_URL not set");
-    return;
-  }
   try {
     await resetUniverseTables(pool);
     await ensureProposalSchema(pool);
@@ -215,12 +201,8 @@ test("integration: independent proposal stances + first-position scoping", async
   }
 });
 
-test("integration: legacy-only edits do not change canonical stances", async (t) => {
+test("integration: legacy-only edits do not change canonical stances", async () => {
   const pool = requirePool();
-  if (!pool) {
-    t.skip("TEST_DATABASE_URL not set");
-    return;
-  }
   try {
     await resetUniverseTables(pool);
     await pool.query(
