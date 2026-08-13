@@ -494,7 +494,7 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
           /* BroadcastChannel unavailable */
         }
       });
-      const callbackCapture = await attachOauthCallbackCapture(pageOwner, openerOrigin);
+      const callbackCapture = attachOauthCallbackCapture(pageOwner, openerOrigin);
       try {
         const ownerPopupPromise = pageOwner.waitForEvent("popup", { timeout: 30_000 });
         await pageOwner.evaluate((url) => {
