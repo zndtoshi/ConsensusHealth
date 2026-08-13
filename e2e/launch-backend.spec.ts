@@ -18,6 +18,7 @@ import {
   dismissDisclosureIfPresent,
   ackPrivacyDisclosure,
   attachE2ELoginRoute,
+  attachOauthCallbackCapture,
 } from "./helpers";
 
 const REAL = process.env.E2E_REAL_BACKEND === "1";
@@ -496,28 +497,18 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
           /* BroadcastChannel unavailable */
         }
       });
+      const callbackCapture = await attachOauthCallbackCapture(pageOwner, openerOrigin);
       try {
-        const cbPromise = contextOwner.waitForEvent("response", {
-          predicate: (res) => {
-            try {
-              const u = new URL(res.url());
-              if (u.origin !== openerOrigin || u.pathname !== "/auth/x/callback") return false;
-              const req = res.request();
-              return req.isNavigationRequest() || req.resourceType() === "document";
-            } catch {
-              return false;
-            }
-          },
-          timeout: 30_000,
-        });
-        const ownerPopupPromise = pageOwner.waitForEvent("popup");
+        const ownerPopupPromise = pageOwner.waitForEvent("popup", { timeout: 30_000 });
         await pageOwner.evaluate((url) => {
           window.open(url, "oauth_retry", "width=480,height=640");
         }, stolenUrl);
-        const [ownerPopup, cbRes] = await Promise.all([ownerPopupPromise, cbPromise]);
-        const html = await cbRes.text();
-        expect(cbRes.status()).toBe(200);
-        expect(html).toMatch(/Signed in/i);
+        const [ownerPopup, capture] = await Promise.all([
+          ownerPopupPromise,
+          callbackCapture.capturePromise,
+        ]);
+        expect(capture.callbackStatus).toBe(200);
+        expect(capture.html).toMatch(/Signed in/i);
         if (!ownerPopup.isClosed()) {
           await ownerPopup.waitForEvent("close", { timeout: 15_000 });
         }
@@ -528,6 +519,7 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
           })
           .toBeTruthy();
       } finally {
+        await callbackCapture.detach();
         await pageOwner
           .evaluate(() => {
             const w = window as unknown as {

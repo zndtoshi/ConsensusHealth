@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type Page, type Response, type Route } from "@playwright/test";
+import { expect, type APIRequestContext, type Page, type Route } from "@playwright/test";
 
 export type StanceUiLabel = "Neutral" | "Against" | "Approve";
 
@@ -147,13 +147,37 @@ async function cleanupOpenerOauthListeners(page: Page) {
     });
 }
 
-function isOauthCallbackDocumentResponse(res: Response, openerOrigin: string): boolean {
+export type BufferedOauthCallback = {
+  callbackStatus: number;
+  csp: string;
+  html: string;
+};
+
+const OAUTH_CALLBACK_ROUTE_PATTERN = "**/auth/x/callback*";
+const OAUTH_CALLBACK_CAPTURE_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+function isOauthCallbackDocumentRequest(route: Route, openerOrigin: string): boolean {
+  const req = route.request();
   try {
-    const u = new URL(res.url());
-    if (u.origin !== openerOrigin) return false;
-    if (u.pathname !== "/auth/x/callback") return false;
-    const req = res.request();
-    // Popup navigates to the callback document — ignore subresource fetches.
+    const url = new URL(req.url());
+    if (url.origin !== openerOrigin) return false;
+    if (url.pathname !== "/auth/x/callback") return false;
     return req.isNavigationRequest() || req.resourceType() === "document";
   } catch {
     return false;
@@ -161,9 +185,72 @@ function isOauthCallbackDocumentResponse(res: Response, openerOrigin: string): b
 }
 
 /**
+ * Buffer the real same-origin `/auth/x/callback` document before the popup can
+ * auto-close. One backend fetch via route.fetch, then fulfill with that exact
+ * response so CSP/cookies/HTML/script execution stay real. Single-use per attach.
+ */
+export async function attachOauthCallbackCapture(
+  page: Page,
+  openerOrigin: string
+): Promise<{ capturePromise: Promise<BufferedOauthCallback>; detach: DetachRoute }> {
+  const context = page.context();
+  let captured = false;
+  let settle!: (value: BufferedOauthCallback) => void;
+  let fail!: (err: Error) => void;
+  const capturePromise = new Promise<BufferedOauthCallback>((resolve, reject) => {
+    settle = resolve;
+    fail = reject;
+  });
+
+  const handler = async (route: Route) => {
+    if (!isOauthCallbackDocumentRequest(route, openerOrigin)) {
+      await route.continue();
+      return;
+    }
+    // Already buffered this flow — do not issue a second callback to the server.
+    if (captured) {
+      await route.continue();
+      return;
+    }
+    captured = true;
+    try {
+      const response = await route.fetch();
+      const html = await response.text();
+      const headers = response.headers();
+      const callbackStatus = response.status();
+      const csp = headers["content-security-policy"] || "";
+      // Pass through the real APIResponse (status/headers/Set-Cookie) with buffered body.
+      // Resolve only after fulfill so the popup can run completion JS / auto-close.
+      await route.fulfill({ response, body: html });
+      settle({ callbackStatus, csp, html });
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      fail(error);
+      try {
+        await route.abort("failed");
+      } catch {
+        /* route may already be closed */
+      }
+    }
+  };
+
+  await context.route(OAUTH_CALLBACK_ROUTE_PATTERN, handler);
+  return {
+    capturePromise: withTimeout(
+      capturePromise,
+      OAUTH_CALLBACK_CAPTURE_TIMEOUT_MS,
+      "OAuth callback capture"
+    ),
+    detach: async () => {
+      await context.unroute(OAUTH_CALLBACK_ROUTE_PATTERN, handler);
+    },
+  };
+}
+
+/**
  * Race-safe mock OAuth via real popup login.
- * Captures /auth/x/callback on the BrowserContext (popup navigation) plus parent
- * completion signals. Does not require reading the closed popup DOM.
+ * Buffers /auth/x/callback via context route (independent of popup lifetime) plus
+ * parent completion signals. Does not require reading the closed popup DOM.
  */
 export async function mockOAuthLogin(
   page: Page,
@@ -177,6 +264,7 @@ export async function mockOAuthLogin(
   const path = opts?.path || "/bip/54";
   const expectSession = opts?.expectSession !== false && !opts?.e2eFail;
   let detachLoginRoute: DetachRoute | null = null;
+  let detachCallbackCapture: DetachRoute | null = null;
   let listenersInstalled = false;
 
   try {
@@ -196,18 +284,14 @@ export async function mockOAuthLogin(
     await installOpenerOauthListeners(page);
     listenersInstalled = true;
 
-    const callbackPromise = page.context().waitForEvent("response", {
-      predicate: (res) => isOauthCallbackDocumentResponse(res, openerOrigin),
-      timeout: 30_000,
-    });
+    const callbackCapture = await attachOauthCallbackCapture(page, openerOrigin);
+    detachCallbackCapture = callbackCapture.detach;
+
     const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
-
     await page.getByRole("button", { name: /Login with/i }).click();
-    const [popup, callbackRes] = await Promise.all([popupPromise, callbackPromise]);
+    const [popup, capture] = await Promise.all([popupPromise, callbackCapture.capturePromise]);
 
-    const csp = callbackRes.headers()["content-security-policy"] || "";
-    const html = await callbackRes.text();
-    const callbackStatus = callbackRes.status();
+    const { callbackStatus, csp, html } = capture;
 
     expect(csp, "Helmet CSP on OAuth callback").toMatch(/script-src[^;]*'self'/i);
     expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/i);
@@ -266,6 +350,9 @@ export async function mockOAuthLogin(
   } finally {
     if (listenersInstalled) {
       await cleanupOpenerOauthListeners(page);
+    }
+    if (detachCallbackCapture) {
+      await detachCallbackCapture();
     }
     if (detachLoginRoute) {
       await detachLoginRoute();
