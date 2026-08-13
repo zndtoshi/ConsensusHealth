@@ -39,7 +39,9 @@ async function installCommunityFailure(
   body: Record<string, unknown>,
   headers: Record<string, string> = {}
 ) {
-  await page.addInitScript(
+  await page.goto("/bip/110");
+  await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
+  await page.evaluate(
     ({ mockedStatus, mockedBody, mockedHeaders }) => {
       const nativeFetch = window.fetch.bind(window);
       window.fetch = (input, init) => {
@@ -57,6 +59,10 @@ async function installCommunityFailure(
     },
     { mockedStatus: status, mockedBody: body, mockedHeaders: headers }
   );
+}
+
+async function travelToMockedBip54(page: Page) {
+  await page.getByRole("button", { name: /Travel to BIP54/i }).click();
 }
 
 test("CI requires E2E_REAL_BACKEND===1", () => {
@@ -186,7 +192,7 @@ test.describe("4 — auto stance prompt rules", () => {
   }
 
   test("logged out never shows writable stance card", async ({ page }) => {
-    await page.goto("/bip/54");
+    await travelToMockedBip54(page);
     await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
     await expect
       .poll(async () => stanceChoiceDialog(page).count(), { timeout: 5_000 })
@@ -380,7 +386,7 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
 
   test("cancel pending OAuth before callback does not create a session", async ({ page }) => {
     await ackPrivacyDisclosure(page);
-    await page.goto("/bip/54");
+    await travelToMockedBip54(page);
     await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
     const pending = await page.context().request.get("/auth/x/login?mode=popup", {
       maxRedirects: 0,
@@ -598,7 +604,7 @@ test.describe("9 — failure polish + real dual rate limits", () => {
       { error: "Internal server error" },
       { "x-request-id": "e2e-500" }
     );
-    await page.goto("/bip/54");
+    await travelToMockedBip54(page);
     await expect(page.getByText("Temporarily unavailable")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("alert")).toContainText(/trouble loading/i);
     await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
@@ -641,9 +647,10 @@ test.describe("9 — failure polish + real dual rate limits", () => {
   });
 
   test("offline community load shows maintenance + Retry", async ({ page, context }) => {
+    await page.goto("/bip/110");
+    await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
     await context.setOffline(true);
-    await page.goto("/bip/54", { waitUntil: "domcontentloaded" }).catch(() => undefined);
-    await page.reload({ waitUntil: "domcontentloaded" }).catch(() => undefined);
+    await page.getByRole("button", { name: /Travel to BIP54/i }).click();
     await expect(page.getByText(/Temporarily unavailable|Consensus Health/i).first()).toBeVisible({
       timeout: 30_000,
     });
@@ -720,7 +727,7 @@ test.describe("10 — keyboard / focus / reduced motion", () => {
     await page.goto("/");
     await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
 
-    const privacyBtn = page.getByRole("button", { name: "Privacy" }).first();
+    const privacyBtn = page.getByRole("button", { name: "Privacy", exact: true }).first();
     await privacyBtn.click();
     const privacy = page.getByRole("dialog", { name: "Privacy" });
     await expect(privacy).toBeVisible();
@@ -729,7 +736,7 @@ test.describe("10 — keyboard / focus / reduced motion", () => {
     await expect(privacy).toHaveCount(0);
     await expect(privacyBtn).toBeFocused();
 
-    const termsBtn = page.getByRole("button", { name: "Terms" }).first();
+    const termsBtn = page.getByRole("button", { name: "Terms", exact: true }).first();
     await termsBtn.click();
     const terms = page.getByRole("dialog", { name: /Terms/i });
     await expect(terms).toBeVisible();
