@@ -296,7 +296,49 @@ export async function saveStanceViaUi(page: Page, stance: StanceUiLabel) {
   await expect(dialog).toBeVisible({ timeout: 15_000 });
   await dismissDisclosureIfPresent(page);
   await dialog.getByRole("button", { name: stance, exact: true }).click();
+
+  const openerOrigin = new URL(page.url()).origin;
+  const stanceResponsePromise = page.waitForResponse(
+    (res) => {
+      try {
+        const u = new URL(res.url());
+        return (
+          u.origin === openerOrigin &&
+          u.pathname === "/api/stance" &&
+          res.request().method() === "POST"
+        );
+      } catch {
+        return false;
+      }
+    },
+    { timeout: 30_000 }
+  );
+
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  const stanceRes = await stanceResponsePromise;
+  const status = stanceRes.status();
+  let body: unknown = null;
+  const rawText = await stanceRes.text();
+  try {
+    body = rawText ? JSON.parse(rawText) : null;
+  } catch {
+    body = rawText;
+  }
+  expect(
+    status,
+    `POST /api/stance expected success, got ${status}: ${typeof body === "string" ? body.slice(0, 300) : JSON.stringify(body)}`
+  ).toBe(200);
+  // Handler returns the persisted identity/stance row; reject rate-limit / error payloads.
+  expect(body, "POST /api/stance success body").toEqual(
+    expect.objectContaining({
+      x_user_id: expect.any(String),
+      handle: expect.any(String),
+    })
+  );
+  expect(body, "POST /api/stance must not be an error payload").not.toMatchObject({
+    error: expect.anything(),
+  });
+
   await expect(dialog).toHaveCount(0, { timeout: 30_000 });
 }
 

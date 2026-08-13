@@ -1,5 +1,11 @@
-import { test, expect, type Route } from "@playwright/test";
+import { type Route } from "@playwright/test";
 import { CANONICAL_DISTANT_SLOTS } from "../src/utils/distantGalaxyLayout";
+import {
+  alternateTestClientIp,
+  expect,
+  newContextWithClientIp,
+  test,
+} from "./fixtures";
 import {
   apiJson,
   communityHandles,
@@ -409,8 +415,11 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
 
   test("wrong-browser nonce does not create session; original browser can still succeed", async ({
     browser,
-  }) => {
-    const contextOwner = await browser.newContext();
+    testClientIp,
+  }, testInfo) => {
+    const ownerIp = testClientIp;
+    const thiefIp = alternateTestClientIp(testInfo);
+    const contextOwner = await newContextWithClientIp(browser, ownerIp);
     const pageOwner = await contextOwner.newPage();
     const callbackAbortPattern = "**/auth/x/callback*";
     let detachLoginRoute: (() => Promise<void>) | null = null;
@@ -439,7 +448,7 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
       callbackAbortHandler = null;
 
       // Wrong browser: no oauth state/mode cookies → cannot consume; no session; row not burned.
-      const contextThief = await browser.newContext();
+      const contextThief = await newContextWithClientIp(browser, thiefIp);
       const pageThief = await contextThief.newPage();
       try {
         const wrong = await pageThief.goto(stolenUrl);
@@ -681,14 +690,22 @@ test.describe("9 — failure polish + real dual rate limits", () => {
     await context.setOffline(false);
   });
 
-  test("real dual IP/account stance 429 with Retry-After", async ({ page, browser }) => {
-    // E2E_STANCE_WRITE_MAX=3 — fourth write from same account must 429.
+  test("real dual IP/account stance 429 with Retry-After", async ({ page, browser, testClientIp }, testInfo) => {
+    // Primary account stays on one known isolated IP for all four writes.
+    // Express trust proxy = 1 (render_direct) maps X-Forwarded-For → req.ip rate key.
+    const primaryIp = testClientIp;
+    const secondaryIp = alternateTestClientIp(testInfo);
+    expect(primaryIp).toMatch(/^(192\.0\.2|198\.51\.100|203\.0\.113)\.\d+$/);
+    expect(secondaryIp).toMatch(/^(192\.0\.2|198\.51\.100|203\.0\.113)\.\d+$/);
+    expect(secondaryIp).not.toBe(primaryIp);
+
+    // E2E_STANCE_WRITE_MAX=3 — fourth write from same account+IP must 429.
     await mockOAuthLogin(page, { e2eUser: "rl_acct", path: "/bip/54" });
     const stances: Array<"Neutral" | "Against" | "Approve"> = ["Neutral", "Against", "Approve", "Neutral"];
     for (let i = 0; i < 3; i += 1) {
       await saveStanceViaUi(page, stances[i]!);
     }
-    // Fourth attempt via API to inspect headers.
+    // Fourth attempt via API to inspect headers (same primary IP / account).
     const limited = await page.evaluate(async () => {
       const r = await fetch("/api/stance", {
         method: "POST",
@@ -706,17 +723,19 @@ test.describe("9 — failure polish + real dual rate limits", () => {
     expect(Number(limited.retryAfter)).toBeGreaterThan(0);
     expect(limited.body).toMatchObject({ error: "rate_limited" });
 
-    // New account, same IP — IP quota may also trip; prove a fresh account on a
-    // different IP can write (account rotation alone cannot bypass IP limit once IP is hot).
-    const contextB = await browser.newContext();
-    // Playwright cannot easily spoof Express req.ip; assert account limiter independence:
-    // a new user still succeeds while the limited account remains blocked.
+    // Second account on a different known IP can write once; proves a fresh IP/account
+    // pair is unaffected while the original account/IP remains blocked.
+    const contextB = await newContextWithClientIp(browser, secondaryIp);
     const pageB = await contextB.newPage();
-    await mockOAuthLogin(pageB, { e2eUser: "rl_other", path: "/bip/54" });
-    await saveStanceViaUi(pageB, "Neutral");
-    await expectMeStance(pageB, "bip54", "neutral");
+    try {
+      await mockOAuthLogin(pageB, { e2eUser: "rl_other", path: "/bip/54" });
+      await saveStanceViaUi(pageB, "Neutral");
+      await expectMeStance(pageB, "bip54", "neutral");
+    } finally {
+      await contextB.close();
+    }
 
-    // Original account still blocked without waiting out the window.
+    // Original account on primaryIp still blocked without waiting out the window.
     const stillLimited = await page.evaluate(async () => {
       const r = await fetch("/api/stance", {
         method: "POST",
@@ -728,7 +747,6 @@ test.describe("9 — failure polish + real dual rate limits", () => {
     });
     expect(stillLimited.status).toBe(429);
     expect(Number(stillLimited.retryAfter)).toBeGreaterThan(0);
-    await contextB.close();
   });
 });
 
