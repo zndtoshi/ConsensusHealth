@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Route } from "@playwright/test";
 import { CANONICAL_DISTANT_SLOTS } from "../src/utils/distantGalaxyLayout";
 import {
   apiJson,
@@ -412,100 +412,143 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
   }) => {
     const contextOwner = await browser.newContext();
     const pageOwner = await contextOwner.newPage();
-    await ackPrivacyDisclosure(pageOwner);
-    await attachE2ELoginRoute(pageOwner, { e2eUser: "oauth_wb" });
-    await pageOwner.goto("/bip/54");
-    await expect(pageOwner.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
+    const callbackAbortPattern = "**/auth/x/callback*";
+    let detachLoginRoute: (() => Promise<void>) | null = null;
+    let callbackAbortHandler: ((route: Route) => Promise<void>) | null = null;
 
-    let stolenUrl = "";
-    await pageOwner.route("**/auth/x/callback*", async (route) => {
-      stolenUrl = route.request().url();
-      await route.abort();
-    });
-    const popupPromise = pageOwner.waitForEvent("popup");
-    await pageOwner.getByRole("button", { name: /Login with/i }).click();
-    const popup = await popupPromise;
-    await expect.poll(() => stolenUrl.length > 0, { timeout: 15_000 }).toBeTruthy();
-    if (!popup.isClosed()) await popup.close();
+    try {
+      await ackPrivacyDisclosure(pageOwner);
+      detachLoginRoute = await attachE2ELoginRoute(pageOwner, { e2eUser: "oauth_wb" });
+      await pageOwner.goto("/bip/54");
+      await expect(pageOwner.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
 
-    // Wrong browser: no oauth state/mode cookies → cannot consume; no session; row not burned.
-    const contextThief = await browser.newContext();
-    const pageThief = await contextThief.newPage();
-    const wrong = await pageThief.goto(stolenUrl);
-    expect(wrong).toBeTruthy();
-    // Without popup mode cookie the server returns a non-session error (400) or redirect.
-    expect([400, 302, 303]).toContain(wrong!.status());
-    expect((await fetchMe(pageThief)).body).toBeNull();
-    await contextThief.close();
-
-    // Original browser still has the nonce cookie — complete the same callback URL.
-    await pageOwner.unroute("**/auth/x/callback*");
-    const openerOrigin = new URL(pageOwner.url()).origin;
-    await pageOwner.evaluate(() => {
-      const w = window as unknown as {
-        __chOauthMsgs: Array<{ status?: string }>;
-        __chOauthOnMessage?: (ev: MessageEvent) => void;
-        __chOauthBc?: BroadcastChannel;
+      let stolenUrl = "";
+      callbackAbortHandler = async (route) => {
+        stolenUrl = route.request().url();
+        await route.abort();
       };
-      if (w.__chOauthOnMessage) {
-        window.removeEventListener("message", w.__chOauthOnMessage as EventListener);
-      }
-      if (w.__chOauthBc) {
-        try {
-          w.__chOauthBc.close();
-        } catch {
-          /* closed */
-        }
-      }
-      w.__chOauthMsgs = [];
-      w.__chOauthOnMessage = (ev: MessageEvent) => {
-        if (ev.data && typeof ev.data === "object") {
-          w.__chOauthMsgs.push(ev.data as { status?: string });
-        }
-      };
-      window.addEventListener("message", w.__chOauthOnMessage as EventListener);
+      // Context-scoped so the popup's first callback navigation is intercepted.
+      await contextOwner.route(callbackAbortPattern, callbackAbortHandler);
+      const popupPromise = pageOwner.waitForEvent("popup");
+      await pageOwner.getByRole("button", { name: /Login with/i }).click();
+      const popup = await popupPromise;
+      await expect.poll(() => stolenUrl.length > 0, { timeout: 15_000 }).toBeTruthy();
+      if (!popup.isClosed()) await popup.close();
+
+      await contextOwner.unroute(callbackAbortPattern, callbackAbortHandler);
+      callbackAbortHandler = null;
+
+      // Wrong browser: no oauth state/mode cookies → cannot consume; no session; row not burned.
+      const contextThief = await browser.newContext();
+      const pageThief = await contextThief.newPage();
       try {
-        w.__chOauthBc = new BroadcastChannel("consensushealth-oauth");
-        w.__chOauthBc.onmessage = (ev) => {
+        const wrong = await pageThief.goto(stolenUrl);
+        expect(wrong).toBeTruthy();
+        // Without popup mode cookie the server returns a non-session error (400) or redirect.
+        expect([400, 302, 303]).toContain(wrong!.status());
+        expect((await fetchMe(pageThief)).body).toBeNull();
+      } finally {
+        await contextThief.close();
+      }
+
+      // Original browser still has the nonce cookie — complete the same callback URL.
+      const openerOrigin = new URL(pageOwner.url()).origin;
+      await pageOwner.evaluate(() => {
+        const w = window as unknown as {
+          __chOauthMsgs: Array<{ status?: string }>;
+          __chOauthOnMessage?: (ev: MessageEvent) => void;
+          __chOauthBc?: BroadcastChannel;
+        };
+        if (w.__chOauthOnMessage) {
+          window.removeEventListener("message", w.__chOauthOnMessage as EventListener);
+        }
+        if (w.__chOauthBc) {
+          try {
+            w.__chOauthBc.close();
+          } catch {
+            /* closed */
+          }
+        }
+        w.__chOauthMsgs = [];
+        w.__chOauthOnMessage = (ev: MessageEvent) => {
           if (ev.data && typeof ev.data === "object") {
             w.__chOauthMsgs.push(ev.data as { status?: string });
           }
         };
-      } catch {
-        /* BroadcastChannel unavailable */
-      }
-    });
-    const cbPromise = contextOwner.waitForEvent("response", {
-      predicate: (res) => {
+        window.addEventListener("message", w.__chOauthOnMessage as EventListener);
         try {
-          const u = new URL(res.url());
-          if (u.origin !== openerOrigin || u.pathname !== "/auth/x/callback") return false;
-          const req = res.request();
-          return req.isNavigationRequest() || req.resourceType() === "document";
+          w.__chOauthBc = new BroadcastChannel("consensushealth-oauth");
+          w.__chOauthBc.onmessage = (ev) => {
+            if (ev.data && typeof ev.data === "object") {
+              w.__chOauthMsgs.push(ev.data as { status?: string });
+            }
+          };
         } catch {
-          return false;
+          /* BroadcastChannel unavailable */
         }
-      },
-      timeout: 30_000,
-    });
-    const ownerPopupPromise = pageOwner.waitForEvent("popup");
-    await pageOwner.evaluate((url) => {
-      window.open(url, "oauth_retry", "width=480,height=640");
-    }, stolenUrl);
-    const [ownerPopup, cbRes] = await Promise.all([ownerPopupPromise, cbPromise]);
-    const html = await cbRes.text();
-    expect(cbRes.status()).toBe(200);
-    expect(html).toMatch(/Signed in/i);
-    if (!ownerPopup.isClosed()) {
-      await ownerPopup.waitForEvent("close", { timeout: 15_000 });
+      });
+      try {
+        const cbPromise = contextOwner.waitForEvent("response", {
+          predicate: (res) => {
+            try {
+              const u = new URL(res.url());
+              if (u.origin !== openerOrigin || u.pathname !== "/auth/x/callback") return false;
+              const req = res.request();
+              return req.isNavigationRequest() || req.resourceType() === "document";
+            } catch {
+              return false;
+            }
+          },
+          timeout: 30_000,
+        });
+        const ownerPopupPromise = pageOwner.waitForEvent("popup");
+        await pageOwner.evaluate((url) => {
+          window.open(url, "oauth_retry", "width=480,height=640");
+        }, stolenUrl);
+        const [ownerPopup, cbRes] = await Promise.all([ownerPopupPromise, cbPromise]);
+        const html = await cbRes.text();
+        expect(cbRes.status()).toBe(200);
+        expect(html).toMatch(/Signed in/i);
+        if (!ownerPopup.isClosed()) {
+          await ownerPopup.waitForEvent("close", { timeout: 15_000 });
+        }
+        await expect
+          .poll(async () => {
+            const me = await fetchMe(pageOwner);
+            return Boolean((me.body as { x_user_id?: string } | null)?.x_user_id);
+          })
+          .toBeTruthy();
+      } finally {
+        await pageOwner
+          .evaluate(() => {
+            const w = window as unknown as {
+              __chOauthOnMessage?: (ev: MessageEvent) => void;
+              __chOauthBc?: BroadcastChannel;
+            };
+            if (w.__chOauthOnMessage) {
+              window.removeEventListener("message", w.__chOauthOnMessage as EventListener);
+              w.__chOauthOnMessage = undefined;
+            }
+            if (w.__chOauthBc) {
+              try {
+                w.__chOauthBc.close();
+              } catch {
+                /* closed */
+              }
+              w.__chOauthBc = undefined;
+            }
+          })
+          .catch(() => undefined);
+      }
+    } finally {
+      if (callbackAbortHandler) {
+        await contextOwner.unroute(callbackAbortPattern, callbackAbortHandler).catch(() => undefined);
+      }
+      if (detachLoginRoute) {
+        await detachLoginRoute();
+      }
+      await contextOwner.close();
     }
-    await expect
-      .poll(async () => {
-        const me = await fetchMe(pageOwner);
-        return Boolean((me.body as { x_user_id?: string } | null)?.x_user_id);
-      })
-      .toBeTruthy();
-    await contextOwner.close();
   });
 
   test("invalid state without popup cookies returns 400", async ({ request }) => {

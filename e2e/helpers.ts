@@ -35,17 +35,44 @@ export async function ackPrivacyDisclosure(page: Page) {
   });
 }
 
-/** Rewrite /auth/x/login to attach e2e_user / e2e_fail for per-context mock identities. */
+export type DetachRoute = () => Promise<void>;
+
+const E2E_LOGIN_ROUTE_PATTERN = "**/auth/x/login*";
+
+/**
+ * Rewrite /auth/x/login at BrowserContext scope so the popup's initial
+ * navigation is intercepted. Returns an explicit detach for this handler only.
+ */
 export async function attachE2ELoginRoute(
   page: Page,
   opts: { e2eUser?: string; e2eFail?: "token" | "deny" | "expired" }
-) {
-  await page.route("**/auth/x/login*", async (route: Route) => {
-    const url = new URL(route.request().url());
+): Promise<DetachRoute> {
+  const context = page.context();
+  const handler = async (route: Route) => {
+    const req = route.request();
+    let url: URL;
+    try {
+      url = new URL(req.url());
+    } catch {
+      await route.continue();
+      return;
+    }
+    if (url.pathname !== "/auth/x/login") {
+      await route.continue();
+      return;
+    }
+    if (!req.isNavigationRequest() && req.resourceType() !== "document") {
+      await route.continue();
+      return;
+    }
     if (opts.e2eUser) url.searchParams.set("e2e_user", opts.e2eUser);
     if (opts.e2eFail) url.searchParams.set("e2e_fail", opts.e2eFail);
     await route.continue({ url: url.toString() });
-  });
+  };
+  await context.route(E2E_LOGIN_ROUTE_PATTERN, handler);
+  return async () => {
+    await context.unroute(E2E_LOGIN_ROUTE_PATTERN, handler);
+  };
 }
 
 export type OAuthPopupCapture = {
@@ -99,23 +126,25 @@ async function installOpenerOauthListeners(page: Page) {
 }
 
 async function cleanupOpenerOauthListeners(page: Page) {
-  await page.evaluate(() => {
-    const w = window as unknown as OpenerOauthBridge;
-    if (w.__chOauthOnMessage) {
-      window.removeEventListener("message", w.__chOauthOnMessage as EventListener);
-      w.__chOauthOnMessage = undefined;
-    }
-    if (w.__chOauthBc) {
-      try {
-        w.__chOauthBc.close();
-      } catch {
-        /* already closed */
+  await page
+    .evaluate(() => {
+      const w = window as unknown as OpenerOauthBridge;
+      if (w.__chOauthOnMessage) {
+        window.removeEventListener("message", w.__chOauthOnMessage as EventListener);
+        w.__chOauthOnMessage = undefined;
       }
-      w.__chOauthBc = undefined;
-    }
-  }).catch(() => {
-    /* page may already be closed in teardown */
-  });
+      if (w.__chOauthBc) {
+        try {
+          w.__chOauthBc.close();
+        } catch {
+          /* already closed */
+        }
+        w.__chOauthBc = undefined;
+      }
+    })
+    .catch(() => {
+      /* page may already be closed in teardown */
+    });
 }
 
 function isOauthCallbackDocumentResponse(res: Response, openerOrigin: string): boolean {
@@ -147,62 +176,69 @@ export async function mockOAuthLogin(
 ): Promise<OAuthPopupCapture> {
   const path = opts?.path || "/bip/54";
   const expectSession = opts?.expectSession !== false && !opts?.e2eFail;
-  if (opts?.e2eUser || opts?.e2eFail) {
-    await attachE2ELoginRoute(page, { e2eUser: opts.e2eUser, e2eFail: opts.e2eFail });
-  }
-  await ackPrivacyDisclosure(page);
-  await page.goto(path);
-  await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
-
-  const openerOrigin = new URL(page.url()).origin;
-
-  // Parent + context listeners BEFORE click — popup may close before DOM is readable.
-  await installOpenerOauthListeners(page);
-
-  const callbackPromise = page.context().waitForEvent("response", {
-    predicate: (res) => isOauthCallbackDocumentResponse(res, openerOrigin),
-    timeout: 30_000,
-  });
-  const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
-
-  await page.getByRole("button", { name: /Login with/i }).click();
-  const [popup, callbackRes] = await Promise.all([popupPromise, callbackPromise]);
-
-  const csp = callbackRes.headers()["content-security-policy"] || "";
-  const html = await callbackRes.text();
-  const callbackStatus = callbackRes.status();
-
-  expect(csp, "Helmet CSP on OAuth callback").toMatch(/script-src[^;]*'self'/i);
-  expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/i);
-  expect(html).toContain("/auth/popup-complete.js");
-  expect(html).toMatch(/id="ch-auth-payload"/);
-  expect(html).toMatch(/type="application\/json"/);
-  expect(html).not.toMatch(
-    /<script(?![^>]*\bsrc=)(?![^>]*type=["']application\/json["'])[^>]*>[\s\S]*?<\/script>/i
-  );
-
-  // Allow natural auto-close; do not keep the popup open or sleep.
-  if (!popup.isClosed()) {
-    await popup.waitForEvent("close", { timeout: 15_000 });
-  }
-
-  await expect
-    .poll(
-      async () =>
-        page.evaluate(() => {
-          const w = window as unknown as OpenerOauthBridge;
-          return (w.__chOauthMsgs || []).length;
-        }),
-      { timeout: 15_000 }
-    )
-    .toBeGreaterThan(0);
-
-  const completion = await page.evaluate(() => {
-    const w = window as unknown as OpenerOauthBridge;
-    return (w.__chOauthMsgs || [])[0] || null;
-  });
+  let detachLoginRoute: DetachRoute | null = null;
+  let listenersInstalled = false;
 
   try {
+    if (opts?.e2eUser || opts?.e2eFail) {
+      detachLoginRoute = await attachE2ELoginRoute(page, {
+        e2eUser: opts.e2eUser,
+        e2eFail: opts.e2eFail,
+      });
+    }
+    await ackPrivacyDisclosure(page);
+    await page.goto(path);
+    await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
+
+    const openerOrigin = new URL(page.url()).origin;
+
+    // Parent + context listeners BEFORE click — popup may close before DOM is readable.
+    await installOpenerOauthListeners(page);
+    listenersInstalled = true;
+
+    const callbackPromise = page.context().waitForEvent("response", {
+      predicate: (res) => isOauthCallbackDocumentResponse(res, openerOrigin),
+      timeout: 30_000,
+    });
+    const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
+
+    await page.getByRole("button", { name: /Login with/i }).click();
+    const [popup, callbackRes] = await Promise.all([popupPromise, callbackPromise]);
+
+    const csp = callbackRes.headers()["content-security-policy"] || "";
+    const html = await callbackRes.text();
+    const callbackStatus = callbackRes.status();
+
+    expect(csp, "Helmet CSP on OAuth callback").toMatch(/script-src[^;]*'self'/i);
+    expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/i);
+    expect(html).toContain("/auth/popup-complete.js");
+    expect(html).toMatch(/id="ch-auth-payload"/);
+    expect(html).toMatch(/type="application\/json"/);
+    expect(html).not.toMatch(
+      /<script(?![^>]*\bsrc=)(?![^>]*type=["']application\/json["'])[^>]*>[\s\S]*?<\/script>/i
+    );
+
+    // Allow natural auto-close; do not keep the popup open or sleep.
+    if (!popup.isClosed()) {
+      await popup.waitForEvent("close", { timeout: 15_000 });
+    }
+
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const w = window as unknown as OpenerOauthBridge;
+            return (w.__chOauthMsgs || []).length;
+          }),
+        { timeout: 15_000 }
+      )
+      .toBeGreaterThan(0);
+
+    const completion = await page.evaluate(() => {
+      const w = window as unknown as OpenerOauthBridge;
+      return (w.__chOauthMsgs || [])[0] || null;
+    });
+
     if (expectSession) {
       expect(callbackStatus).toBe(200);
       expect(html).toMatch(/Signed in/i);
@@ -225,11 +261,16 @@ export async function mockOAuthLogin(
       const me = await fetchMe(page);
       expect(me.body).toBeNull();
     }
-  } finally {
-    await cleanupOpenerOauthListeners(page);
-  }
 
-  return { callbackStatus, csp, html, completion };
+    return { callbackStatus, csp, html, completion };
+  } finally {
+    if (listenersInstalled) {
+      await cleanupOpenerOauthListeners(page);
+    }
+    if (detachLoginRoute) {
+      await detachLoginRoute();
+    }
+  }
 }
 
 export function stanceChoiceDialog(page: Page) {
