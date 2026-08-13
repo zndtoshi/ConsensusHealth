@@ -19,7 +19,7 @@ import {
 } from "./utils/perfDebug";
 import { isChromium, isFirefox } from "./utils/browser";
 import { clearCanvasBitmap } from "./utils/canvasClear";
-import { resolveCanvasDpr } from "./utils/canvasDpr";
+import { resolveCanvasDpr, syncWrapperCanvas } from "./utils/canvasDpr";
 import { createGraphIdleScheduler } from "./utils/graphIdleScheduler";
 import { parseDebugGlowParams, resolveGlowProfile, scaleRgbaAlpha } from "./utils/glowRendering";
 import { fetchCommunityUsersResult } from "./api/community";
@@ -34,7 +34,11 @@ import {
   friendlyStanceExplanationError,
   PARTIAL_STANCE_EXPLANATION_STATUS,
 } from "./utils/stanceExplanationErrors";
-import { applySparseFitCap, sparseSelectedTargetSide } from "./utils/sparseFitCap";
+import {
+  applySparseFitCap,
+  sparseGlowFootprintMultiplier,
+  sparseSelectedTargetSide,
+} from "./utils/sparseFitCap";
 import {
   filterSeedOnlyAccounts,
   filterSelfReportedAccounts,
@@ -50,6 +54,7 @@ import {
   getProposalById,
   isFinalProposal,
   isOngoingProposal,
+  proposalGithubUrl,
   statisticsActionLabel,
   statisticsModalCopy,
 } from "./config/proposals";
@@ -101,9 +106,17 @@ import {
   historyCacheKey,
 } from "./utils/avatarStanceHistoryPanel";
 import {
+  isPersistedStanceUnchanged,
+  shouldAutoOpenStanceChoice,
   toolbarStanceMeta,
   userHasChosenStance,
 } from "./utils/stanceChoice";
+import {
+  defaultUserCamera,
+  fitTranslationForBounds,
+  observeContainerSize,
+  sizeFromContainerRect,
+} from "./utils/galaxyViewport";
 import {
   AUTH_CHANNEL_NAME,
   LOGIN_RETURN_KEY,
@@ -592,6 +605,7 @@ function drawRoundedRectPath(ctx, x, y, w, h, r) {
 function createGlowSprite(aura, side, emphasize, quality = 1, glowOpts = {}) {
   const blurMul = glowOpts.blurMultiplier ?? 1;
   const opacityMul = glowOpts.opacityMultiplier ?? 1;
+  const padMul = glowOpts.padMultiplier ?? 1;
   const glowAura = opacityMul === 1 ? aura : scaleRgbaAlpha(aura, opacityMul);
   const fullLayers = emphasize
     ? [
@@ -609,8 +623,8 @@ function createGlowSprite(aura, side, emphasize, quality = 1, glowOpts = {}) {
   const layers = quality < 0.55 ? fullLayers.slice(0, 2) : fullLayers;
   // Prevent clipping: pad must account for the largest blur radius.
   const maxBlur = layers.reduce((m, l) => Math.max(m, l.blur * quality * blurMul), 0);
-  const padScale = 0.58 + quality * 0.42;
-  const padBase = clamp(side * (emphasize ? 5.2 : 4.6) * padScale, 36, emphasize ? 360 : 300);
+  const padScale = (0.58 + quality * 0.42) * Math.max(0.2, padMul);
+  const padBase = clamp(side * (emphasize ? 5.2 : 4.6) * padScale, 20, emphasize ? 360 : 300);
   const pad = Math.ceil(Math.max(padBase, maxBlur * 1.2));
   const size = Math.ceil(side + pad * 2);
   const canvas = document.createElement("canvas");
@@ -920,38 +934,39 @@ async function loadAccounts(proposalId = DEFAULT_PROPOSAL_ID, signal) {
   return merged;
 }
 
-function useContainerSize(containerRef) {
+/**
+ * Mount-aware container size: observe the live DOM node in state so when the
+ * loading screen unmounts and the graph wrapper mounts, ResizeObserver rebinds.
+ * Window fallback is only the initial placeholder and never overwrites a real measure.
+ */
+function useContainerSize() {
+  const [containerEl, setContainerElState] = useState(null);
+  // Window is only a pre-mount placeholder. Once the graph wrapper exists,
+  // measured container size always wins and must never be overwritten by it.
   const [size, setSize] = useState(() => {
     if (typeof window === "undefined") return { w: 800, h: 600 };
-    return { w: Math.max(1, window.innerWidth), h: Math.max(1, window.innerHeight - 56) };
+    return { w: Math.max(1, window.innerWidth), h: Math.max(1, window.innerHeight) };
   });
+  const applyMeasured = useCallback((next) => {
+    if (!next) return;
+    setSize((prev) => (prev.w !== next.w || prev.h !== next.h ? next : prev));
+  }, []);
+  const setContainerEl = useCallback(
+    (node) => {
+      setContainerElState((prev) => (prev === node ? prev : node));
+      // Measure synchronously on mount so the first draw after loading→graph
+      // does not paint with the stale full-window fallback.
+      if (node) applyMeasured(sizeFromContainerRect(node.getBoundingClientRect()));
+    },
+    [applyMeasured]
+  );
+
   useEffect(() => {
-    const el = containerRef.current;
-    const fromContainer = () => {
-      if (!el) return;
-      const rect = el.getBoundingClientRect();
-      const w = Math.max(1, Math.round(rect.width));
-      const h = Math.max(1, Math.round(rect.height));
-      if (w > 100 && h > 100) setSize((prev) => (prev.w !== w || prev.h !== h ? { w, h } : prev));
-    };
-    const fromWindow = () => {
-      setSize({ w: Math.max(1, window.innerWidth), h: Math.max(1, window.innerHeight - 56) });
-    };
-    fromContainer();
-    requestAnimationFrame(() => {
-      requestAnimationFrame(fromContainer);
-    });
-    const t = setTimeout(fromWindow, 150);
-    const ro = el ? new ResizeObserver(fromContainer) : null;
-    if (el) ro.observe(el);
-    window.addEventListener("resize", fromWindow);
-    return () => {
-      clearTimeout(t);
-      ro?.disconnect();
-      window.removeEventListener("resize", fromWindow);
-    };
-  }, [containerRef]);
-  return size;
+    if (!containerEl) return undefined;
+    return observeContainerSize(containerEl, applyMeasured);
+  }, [containerEl, applyMeasured]);
+
+  return { w: size.w, h: size.h, setContainerEl, containerEl, applyMeasured };
 }
 
 export default function App() {
@@ -967,8 +982,9 @@ export default function App() {
     dpr: 0,
     active: false,
   });
-  const containerRef = useRef(null);
-  const { w, h } = useContainerSize(containerRef);
+  const { w, h, setContainerEl, applyMeasured } = useContainerSize();
+  const applyMeasuredRef = useRef(applyMeasured);
+  applyMeasuredRef.current = applyMeasured;
   const isFirefoxBrowser = useMemo(() => isFirefox(), []);
   const isChromiumBrowser = useMemo(() => isChromium(), []);
   const glowProfile = useMemo(() => {
@@ -1049,6 +1065,13 @@ export default function App() {
   const [joinDateBoundMax, setJoinDateBoundMax] = useState(() => new Date().getUTCFullYear());
   const joinDateRangeInitializedRef = useRef(false);
   const canvasWrapPulseRef = useRef(null);
+  const setCanvasWrapRef = useCallback(
+    (el) => {
+      setContainerEl(el);
+      canvasWrapPulseRef.current = el;
+    },
+    [setContainerEl]
+  );
   const [filterAriaStatus, setFilterAriaStatus] = useState("");
   const [equalAvatarSizeEnabled, setEqualAvatarSizeEnabled] = useState(false);
   const [dimOthersEnabled, setDimOthersEnabled] = useState(false);
@@ -1065,6 +1088,8 @@ export default function App() {
   const [stanceVerifyBusy, setStanceVerifyBusy] = useState(false);
   const [stanceChoiceStatus, setStanceChoiceStatus] = useState("");
   const [stanceChoiceError, setStanceChoiceError] = useState("");
+  /** One auto-prompt per visit to a stance-less ongoing galaxy; dismiss sticks for the visit. */
+  const stancePromptVisitRef = useRef({ proposalId: null, prompted: false, dismissed: false });
   const [manualEditChoice, setManualEditChoice] = useState("neutral");
   const [manualEditBusy, setManualEditBusy] = useState(false);
   const [manualEditError, setManualEditError] = useState("");
@@ -1349,7 +1374,16 @@ export default function App() {
     // Drop stale stats when switching galaxies so the modal never shows wrong BIP.
     setStatsData(null);
     setStatsForProposalId(null);
+    // Close + remount the stance card so draft/errors cannot leak across galaxies.
     setStanceChoiceOpen(false);
+    setStanceChoiceError("");
+    setStanceChoiceStatus("");
+    setStanceChoiceSession((n) => n + 1);
+    stancePromptVisitRef.current = {
+      proposalId: activeProposalId,
+      prompted: false,
+      dismissed: false,
+    };
   }, [activeProposalId]);
 
   function openStatsModal() {
@@ -1430,9 +1464,45 @@ export default function App() {
   const canManageOwnExplanation =
     me?.authenticated === true &&
     (canChooseOwnStance || (isFinalProposal(activeProposal) && meHasStance));
+  const activeProposalGithubUrl = useMemo(
+    () => proposalGithubUrl(activeProposal?.id || activeProposalId),
+    [activeProposal?.id, activeProposalId]
+  );
   const meExplanation = me?.authenticated
     ? me?.proposal_explanations?.[activeProposalId] || null
     : null;
+
+  // Auto-prompt once per visit to an ongoing galaxy with no persisted stance.
+  // Declared after the close-on-proposal-change effect so open wins in the same commit.
+  useEffect(() => {
+    if (loading) return;
+    if (galaxyTravel) return;
+    if (!proposalAccessReady) return;
+    if (!canChooseOwnStance) return;
+    if (!shouldAutoOpenStanceChoice(meForActiveProposal)) return;
+    const visit = stancePromptVisitRef.current;
+    if (visit.proposalId !== activeProposalId) {
+      stancePromptVisitRef.current = {
+        proposalId: activeProposalId,
+        prompted: false,
+        dismissed: false,
+      };
+    }
+    if (stancePromptVisitRef.current.prompted || stancePromptVisitRef.current.dismissed) return;
+    stancePromptVisitRef.current.prompted = true;
+    setStanceChoiceError("");
+    setStanceChoiceStatus("");
+    setStanceChoiceSession((n) => n + 1);
+    setStanceChoiceOpen(true);
+  }, [
+    loading,
+    galaxyTravel,
+    proposalAccessReady,
+    canChooseOwnStance,
+    meForActiveProposal,
+    activeProposalId,
+  ]);
+
   const statsActionLabel = statisticsActionLabel(activeProposal);
   const statsModalCopy = statisticsModalCopy(activeProposal);
   const manualEditTargetIsSelf =
@@ -2013,7 +2083,8 @@ export default function App() {
     setStanceChoiceError("");
     setStanceChoiceStatus("");
 
-    const stanceUnchanged = normalizedStance(uiStance) === normalizedStance(meStance);
+    // Missing stance must stay distinct from Neutral — first Neutral still POSTs.
+    const stanceUnchanged = isPersistedStanceUnchanged(meForActiveProposal?.stance, uiStance);
     let stanceOk = true;
 
     if (!stanceFrozen && !stanceUnchanged) {
@@ -3037,6 +3108,13 @@ export default function App() {
   // Cached fit transform, frozen while the selection FX runs so the whole graph
   // does not visibly rescale as neighbors are nudged.
   const frozenFitRef = useRef(null);
+
+  // Fresh camera for each proposal — never inherit pan/zoom that would shove a
+  // sparse galaxy into the bottom-right of the next viewport.
+  useEffect(() => {
+    camRef.current = defaultUserCamera();
+    frozenFitRef.current = null;
+  }, [activeProposalId]);
   const labelsRef = useRef({});
   const selectedHandleRef = useRef(null);
   const hoverRef = useRef(null);
@@ -5028,13 +5106,8 @@ export default function App() {
     const ictx = introCanvas.getContext("2d");
     if (!ictx) return;
 
-    if (introCanvas.width !== Math.floor(cw * dpr) || introCanvas.height !== Math.floor(ch * dpr)) {
-      introCanvas.width = Math.floor(cw * dpr);
-      introCanvas.height = Math.floor(ch * dpr);
-      introCanvas.style.width = `${cw}px`;
-      introCanvas.style.height = `${ch}px`;
-      ictx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    }
+    const sized = syncWrapperCanvas(introCanvas, cw, ch, dpr);
+    if (sized.changed) ictx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     clearCanvasBitmap(ictx, introCanvas);
     ictx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -5245,6 +5318,30 @@ export default function App() {
     const dragFrameStart = cameraInteractingRef.current ? performance.now() : 0;
     if (isPerfDebugEnabled()) perfInc("drawCalls");
 
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const dpr = resolveCanvasDpr(window.devicePixelRatio || 1);
+    // Live wrapper rect is authoritative — never let a stale window fallback
+    // leave the bitmap/CSS larger than the mounted graph wrap.
+    const live = sizeFromContainerRect(canvas.parentElement?.getBoundingClientRect());
+    const cw = Math.max(1, live?.w ?? w);
+    const ch = Math.max(1, live?.h ?? h);
+    // Keep React size in sync when RO/window events miss a layout change.
+    if (live && (live.w !== w || live.h !== h)) applyMeasuredRef.current?.(live);
+
+    // Size every full-wrapper canvas before paint/early-return so overlay/intro
+    // never keeps the default 300×150 backing store stretched to the viewport.
+    const mainSized = syncWrapperCanvas(canvas, cw, ch, dpr);
+    if (mainSized.changed) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      invalidatePanLayer();
+    }
+    const introCanvas = introCanvasRef.current;
+    if (introCanvas) syncWrapperCanvas(introCanvas, cw, ch, dpr);
+
     // Suppress intermediate paints while the layout is settling off the main
     // thread. This prevents avatar `load` events and simulation ticks from
     // showing nodes mid-flight; we paint exactly once when settling completes.
@@ -5253,24 +5350,6 @@ export default function App() {
     // Filter transitions keep drawing enabled so exits remain visible mid-settle.
     const ftDraw = filterTransitionRef.current;
     if (layoutSettlingRef.current && !ftDraw.allowDrawDuringSettle && !ftDraw.active) return;
-
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const dpr = resolveCanvasDpr(window.devicePixelRatio || 1);
-    const cw = Math.max(1, w);
-    const ch = Math.max(1, h);
-
-    if (canvas.width !== Math.floor(cw * dpr) || canvas.height !== Math.floor(ch * dpr)) {
-      canvas.width = Math.floor(cw * dpr);
-      canvas.height = Math.floor(ch * dpr);
-      canvas.style.width = `${cw}px`;
-      canvas.style.height = `${ch}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      invalidatePanLayer();
-    }
 
     const introEarly = newStancesIntroRef.current;
     const snap = introGraphSnapshotRef.current;
@@ -5431,18 +5510,25 @@ export default function App() {
         visibleFitCount += 1;
         if (n.side > maxNodeSide) maxNodeSide = n.side;
       }
+      const userScaleMul = Number(camRef.current?.scaleMul);
       nextFitScale = applySparseFitCap({
         fitScale: nextFitScale,
         maxNodeSide,
         visibleNodeCount: visibleFitCount,
         viewportWidth: cw,
         viewportHeight: ch,
+        userScaleMul: Number.isFinite(userScaleMul) && userScaleMul > 0 ? userScaleMul : 1,
       });
       fitScale = nextFitScale;
-      const blobCx = (minX + maxX) / 2;
-      const blobCy = (minY + maxY) / 2;
-      fitTx = cw / 2 - blobCx * fitScale;
-      fitTy = ch / 2 - blobCy * fitScale;
+      ({ fitTx, fitTy } = fitTranslationForBounds({
+        minX,
+        minY,
+        maxX,
+        maxY,
+        cw,
+        ch,
+        fitScale,
+      }));
       frozenFitRef.current = { scale: fitScale, tx: fitTx, ty: fitTy };
     }
 
@@ -5540,15 +5626,18 @@ export default function App() {
         : glowProfile.quality;
     const nonEmphasizedGlowPasses =
       ft.simplifyGlow && filterMotionActive ? 1 : glowProfile.nonEmphasizedPasses;
+    const sparseNodeCount = Array.isArray(nodes) ? nodes.length : 0;
+    const sparseGlowMul = sparseGlowFootprintMultiplier(sparseNodeCount);
     const getGlow = (aura, drawSide, emphasize) => {
       const bucketSide = Math.max(6, Math.round(drawSide));
-      const key = `${aura}|${bucketSide}|${emphasize ? "1" : "0"}|${glowProfile.id}|${glowQuality}`;
+      const key = `${aura}|${bucketSide}|${emphasize ? "1" : "0"}|${glowProfile.id}|${glowQuality}|g${sparseGlowMul}`;
       const cacheKey = `${GLOW_CACHE_VERSION}|${key}`;
       const cache = glowCacheRef.current;
       if (cache.has(cacheKey)) return cache.get(cacheKey);
       const sprite = createGlowSprite(aura, bucketSide, emphasize, glowQuality, {
-        blurMultiplier: glowProfile.blurMultiplier,
+        blurMultiplier: (glowProfile.blurMultiplier || 1) * sparseGlowMul,
         opacityMultiplier: glowProfile.opacityMultiplier,
+        padMultiplier: sparseGlowMul,
       });
       if (cache.size > 420) cache.clear();
       cache.set(cacheKey, sprite);
@@ -6819,7 +6908,10 @@ export default function App() {
       </div>
 
       <div style={styles.main}>
-        <div ref={(el) => { containerRef.current = el; canvasWrapPulseRef.current = el; }} style={styles.canvasWrap}>
+        <div
+          ref={setCanvasWrapRef}
+          style={styles.canvasWrap}
+        >
           {!stanceListsViewEnabled ? (
             <>
               <canvas
@@ -7121,7 +7213,7 @@ export default function App() {
       )}
       {stanceChoiceOpen && canManageOwnExplanation ? (
         <StanceChoiceCard
-          key={`stance-card:${stanceChoiceSession}`}
+          key={`stance-card:${stanceChoiceSession}:${activeProposalId}`}
           open={stanceChoiceOpen}
           mode={meHasStance ? "change" : "choose"}
           currentStance={meStance || ""}
@@ -7132,10 +7224,17 @@ export default function App() {
           statusMessage={stanceChoiceStatus}
           errorMessage={stanceChoiceError}
           proposalLabel={activeProposal?.title || "proposal"}
+          proposalGithubUrl={activeProposalGithubUrl}
           onSave={saveOwnStanceChoice}
           onRemoveExplanation={removeOwnExplanation}
           onDismiss={() => {
             if (stanceChoiceBusy || stanceVerifyBusy) return;
+            stancePromptVisitRef.current = {
+              ...stancePromptVisitRef.current,
+              proposalId: activeProposalId,
+              dismissed: true,
+              prompted: true,
+            };
             setStanceChoiceOpen(false);
             setStanceChoiceError("");
             setStanceChoiceStatus("");

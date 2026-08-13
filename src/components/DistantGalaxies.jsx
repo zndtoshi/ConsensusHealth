@@ -1,24 +1,9 @@
 import React, { useMemo } from "react";
-import { selectDistantProposals } from "../config/proposals";
+import { DISTANT_GALAXIES_VISIBLE_LIMIT, selectDistantProposals } from "../config/proposals";
+import { distantLayout } from "../utils/distantGalaxyLayout";
 
 function hashSeed(text) {
   return [...String(text)].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
-}
-
-/** Deterministic placement: flanks center mass, varies scale/rotation, avoids rigid stack. */
-function distantLayout(proposalId, index) {
-  const seed = hashSeed(proposalId) + index * 17;
-  const sideIndex = index % 2;
-  const row = Math.floor(index / 2);
-  const xJitter = ((seed % 11) - 5) * 0.35;
-  const yJitter = ((seed % 7) - 3) * 0.55;
-  const depth = 0.78 + ((seed % 5) / 5) * 0.2; // farther → smaller (~15–25%)
-  return {
-    x: (sideIndex === 0 ? 8.5 : 91.5) + xJitter,
-    y: 16 + row * 11 + yJitter,
-    scale: depth,
-    rotate: ((seed % 13) - 6) * 1.4,
-  };
 }
 
 function galaxyStars(proposalId, count = 28) {
@@ -48,14 +33,15 @@ export function DistantGalaxies({
   onNavigate,
 }) {
   const others = useMemo(
-    () => selectDistantProposals(activeProposalId, catalog, 4),
+    () => selectDistantProposals(activeProposalId, catalog, DISTANT_GALAXIES_VISIBLE_LIMIT),
     [activeProposalId, catalog]
   );
 
   return (
     <div className="distantGalaxies" aria-label="Nearby consensus galaxies">
-      {others.map((p, i) => {
-        const pos = distantLayout(p.id, i);
+      {others.map((p) => {
+        // Pose is ID-stable; active BIP is simply omitted so slots never jump.
+        const pos = distantLayout(p.id);
         const theme = p.visualTheme;
         const stars = galaxyStars(p.id);
         const label = `Travel to ${p.title}: ${p.description}`;

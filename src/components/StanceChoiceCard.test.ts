@@ -75,14 +75,33 @@ test("self-service stance writes are enabled for ongoing proposals; final stays 
 });
 
 test("stance card includes optional verified X explanation URL flow", () => {
-  assert.match(cardSrc, /Link to your explanation on X/);
-  assert.match(cardSrc, /Only a post published by your connected X account is accepted/);
+  assert.match(cardSrc, /Explain your stance on X \(optional\)/);
+  assert.match(
+    cardSrc,
+    /Optional\. Add a link to a post from your connected X account, or leave this blank and\s*save your stance\./
+  );
   assert.match(cardSrc, /Change explanation/);
   assert.match(cardSrc, /Remove explanation/);
   assert.match(cardSrc, /onSave/);
+  assert.match(cardSrc, /explanationAction[\s\S]*attach[\s\S]*none/);
   assert.match(appSrc, /\/api\/stance-explanation/);
+  assert.match(appSrc, /wantsUrl/);
   assert.match(serverSrc, /app\.put\("\/api\/stance-explanation"/);
   assert.match(serverSrc, /app\.delete\("\/api\/stance-explanation"/);
+});
+
+test("stance card renders canonical GitHub link for the active proposal", () => {
+  assert.match(cardSrc, /proposalGithubUrl/);
+  assert.match(cardSrc, /Read \$\{proposalLabel\} on GitHub/);
+  assert.match(cardSrc, /rel="noopener noreferrer"/);
+  assert.match(cardSrc, /target="_blank"/);
+  assert.match(appSrc, /proposalGithubUrl=\{activeProposalGithubUrl\}/);
+  assert.match(appSrc, /proposalGithubUrl\(activeProposal/);
+  const proposalsSrc = readFileSync(join(root, "src", "config", "proposals.ts"), "utf8");
+  assert.match(proposalsSrc, /bip54:[\s\S]*bip-0054/);
+  assert.match(proposalsSrc, /bip110:[\s\S]*bip-0110/);
+  assert.match(proposalsSrc, /bip448:[\s\S]*bip-0448/);
+  assert.match(proposalsSrc, /bip460:[\s\S]*bip-XXXX|bip460:[\s\S]*fjahr/);
 });
 
 test("looksLikeStanceExplanationUrl accepts only basic status URLs", () => {

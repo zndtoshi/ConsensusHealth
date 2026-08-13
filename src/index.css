@@ -655,6 +655,22 @@ button:focus-visible {
   color: rgba(226, 232, 240, 0.72);
 }
 
+.stanceChoiceCard__github {
+  display: inline-block;
+  margin-top: 8px;
+  color: #93c5fd;
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.stanceChoiceCard__github:hover,
+.stanceChoiceCard__github:focus-visible {
+  color: #bfdbfe;
+  text-decoration: underline;
+  outline: none;
+}
+
 .stanceChoiceCard__actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1811,7 +1827,8 @@ html[data-browser="firefox"] .stanceGlow {
   left: 50%;
   /* Sit just above the visible ellipse instead of floating at the button edge. */
   top: 22px;
-  width: 160px;
+  width: min(148px, 22vw);
+  max-width: 160px;
   transform: translateX(-50%);
   display: grid;
   gap: 1px;

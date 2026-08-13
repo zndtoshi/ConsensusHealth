@@ -26,6 +26,7 @@ export function StanceChoiceCard({
   onRemoveExplanation,
   onDismiss,
   proposalLabel = "BIP-110",
+  proposalGithubUrl = null,
 }) {
   const formId = useId();
   const [draftStance, setDraftStance] = useState(currentStance || "");
@@ -46,7 +47,8 @@ export function StanceChoiceCard({
     : mode === "change"
       ? `Pick a new position on ${proposalLabel}.`
       : `Welcome. Where do you stand on ${proposalLabel}?`;
-  const canDismiss = (mode === "change" || stanceFrozen) && typeof onDismiss === "function";
+  const canDismiss = typeof onDismiss === "function";
+  const githubHref = String(proposalGithubUrl || "").trim();
   const hasExisting = Boolean(existingExplanation?.canonical_url);
   const stanceChanged =
     Boolean(draftStance) && Boolean(currentStance) && draftStance !== currentStance;
@@ -123,6 +125,17 @@ export function StanceChoiceCard({
         <p id={`${formId}-subtitle`} className="stanceChoiceCard__subtitle">
           {subtitle}
         </p>
+        {githubHref ? (
+          <a
+            className="stanceChoiceCard__github"
+            href={githubHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`Read ${proposalLabel} on GitHub`}
+          >
+            {`Read ${proposalLabel} on GitHub`}
+          </a>
+        ) : null}
 
         <div className="stanceChoiceCard__actions" role="group" aria-label="Stance options">
           {CHOICES.map((choice) => {
@@ -225,10 +238,11 @@ export function StanceChoiceCard({
         {showUrlField && explanationDecision !== "remove" && explanationDecision !== "confirm" ? (
           <div className="stanceChoiceCard__urlBlock">
             <label className="stanceChoiceCard__urlLabel" htmlFor={`${formId}-url`}>
-              Link to your explanation on X
+              Explain your stance on X (optional)
             </label>
             <p className="stanceChoiceCard__hint">
-              Only a post published by your connected X account is accepted.
+              Optional. Add a link to a post from your connected X account, or leave this blank and
+              save your stance.
             </p>
             <input
               id={`${formId}-url`}
@@ -293,7 +307,7 @@ export function StanceChoiceCard({
               disabled={anyBusy}
               onClick={onDismiss}
             >
-              {stanceFrozen ? "Close" : "Keep current stance"}
+              {stanceFrozen ? "Close" : mode === "change" ? "Keep current stance" : "Not now"}
             </button>
           ) : null}
         </div>

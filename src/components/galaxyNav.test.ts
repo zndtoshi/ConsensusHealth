@@ -105,6 +105,9 @@ test("distant galaxies are interactive travel shortcuts with capped neighbors", 
   const appSrc = fs.readFileSync(path.join(here, "..", "App.jsx"), "utf8");
   const cssSrc = fs.readFileSync(path.join(here, "..", "index.css"), "utf8");
   assert.match(distantSrc, /selectDistantProposals/);
+  assert.match(distantSrc, /DISTANT_GALAXIES_VISIBLE_LIMIT/);
+  assert.match(distantSrc, /distantLayout\(p\.id\)/);
+  assert.doesNotMatch(distantSrc, /distantLayout\(p\.id,\s*i\)/);
   assert.match(distantSrc, /onNavigate/);
   assert.match(distantSrc, /<button/);
   assert.match(distantSrc, /aria-label/);

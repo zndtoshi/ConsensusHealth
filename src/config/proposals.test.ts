@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   DEFAULT_PROPOSAL_ID,
+  DISTANT_GALAXIES_VISIBLE_LIMIT,
   FALLBACK_PROPOSALS,
   mapApiProposal,
   parseProposalFromPathname,
@@ -118,15 +119,39 @@ test("BIP-460 is present after BIP-448 in the fallback catalog", () => {
   assert.equal(FALLBACK_PROPOSALS.find((p) => p.id === "bip110")?.status, "final");
 });
 
-test("selectDistantProposals prefers neighbors and caps at 4", () => {
-  const from110 = selectDistantProposals("bip110", FALLBACK_PROPOSALS, 4).map((p) => p.id);
-  assert.deepEqual(from110, ["bip460", "bip54", "bip448"]);
-  const from54 = selectDistantProposals("bip54", FALLBACK_PROPOSALS, 4).map((p) => p.id);
-  assert.ok(from54.includes("bip110"));
-  assert.ok(from54.includes("bip448"));
-  assert.equal(from54.length, 3);
+test("selectDistantProposals returns inactive BIPs in stable catalog order", () => {
+  const from110 = selectDistantProposals("bip110", FALLBACK_PROPOSALS).map((p) => p.id);
+  assert.deepEqual(from110, ["bip54", "bip448", "bip460"]);
+  const from54 = selectDistantProposals("bip54", FALLBACK_PROPOSALS).map((p) => p.id);
+  assert.deepEqual(from54, ["bip110", "bip448", "bip460"]);
+  const from460 = selectDistantProposals("bip460", FALLBACK_PROPOSALS).map((p) => p.id);
+  assert.deepEqual(from460, ["bip110", "bip54", "bip448"]);
   assert.ok(!from54.includes("bip54"));
   assert.equal(selectDistantProposals("bip110", FALLBACK_PROPOSALS, 2).length, 2);
+});
+
+test("selectDistantProposals caps visible distant galaxies at 4 while catalog stays full", () => {
+  assert.ok(FALLBACK_PROPOSALS.length >= 4);
+  for (const active of FALLBACK_PROPOSALS) {
+    const distant = selectDistantProposals(active.id, FALLBACK_PROPOSALS);
+    assert.ok(distant.length <= 4, `${active.id} showed ${distant.length}`);
+    assert.ok(!distant.some((p) => p.id === active.id));
+  }
+  // Explicit high limit must not create a 10+ background stack.
+  const padded = [
+    ...FALLBACK_PROPOSALS,
+    ...Array.from({ length: 12 }, (_, i) => ({
+      ...FALLBACK_PROPOSALS[0],
+      id: `bip9${i}`,
+      bipNumber: 900 + i,
+      title: `BIP-${900 + i}`,
+      order: 100 + i,
+    })),
+  ];
+  const distant = selectDistantProposals("bip110", padded, 64);
+  assert.equal(DISTANT_GALAXIES_VISIBLE_LIMIT, 4);
+  assert.equal(distant.length, DISTANT_GALAXIES_VISIBLE_LIMIT);
+  assert.ok(padded.length > 10);
 });
 
 test("statistics labels and modal copy follow proposal status", () => {

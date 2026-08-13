@@ -187,34 +187,28 @@ export function listEnabledProposals(catalog: ProposalConfig[] = FALLBACK_PROPOS
 }
 
 /**
- * Pick up to `limit` inactive proposals for distant-galaxy display.
- * Prefers nearest previous/next neighbors around the active proposal (wrapping).
+ * Inactive proposals for distant-galaxy display, in stable catalog order.
+ * Layout poses are keyed by proposal ID (not list index), so hiding the active
+ * BIP never reshuffles the remaining galaxies.
  */
+/** Max inactive distant galaxies shown in the background (dropdown stays full). */
+export const DISTANT_GALAXIES_VISIBLE_LIMIT = 4;
+
 export function selectDistantProposals(
   activeProposalId: unknown,
   catalog: ProposalConfig[] = FALLBACK_PROPOSALS,
-  limit = 4
+  limit = DISTANT_GALAXIES_VISIBLE_LIMIT
 ): ProposalConfig[] {
   const list = listEnabledProposals(catalog);
   if (list.length <= 1) return [];
-  const activeIdx = Math.max(0, list.findIndex((p) => p.id === String(activeProposalId ?? "").toLowerCase()));
-  const cap = Math.max(0, Math.min(4, Math.trunc(limit) || 4, list.length - 1));
-  const picked: ProposalConfig[] = [];
-  const seen = new Set<string>();
-  for (let step = 1; picked.length < cap && step < list.length; step += 1) {
-    const candidates = [
-      list[(activeIdx - step + list.length) % list.length],
-      list[(activeIdx + step) % list.length],
-    ];
-    for (const candidate of candidates) {
-      if (!candidate || candidate.id === list[activeIdx]?.id) continue;
-      if (seen.has(candidate.id)) continue;
-      seen.add(candidate.id);
-      picked.push(candidate);
-      if (picked.length >= cap) break;
-    }
-  }
-  return picked;
+  const active = String(activeProposalId ?? "")
+    .trim()
+    .toLowerCase();
+  const others = list.filter((p) => p.id !== active);
+  const requested = Math.trunc(Number(limit));
+  const softCap = Number.isFinite(requested) && requested > 0 ? requested : DISTANT_GALAXIES_VISIBLE_LIMIT;
+  const cap = Math.max(0, Math.min(softCap, DISTANT_GALAXIES_VISIBLE_LIMIT, others.length));
+  return others.slice(0, cap);
 }
 
 export function adjacentProposals(
