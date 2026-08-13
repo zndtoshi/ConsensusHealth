@@ -264,6 +264,10 @@ export async function mockOAuthLogin(
           { timeout: 30_000 }
         )
         .toBeTruthy();
+      // Re-enter the requested galaxy from a fully established session. This
+      // avoids depending on React refresh timing after the popup closes.
+      await page.goto(path);
+      await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
     } else {
       expect(completion?.status).toBe("error");
       const me = await fetchMe(page);

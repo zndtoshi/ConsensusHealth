@@ -566,7 +566,7 @@ test.describe("8 — delete account via UI + keyboard", () => {
 
 test.describe("9 — failure polish + real dual rate limits", () => {
   test("community 500 shows maintenance + Retry", async ({ page }) => {
-    await page.route("**/api/community**", async (route) => {
+    await page.context().route("**/api/community**", async (route) => {
       await route.fulfill({
         status: 500,
         contentType: "application/json",
@@ -581,7 +581,7 @@ test.describe("9 — failure polish + real dual rate limits", () => {
   });
 
   test("community 429 Retry-After shows friendly maintenance UI", async ({ page }) => {
-    await page.route("**/api/community**", async (route) => {
+    await page.context().route("**/api/community**", async (route) => {
       await route.fulfill({
         status: 429,
         contentType: "application/json",
@@ -598,7 +598,7 @@ test.describe("9 — failure polish + real dual rate limits", () => {
   });
 
   test("community 503 (not ready) shows friendly maintenance UI", async ({ page }) => {
-    await page.route("**/api/community**", async (route) => {
+    await page.context().route("**/api/community**", async (route) => {
       await route.fulfill({
         status: 503,
         contentType: "application/json",
