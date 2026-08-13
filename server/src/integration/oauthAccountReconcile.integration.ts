@@ -335,7 +335,7 @@ test("integration: link distinct stable id + collision merge preserves explanati
     );
     assert.deepEqual(removedAfter.rows, [{ handle: "modded", x_user_id: "mod-x", removed_by: "admin" }]);
   } finally {
-    await iso.dispose();
+    await iso.cleanup();
   }
 });
 
@@ -368,7 +368,7 @@ test("integration: existing x_user_id login updates profile in place", async () 
     assert.equal(row.rows[0].stance, "approve");
     assert.equal(row.rows[0].followers_count, 9);
   } finally {
-    await iso.dispose();
+    await iso.cleanup();
   }
 });
 
@@ -398,7 +398,7 @@ test("integration: brand-new oauth user inserts a row", async () => {
     assert.equal(rows.rows[0].handle, "newbie");
     assert.equal(rows.rows[0].stance, null);
   } finally {
-    await iso.dispose();
+    await iso.cleanup();
   }
 });
 
@@ -434,7 +434,7 @@ test("integration: nullable legacy handle-only row links to oauth x_user_id", as
     assert.equal(rows.rows[0].stance, "neutral");
     assert.equal(rows.rows[0].name, "Linked");
   } finally {
-    await iso.dispose();
+    await iso.cleanup();
   }
 });
 
@@ -500,6 +500,6 @@ test("integration: dependent-write failure rolls back the whole reconcile transa
     const stances = await iso.pool.query(`SELECT x_user_id FROM user_proposal_stances`);
     assert.equal(stances.rows[0].x_user_id, "seed-r");
   } finally {
-    await iso.dispose();
+    await iso.cleanup();
   }
 });
