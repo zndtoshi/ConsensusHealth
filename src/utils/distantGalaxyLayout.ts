@@ -11,21 +11,20 @@ export type DistantGalaxyPose = {
   rotate: number;
 };
 
-/** Canonical corner slots for the four known BIPs (percent of viewport). */
+/** Canonical row-major slots for the four known BIPs (percent of viewport). */
 export const CANONICAL_DISTANT_SLOTS: Record<string, DistantGalaxyPose> = {
   bip110: { x: 13, y: 17, scale: 0.92, rotate: -3.2 }, // top-left
-  bip54: { x: 13, y: 78, scale: 0.86, rotate: 2.4 }, // bottom-left
-  bip448: { x: 87, y: 17, scale: 0.9, rotate: 4.1 }, // top-right
-  bip460: { x: 87, y: 78, scale: 0.84, rotate: -2.8 }, // bottom-right
+  bip54: { x: 87, y: 17, scale: 0.86, rotate: 2.4 }, // top-right
+  bip448: { x: 13, y: 36, scale: 0.9, rotate: 4.1 }, // second row, left
+  bip460: { x: 87, y: 36, scale: 0.84, rotate: -2.8 }, // second row, right
 };
 
-/** Extra slots for future BIPs — never overwrite the four corners above. */
+/** Extra row-major slots for future BIPs; canonical slots never move. */
 const FALLBACK_DISTANT_SLOTS: DistantGalaxyPose[] = [
-  { x: 50, y: 14, scale: 0.8, rotate: 1.2 },
-  { x: 50, y: 82, scale: 0.78, rotate: -1.5 },
-  { x: 28, y: 48, scale: 0.76, rotate: 2.8 },
-  { x: 72, y: 48, scale: 0.76, rotate: -2.2 },
-  { x: 50, y: 48, scale: 0.72, rotate: 0.6 },
+  { x: 13, y: 55, scale: 0.8, rotate: 1.2 },
+  { x: 87, y: 55, scale: 0.78, rotate: -1.5 },
+  { x: 13, y: 74, scale: 0.76, rotate: 2.8 },
+  { x: 87, y: 74, scale: 0.76, rotate: -2.2 },
 ];
 
 function hashSeed(text: string): number {

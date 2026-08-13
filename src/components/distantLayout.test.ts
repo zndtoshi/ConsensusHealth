@@ -2,18 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CANONICAL_DISTANT_SLOTS, distantLayout } from "../utils/distantGalaxyLayout.js";
 
-test("canonical BIP slots are fixed corners independent of index/order", () => {
+test("canonical BIP slots form fixed top-down rows independent of index/order", () => {
   assert.equal(distantLayout("bip110", 0).x, CANONICAL_DISTANT_SLOTS.bip110.x);
   assert.equal(distantLayout("bip110", 99).x, CANONICAL_DISTANT_SLOTS.bip110.x);
   assert.deepEqual(distantLayout("BIP54"), CANONICAL_DISTANT_SLOTS.bip54);
   assert.deepEqual(distantLayout("bip448", 3), CANONICAL_DISTANT_SLOTS.bip448);
   assert.deepEqual(distantLayout("bip460", 1), CANONICAL_DISTANT_SLOTS.bip460);
 
-  // Corners: BIP110 top-left, BIP54 bottom-left, BIP448 top-right, BIP460 bottom-right.
+  // Row-major: BIP110/BIP54 on row one, BIP448/BIP460 on row two.
   assert.ok(CANONICAL_DISTANT_SLOTS.bip110.x < 50 && CANONICAL_DISTANT_SLOTS.bip110.y < 40);
-  assert.ok(CANONICAL_DISTANT_SLOTS.bip54.x < 50 && CANONICAL_DISTANT_SLOTS.bip54.y > 60);
-  assert.ok(CANONICAL_DISTANT_SLOTS.bip448.x > 50 && CANONICAL_DISTANT_SLOTS.bip448.y < 40);
-  assert.ok(CANONICAL_DISTANT_SLOTS.bip460.x > 50 && CANONICAL_DISTANT_SLOTS.bip460.y > 60);
+  assert.ok(CANONICAL_DISTANT_SLOTS.bip54.x > 50);
+  assert.equal(CANONICAL_DISTANT_SLOTS.bip54.y, CANONICAL_DISTANT_SLOTS.bip110.y);
+  assert.ok(CANONICAL_DISTANT_SLOTS.bip448.x < 50);
+  assert.ok(CANONICAL_DISTANT_SLOTS.bip448.y > CANONICAL_DISTANT_SLOTS.bip110.y);
+  assert.ok(CANONICAL_DISTANT_SLOTS.bip448.y < 60);
+  assert.ok(CANONICAL_DISTANT_SLOTS.bip460.x > 50);
+  assert.equal(CANONICAL_DISTANT_SLOTS.bip460.y, CANONICAL_DISTANT_SLOTS.bip448.y);
 });
 
 test("hiding the active BIP leaves other three poses unchanged", () => {
