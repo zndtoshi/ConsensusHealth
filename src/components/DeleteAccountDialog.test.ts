@@ -32,6 +32,7 @@ test("DeleteAccountDialog has glass destructive styling and mobile overflow", ()
 });
 
 test("App wires delete to POST /api/me/delete with confirm_handle and clears UI", () => {
+  assert.match(appSrc, /SELF_SERVICE_ACCOUNT_DELETION_ENABLED\s*=\s*false/);
   assert.match(appSrc, /DeleteAccountDialog/);
   assert.match(appSrc, /\/api\/me\/delete/);
   assert.match(appSrc, /confirm_handle/);

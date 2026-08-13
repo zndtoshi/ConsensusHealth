@@ -552,14 +552,16 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
 });
 
 test.describe("8 — delete account via UI + keyboard", () => {
-  test("focus restore, immediate UI clear, privacy tombstone", async ({ page }) => {
+  test("self-service account deletion is hidden", async ({ page }) => {
     const e2eUser = "del_ui";
     const handle = e2eHandleForUser(e2eUser);
     await mockOAuthLogin(page, { e2eUser, path: "/bip/54" });
-    await saveStanceViaUi(page, "Neutral");
 
     const menuBtn = page.getByRole("button", { name: new RegExp(`Account menu for @${handle}`, "i") });
     await menuBtn.click();
+    await expect(page.getByRole("menuitem", { name: /Delete my account and data/i })).toHaveCount(0);
+    await expect(page.getByRole("dialog", { name: /Delete my account and data/i })).toHaveCount(0);
+    return;
     await page.getByRole("menuitem", { name: /Delete my account and data/i }).click();
 
     const dialog = page.getByRole("dialog", { name: /Delete my account and data/i });

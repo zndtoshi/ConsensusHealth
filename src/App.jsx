@@ -78,6 +78,10 @@ import {
   normalizeJoinYearRange,
   summarizeJoinDateYears,
 } from "./utils/xJoinDateFilter";
+
+// Retain the reviewed implementation, but keep self-service deletion out of
+// the product UI until explicitly enabled again.
+export const SELF_SERVICE_ACCOUNT_DELETION_ENABLED = false;
 import {
   accountStableKey,
   computeStanceClusterBounds,
@@ -7030,19 +7034,21 @@ export default function App() {
                     >
                       <span>How it works</span>
                     </button>
-                    <button
-                      type="button"
-                      className="optionsMenuAction"
-                      role="menuitem"
-                      onClick={() => {
-                        deleteAccountInvokerRef.current = profileMenuButtonRef.current;
-                        setProfileMenuOpen(false);
-                        setDeleteAccountError("");
-                        setDeleteAccountOpen(true);
-                      }}
-                    >
-                      <span>Delete my account and data</span>
-                    </button>
+                    {SELF_SERVICE_ACCOUNT_DELETION_ENABLED ? (
+                      <button
+                        type="button"
+                        className="optionsMenuAction"
+                        role="menuitem"
+                        onClick={() => {
+                          deleteAccountInvokerRef.current = profileMenuButtonRef.current;
+                          setProfileMenuOpen(false);
+                          setDeleteAccountError("");
+                          setDeleteAccountOpen(true);
+                        }}
+                      >
+                        <span>Delete my account and data</span>
+                      </button>
+                    ) : null}
                     <div style={styles.optionsDivider} role="separator" />
                     {canDownloadHaloAvatar ? (
                       <button
@@ -7488,20 +7494,22 @@ export default function App() {
         />
       ) : null}
       {infoPagesOverlay}
-      <DeleteAccountDialog
-        key={deleteAccountOpen ? `delete:${normalizeHandle(me?.handle || "")}` : "delete:closed"}
-        open={deleteAccountOpen}
-        handle={me?.handle || ""}
-        busy={deleteAccountBusy}
-        errorMessage={deleteAccountError}
-        returnFocusRef={deleteAccountInvokerRef}
-        onConfirm={confirmDeleteAccount}
-        onCancel={() => {
-          if (deleteAccountBusy) return;
-          setDeleteAccountOpen(false);
-          setDeleteAccountError("");
-        }}
-      />
+      {SELF_SERVICE_ACCOUNT_DELETION_ENABLED ? (
+        <DeleteAccountDialog
+          key={deleteAccountOpen ? `delete:${normalizeHandle(me?.handle || "")}` : "delete:closed"}
+          open={deleteAccountOpen}
+          handle={me?.handle || ""}
+          busy={deleteAccountBusy}
+          errorMessage={deleteAccountError}
+          returnFocusRef={deleteAccountInvokerRef}
+          onConfirm={confirmDeleteAccount}
+          onCancel={() => {
+            if (deleteAccountBusy) return;
+            setDeleteAccountOpen(false);
+            setDeleteAccountError("");
+          }}
+        />
+      ) : null}
       {manualUserPickerOpen && isPrivilegedEditor ? (
         <div style={styles.modalBackdrop} onClick={() => setManualUserPickerOpen(false)}>
           <div style={{ ...styles.manualEditCard, width: "min(440px, calc(100vw - 32px))" }} onClick={(e) => e.stopPropagation()}>
