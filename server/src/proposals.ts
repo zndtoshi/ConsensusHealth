@@ -43,7 +43,7 @@ export type ProposalAccess = {
   allowed: boolean;
 };
 
-/** Resolve proposal from query/body; admin_only / draft require admin or full-universe preview. */
+/** Resolve proposal from query/body; unpublished admin_only proposals require admin. */
 export function resolveProposalAccess(opts: {
   rawProposal: unknown;
   sessionHandle: unknown;

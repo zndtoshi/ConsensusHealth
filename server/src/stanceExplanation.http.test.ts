@@ -18,7 +18,7 @@ import {
   deleteStanceExplanation,
   verifyAndUpsertStanceExplanation,
 } from "./stanceExplanations.js";
-import { canAccessAdminOnlyProposal, isFullUniversePreviewHandle } from "./proposalAccessPolicy.js";
+import { canAccessAdminOnlyProposal } from "./proposalAccessPolicy.js";
 
 async function withServer(app: express.Express, fn: (base: string) => Promise<void>) {
   const server: Server = await new Promise((resolve) => {
@@ -531,32 +531,32 @@ test("production admin stance: final BIP-110 blocks any target; hampus_s is not 
   });
 });
 
-test("full-universe preview access is separate from admin privilege", () => {
-  assert.equal(isFullUniversePreviewHandle("Hampus_S"), true);
-  assert.equal(isFullUniversePreviewHandle("zndtoshi"), false);
+test("public proposals are open to everyone while unpublished proposals remain admin-only", () => {
   assert.equal(isPrivilegedManualEditorHandle("hampus_s"), false);
-  assert.equal(canAccessAdminOnlyProposal("hampus_s"), true);
+  assert.equal(canAccessAdminOnlyProposal("hampus_s"), false);
   assert.equal(canAccessAdminOnlyProposal("alice"), false);
 
-  const previewMap = new Map([
+  const unpublishedMap = new Map([
     ["bip110", false],
     ["bip54", true],
     ["bip448", true],
     ["bip460", true],
   ]);
+  assert.equal(resolveProposalAccess({ rawProposal: "bip54", sessionHandle: "hampus_s" }).allowed, true);
+  assert.equal(resolveProposalAccess({ rawProposal: "bip460", sessionHandle: null }).allowed, true);
   assert.equal(
     resolveProposalAccess({
       rawProposal: "bip54",
       sessionHandle: "hampus_s",
-      adminOnlyById: previewMap,
+      adminOnlyById: unpublishedMap,
     }).allowed,
-    true
+    false
   );
   assert.equal(
     resolveProposalAccess({
       rawProposal: "bip54",
       sessionHandle: "alice",
-      adminOnlyById: previewMap,
+      adminOnlyById: unpublishedMap,
     }).allowed,
     false
   );
@@ -564,16 +564,9 @@ test("full-universe preview access is separate from admin privilege", () => {
     resolveProposalAccess({
       rawProposal: "bip54",
       sessionHandle: "zndtoshi",
-      adminOnlyById: previewMap,
+      adminOnlyById: unpublishedMap,
     }).allowed,
     true
   );
-  assert.equal(
-    resolveProposalAccess({
-      rawProposal: "bip54",
-      sessionHandle: "hampus_s",
-      adminOnlyById: previewMap,
-    }).isAdmin,
-    false
-  );
+  assert.equal(resolveProposalAccess({ rawProposal: "bip54", sessionHandle: "hampus_s" }).isAdmin, false);
 });

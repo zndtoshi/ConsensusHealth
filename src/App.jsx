@@ -29,7 +29,6 @@ import {
   publicExplanationForStance,
   removeAccountFromList,
 } from "./utils/manualEditState";
-import { canUseFullProposalCatalog } from "./utils/fullUniversePreview";
 import {
   friendlyStanceExplanationError,
   PARTIAL_STANCE_EXPLANATION_STATUS,
@@ -1666,7 +1665,6 @@ export default function App() {
   }, [adminUserDirectory, manualUserQuery, me?.handle]);
 
   useEffect(() => {
-    if (me === null) return undefined;
     let cancelled = false;
     setProposalCatalogReady(false);
     (async () => {
@@ -1678,11 +1676,9 @@ export default function App() {
         setProposalCatalogReady(true);
       } catch {
         if (!cancelled) {
-          const canUseFullFallback =
-            me?.authenticated === true && canUseFullProposalCatalog(me?.handle);
-          setProposalCatalog(
-            canUseFullFallback ? FALLBACK_PROPOSALS : FALLBACK_PROPOSALS.filter((p) => !p.adminOnly)
-          );
+          // Every enabled proposal in the fallback catalog is public. Authentication
+          // is required only when a user saves a stance on an ongoing proposal.
+          setProposalCatalog(FALLBACK_PROPOSALS);
           setProposalCatalogReady(true);
         }
       }
@@ -1690,9 +1686,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-    // Full `me` would retrigger on every profile field change; auth+handle gate catalog.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional narrow deps
-  }, [me?.authenticated, me?.handle]);
+  }, []);
 
   useEffect(() => {
     if (typeof document === "undefined") return;
