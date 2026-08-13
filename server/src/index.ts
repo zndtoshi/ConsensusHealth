@@ -942,6 +942,10 @@ app.get("/auth/x/callback", async (req, res, next) => {
       console.error("[OAuth] Invalid/expired state or browser mismatch", {
         stateCookiePresent: Boolean(stateCookie),
       });
+      if (!modeCookiePopup) {
+        res.status(400).json({ error: "invalid_oauth_state" });
+        return;
+      }
       finishAuthResult(req, res, false, modeCookiePopup);
       return;
     }
