@@ -81,7 +81,7 @@ export default defineConfig({
   },
   webServer: useRealBackend
     ? {
-        command: "npm run build:web && npx tsx server/src/index.ts",
+        command: "node scripts/build-web-for-e2e.mjs && npx tsx server/src/index.ts",
         url: `${E2E_ORIGIN}/api/health`,
         reuseExistingServer: !process.env.CI,
         timeout: 240_000,

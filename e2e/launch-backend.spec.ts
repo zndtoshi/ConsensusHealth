@@ -544,12 +544,7 @@ test.describe("8 — account menu", () => {
     const e2eUser = "del_ui";
     const handle = e2eHandleForUser(e2eUser);
     await mockOAuthLogin(page, { e2eUser, path: "/bip/54" });
-
-    const stanceDialog = stanceChoiceDialog(page);
-    if (await stanceDialog.isVisible().catch(() => false)) {
-      await page.keyboard.press("Escape");
-      await expect(stanceDialog).toHaveCount(0);
-    }
+    await saveStanceViaUi(page, "Neutral");
 
     const menuBtn = page.getByRole("button", { name: new RegExp(`Account menu for @${handle}`, "i") });
     await menuBtn.click();
