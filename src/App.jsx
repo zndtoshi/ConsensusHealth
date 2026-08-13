@@ -1085,6 +1085,7 @@ export default function App() {
   const [dropdownHoverHandle, setDropdownHoverHandle] = useState(null);
   const adminOptionsRef = useRef(null);
   const profileMenuRef = useRef(null);
+  const profileMenuButtonRef = useRef(null);
   const stancePlaybackItemsRef = useRef(null);
   const mentionsRequestedRef = useRef(false);
   const historyPlaybackRef = useRef({
@@ -6970,6 +6971,7 @@ export default function App() {
               <div style={styles.barDivider} aria-hidden="true" />
               <div ref={profileMenuRef} style={styles.profileWrap}>
                 <button
+                  ref={profileMenuButtonRef}
                   type="button"
                   className="avatarButton"
                   onClick={() => setProfileMenuOpen((v) => !v)}
@@ -7033,7 +7035,7 @@ export default function App() {
                       className="optionsMenuAction"
                       role="menuitem"
                       onClick={() => {
-                        deleteAccountInvokerRef.current = document.activeElement;
+                        deleteAccountInvokerRef.current = profileMenuButtonRef.current;
                         setProfileMenuOpen(false);
                         setDeleteAccountError("");
                         setDeleteAccountOpen(true);

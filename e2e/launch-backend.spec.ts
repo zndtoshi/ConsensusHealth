@@ -33,6 +33,32 @@ const VIEWPORTS = [
 
 const BIP_PATHS = ["/", "/bip/54", "/bip/110", "/bip/448", "/bip/460"] as const;
 
+async function installCommunityFailure(
+  page: Page,
+  status: number,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {}
+) {
+  await page.addInitScript(
+    ({ mockedStatus, mockedBody, mockedHeaders }) => {
+      const nativeFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes("/api/community")) {
+          return Promise.resolve(
+            new Response(JSON.stringify(mockedBody), {
+              status: mockedStatus,
+              headers: { "content-type": "application/json", ...mockedHeaders },
+            })
+          );
+        }
+        return nativeFetch(input, init);
+      };
+    },
+    { mockedStatus: status, mockedBody: body, mockedHeaders: headers }
+  );
+}
+
 test("CI requires E2E_REAL_BACKEND===1", () => {
   if (!process.env.CI) {
     expect(["0", "1"]).toContain(process.env.E2E_REAL_BACKEND);
@@ -566,14 +592,12 @@ test.describe("8 — delete account via UI + keyboard", () => {
 
 test.describe("9 — failure polish + real dual rate limits", () => {
   test("community 500 shows maintenance + Retry", async ({ page }) => {
-    await page.context().route("**/api/community**", async (route) => {
-      await route.fulfill({
-        status: 500,
-        contentType: "application/json",
-        headers: { "x-request-id": "e2e-500" },
-        body: JSON.stringify({ error: "Internal server error" }),
-      });
-    });
+    await installCommunityFailure(
+      page,
+      500,
+      { error: "Internal server error" },
+      { "x-request-id": "e2e-500" }
+    );
     await page.goto("/bip/54");
     await expect(page.getByText("Temporarily unavailable")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("alert")).toContainText(/trouble loading/i);
@@ -581,30 +605,19 @@ test.describe("9 — failure polish + real dual rate limits", () => {
   });
 
   test("community 429 Retry-After shows friendly maintenance UI", async ({ page }) => {
-    await page.context().route("**/api/community**", async (route) => {
-      await route.fulfill({
-        status: 429,
-        contentType: "application/json",
-        headers: { "Retry-After": "30", "x-request-id": "e2e-429" },
-        body: JSON.stringify({
-          error: "rate_limited",
-          message: "Too many requests. Please wait and try again.",
-        }),
-      });
-    });
+    await installCommunityFailure(
+      page,
+      429,
+      { error: "rate_limited", message: "Too many requests. Please wait and try again." },
+      { "Retry-After": "30", "x-request-id": "e2e-429" }
+    );
     await page.goto("/bip/54");
     await expect(page.getByText("Temporarily unavailable")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
   });
 
   test("community 503 (not ready) shows friendly maintenance UI", async ({ page }) => {
-    await page.context().route("**/api/community**", async (route) => {
-      await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({ ok: false, error: "not_ready" }),
-      });
-    });
+    await installCommunityFailure(page, 503, { ok: false, error: "not_ready" });
     await page.goto("/bip/54");
     await expect(page.getByText("Temporarily unavailable")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
@@ -618,6 +631,7 @@ test.describe("9 — failure polish + real dual rate limits", () => {
         body: JSON.stringify({ ok: false, error: "not_ready", service: "consensushealth-api" }),
       });
     });
+    await page.goto("/bip/54");
     const result = await page.evaluate(async () => {
       const r = await fetch("/api/ready");
       return { status: r.status, body: await r.json() };
@@ -807,3 +821,4 @@ test.describe("legacy serial smoke (default mock handle)", () => {
     expect(anon.body).toBeNull();
   });
 });
+import type { Page } from "@playwright/test";
