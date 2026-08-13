@@ -82,8 +82,8 @@ jobs:
           set -euo pipefail
           npx playwright test --reporter=list | tee playwright-ci.log
           # Fail if any core test was skipped (CI must run the real backend suite).
-          skipped="$(grep -Eo '[0-9]+ skipped' playwright-ci.log | tail -n1 | awk '{print $1}')"
-          passed="$(grep -Eo '[0-9]+ passed' playwright-ci.log | tail -n1 | awk '{print $1}')"
+          skipped="$(grep -Eo '[0-9]+ skipped' playwright-ci.log | tail -n1 | awk '{print $1}' || true)"
+          passed="$(grep -Eo '[0-9]+ passed' playwright-ci.log | tail -n1 | awk '{print $1}' || true)"
           if [[ -n "${skipped:-}" && "${skipped}" != "0" ]]; then
             echo "Playwright CI: skips are not allowed (skipped=${skipped})"
             exit 1
