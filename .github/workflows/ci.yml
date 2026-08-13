@@ -44,6 +44,10 @@ jobs:
       - name: Install
         run: npm ci
 
+      # Required before unit tests: oauthPopupCsp.test.ts launches Chromium.
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
       - name: Secret / artifact scan
         run: node scripts/check-secrets.mjs
 
@@ -64,9 +68,6 @@ jobs:
 
       - name: Production dependency audit
         run: npm audit --omit=dev
-
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
 
       - name: Playwright launch smoke (real API + dist)
         env:

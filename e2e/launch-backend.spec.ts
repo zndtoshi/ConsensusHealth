@@ -426,7 +426,7 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
     await pageOwner.getByRole("button", { name: /Login with/i }).click();
     const popup = await popupPromise;
     await expect.poll(() => stolenUrl.length > 0, { timeout: 15_000 }).toBeTruthy();
-    await popup.close().catch(() => undefined);
+    if (!popup.isClosed()) await popup.close();
 
     // Wrong browser: no oauth state/mode cookies → cannot consume; no session; row not burned.
     const contextThief = await browser.newContext();
@@ -440,42 +440,65 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
 
     // Original browser still has the nonce cookie — complete the same callback URL.
     await pageOwner.unroute("**/auth/x/callback*");
+    const openerOrigin = new URL(pageOwner.url()).origin;
     await pageOwner.evaluate(() => {
       const w = window as unknown as {
         __chOauthMsgs: Array<{ status?: string }>;
+        __chOauthOnMessage?: (ev: MessageEvent) => void;
         __chOauthBc?: BroadcastChannel;
       };
+      if (w.__chOauthOnMessage) {
+        window.removeEventListener("message", w.__chOauthOnMessage as EventListener);
+      }
+      if (w.__chOauthBc) {
+        try {
+          w.__chOauthBc.close();
+        } catch {
+          /* closed */
+        }
+      }
       w.__chOauthMsgs = [];
-      window.addEventListener("message", (ev) => {
-        if (ev.data && typeof ev.data === "object") w.__chOauthMsgs.push(ev.data as { status?: string });
-      });
+      w.__chOauthOnMessage = (ev: MessageEvent) => {
+        if (ev.data && typeof ev.data === "object") {
+          w.__chOauthMsgs.push(ev.data as { status?: string });
+        }
+      };
+      window.addEventListener("message", w.__chOauthOnMessage as EventListener);
       try {
         w.__chOauthBc = new BroadcastChannel("consensushealth-oauth");
         w.__chOauthBc.onmessage = (ev) => {
-          if (ev.data && typeof ev.data === "object") w.__chOauthMsgs.push(ev.data as { status?: string });
+          if (ev.data && typeof ev.data === "object") {
+            w.__chOauthMsgs.push(ev.data as { status?: string });
+          }
         };
       } catch {
-        /* ignore */
+        /* BroadcastChannel unavailable */
       }
     });
-    const cbPromise = pageOwner.waitForResponse(
-      (res) => {
+    const cbPromise = contextOwner.waitForEvent("response", {
+      predicate: (res) => {
         try {
-          return new URL(res.url()).pathname === "/auth/x/callback";
+          const u = new URL(res.url());
+          if (u.origin !== openerOrigin || u.pathname !== "/auth/x/callback") return false;
+          const req = res.request();
+          return req.isNavigationRequest() || req.resourceType() === "document";
         } catch {
           return false;
         }
       },
-      { timeout: 30_000 }
-    );
+      timeout: 30_000,
+    });
     const ownerPopupPromise = pageOwner.waitForEvent("popup");
     await pageOwner.evaluate((url) => {
       window.open(url, "oauth_retry", "width=480,height=640");
     }, stolenUrl);
     const [ownerPopup, cbRes] = await Promise.all([ownerPopupPromise, cbPromise]);
     const html = await cbRes.text();
+    expect(cbRes.status()).toBe(200);
     expect(html).toMatch(/Signed in/i);
-    await ownerPopup.waitForEvent("close", { timeout: 15_000 }).catch(() => undefined);
+    if (!ownerPopup.isClosed()) {
+      await ownerPopup.waitForEvent("close", { timeout: 15_000 });
+    }
     await expect
       .poll(async () => {
         const me = await fetchMe(pageOwner);

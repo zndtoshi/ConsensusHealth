@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type Page, type Route } from "@playwright/test";
+import { expect, type APIRequestContext, type Page, type Response, type Route } from "@playwright/test";
 
 export type StanceUiLabel = "Neutral" | "Against" | "Approve";
 
@@ -55,10 +55,86 @@ export type OAuthPopupCapture = {
   completion: { source?: string; status?: string } | null;
 };
 
+type OpenerOauthBridge = {
+  __chOauthMsgs: Array<{ source?: string; status?: string }>;
+  __chOauthOnMessage?: (ev: MessageEvent) => void;
+  __chOauthBc?: BroadcastChannel;
+};
+
+/** Reset opener OAuth listeners so repeated logins do not accumulate handlers/messages. */
+async function installOpenerOauthListeners(page: Page) {
+  await page.evaluate(() => {
+    const w = window as unknown as OpenerOauthBridge;
+    if (w.__chOauthOnMessage) {
+      window.removeEventListener("message", w.__chOauthOnMessage as EventListener);
+    }
+    if (w.__chOauthBc) {
+      try {
+        w.__chOauthBc.close();
+      } catch {
+        /* already closed */
+      }
+      w.__chOauthBc = undefined;
+    }
+    w.__chOauthMsgs = [];
+    w.__chOauthOnMessage = (ev: MessageEvent) => {
+      const data = ev.data;
+      if (data && typeof data === "object") {
+        w.__chOauthMsgs.push(data as { source?: string; status?: string });
+      }
+    };
+    window.addEventListener("message", w.__chOauthOnMessage as EventListener);
+    try {
+      w.__chOauthBc = new BroadcastChannel("consensushealth-oauth");
+      w.__chOauthBc.onmessage = (ev) => {
+        const data = ev.data;
+        if (data && typeof data === "object") {
+          w.__chOauthMsgs.push(data as { source?: string; status?: string });
+        }
+      };
+    } catch {
+      /* BroadcastChannel unavailable */
+    }
+  });
+}
+
+async function cleanupOpenerOauthListeners(page: Page) {
+  await page.evaluate(() => {
+    const w = window as unknown as OpenerOauthBridge;
+    if (w.__chOauthOnMessage) {
+      window.removeEventListener("message", w.__chOauthOnMessage as EventListener);
+      w.__chOauthOnMessage = undefined;
+    }
+    if (w.__chOauthBc) {
+      try {
+        w.__chOauthBc.close();
+      } catch {
+        /* already closed */
+      }
+      w.__chOauthBc = undefined;
+    }
+  }).catch(() => {
+    /* page may already be closed in teardown */
+  });
+}
+
+function isOauthCallbackDocumentResponse(res: Response, openerOrigin: string): boolean {
+  try {
+    const u = new URL(res.url());
+    if (u.origin !== openerOrigin) return false;
+    if (u.pathname !== "/auth/x/callback") return false;
+    const req = res.request();
+    // Popup navigates to the callback document — ignore subresource fetches.
+    return req.isNavigationRequest() || req.resourceType() === "document";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Race-safe mock OAuth via real popup login.
- * Captures /auth/x/callback response (CSP + HTML) and completion signal on the parent
- * before the popup auto-closes. Does not require reading the closed popup DOM.
+ * Captures /auth/x/callback on the BrowserContext (popup navigation) plus parent
+ * completion signals. Does not require reading the closed popup DOM.
  */
 export async function mockOAuthLogin(
   page: Page,
@@ -78,40 +154,17 @@ export async function mockOAuthLogin(
   await page.goto(path);
   await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
 
-  // Parent listeners BEFORE click — popup may close before we can read its DOM.
-  await page.evaluate(() => {
-    const w = window as unknown as {
-      __chOauthMsgs: Array<{ source?: string; status?: string }>;
-      __chOauthBc?: BroadcastChannel;
-    };
-    w.__chOauthMsgs = [];
-    const push = (data: unknown) => {
-      if (data && typeof data === "object") {
-        w.__chOauthMsgs.push(data as { source?: string; status?: string });
-      }
-    };
-    window.addEventListener("message", (ev) => push(ev.data));
-    try {
-      w.__chOauthBc = new BroadcastChannel("consensushealth-oauth");
-      w.__chOauthBc.onmessage = (ev) => push(ev.data);
-    } catch {
-      /* BroadcastChannel unavailable */
-    }
+  const openerOrigin = new URL(page.url()).origin;
+
+  // Parent + context listeners BEFORE click — popup may close before DOM is readable.
+  await installOpenerOauthListeners(page);
+
+  const callbackPromise = page.context().waitForEvent("response", {
+    predicate: (res) => isOauthCallbackDocumentResponse(res, openerOrigin),
+    timeout: 30_000,
   });
-
-  const callbackPromise = page.waitForResponse(
-    (res) => {
-      try {
-        const u = new URL(res.url());
-        return u.pathname === "/auth/x/callback";
-      } catch {
-        return false;
-      }
-    },
-    { timeout: 30_000 }
-  );
-
   const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
+
   await page.getByRole("button", { name: /Login with/i }).click();
   const [popup, callbackRes] = await Promise.all([popupPromise, callbackPromise]);
 
@@ -129,13 +182,15 @@ export async function mockOAuthLogin(
   );
 
   // Allow natural auto-close; do not keep the popup open or sleep.
-  await popup.waitForEvent("close", { timeout: 15_000 }).catch(() => undefined);
+  if (!popup.isClosed()) {
+    await popup.waitForEvent("close", { timeout: 15_000 });
+  }
 
   await expect
     .poll(
       async () =>
         page.evaluate(() => {
-          const w = window as unknown as { __chOauthMsgs?: Array<{ status?: string }> };
+          const w = window as unknown as OpenerOauthBridge;
           return (w.__chOauthMsgs || []).length;
         }),
       { timeout: 15_000 }
@@ -143,29 +198,35 @@ export async function mockOAuthLogin(
     .toBeGreaterThan(0);
 
   const completion = await page.evaluate(() => {
-    const w = window as unknown as { __chOauthMsgs?: Array<{ source?: string; status?: string }> };
+    const w = window as unknown as OpenerOauthBridge;
     return (w.__chOauthMsgs || [])[0] || null;
   });
 
-  if (expectSession) {
-    expect(html).toMatch(/Signed in/i);
-    expect(completion?.status).toBe("success");
-    await expect
-      .poll(
-        async () => {
-          const me = await fetchMe(page);
-          return Boolean(
-            me.body && typeof me.body === "object" && (me.body as { x_user_id?: string }).x_user_id
-          );
-        },
-        { timeout: 30_000 }
-      )
-      .toBeTruthy();
-  } else {
-    expect(html).toMatch(/Sign-in failed/i);
-    expect(completion?.status).toBe("error");
-    const me = await fetchMe(page);
-    expect(me.body).toBeNull();
+  try {
+    if (expectSession) {
+      expect(callbackStatus).toBe(200);
+      expect(html).toMatch(/Signed in/i);
+      expect(completion?.status).toBe("success");
+      await expect
+        .poll(
+          async () => {
+            const me = await fetchMe(page);
+            return Boolean(
+              me.body && typeof me.body === "object" && (me.body as { x_user_id?: string }).x_user_id
+            );
+          },
+          { timeout: 30_000 }
+        )
+        .toBeTruthy();
+    } else {
+      expect(callbackStatus).toBe(200);
+      expect(html).toMatch(/Sign-in failed/i);
+      expect(completion?.status).toBe("error");
+      const me = await fetchMe(page);
+      expect(me.body).toBeNull();
+    }
+  } finally {
+    await cleanupOpenerOauthListeners(page);
   }
 
   return { callbackStatus, csp, html, completion };
