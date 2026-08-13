@@ -52,11 +52,8 @@ function PrivacyBody({ contactLine, sessionTtlDays, backupRetentionDays }) {
       </p>
       <h3>Retention and deletion</h3>
       <p>
-        Account data stays while your account exists. You can delete your account and associated
-        personal data from the account menu. Provider backups (for example Render Postgres snapshots)
-        may retain copies for up to {backupDaysLabel} under this deployment's configured backup
-        retention policy. Live aggregates and statistics are recomputed after deletion so your
-        identifiable rows no longer contribute to on-site counts.
+        Provider backups (for example Render Postgres snapshots) may retain copies for up to{" "}
+        {backupDaysLabel} under this deployment's configured backup retention policy.
       </p>
       {contactLine ? (
         <h3>Security / privacy contact</h3>

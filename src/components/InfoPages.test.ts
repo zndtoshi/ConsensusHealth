@@ -10,6 +10,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const src = readFileSync(join(root, "src", "components", "InfoPages.jsx"), "utf8");
 const cssSrc = readFileSync(join(root, "src", "index.css"), "utf8");
 const appSrc = readFileSync(join(root, "src", "App.jsx"), "utf8");
+const statsSrc = readFileSync(join(root, "src", "components", "StatisticsModal.tsx"), "utf8");
 
 test("parseInfoPagePath recognizes privacy, terms, how-it-works", () => {
   assert.equal(parseInfoPagePath("/privacy"), "privacy");
@@ -30,7 +31,7 @@ test("InfoPages covers privacy topics from the launch brief", () => {
   assert.match(src, /Render|Postgres|Cloudflare/i);
   assert.match(src, /[Bb]ackups/);
   assert.match(src, /backupDaysLabel|backupRetentionDays/);
-  assert.match(src, /recomputed after deletion/i);
+  assert.doesNotMatch(src, /recomputed after deletion/i);
   assert.doesNotMatch(src, /that backup retention window/);
   assert.doesNotMatch(src, /set VITE_CONTACT_EMAIL/);
   assert.doesNotMatch(src, /about 30 days/i);
@@ -61,7 +62,16 @@ test("InfoPages uses glass overlay styling and Escape close; App wires history",
   assert.match(appSrc, /parseInfoPagePath/);
   assert.match(appSrc, /openInfoPage/);
   assert.match(appSrc, /InfoPages/);
-  assert.match(appSrc, /legalFooterLinks/);
+  assert.doesNotMatch(appSrc, /className="legalFooterLinks"/);
+  assert.match(statsSrc, /legalFooterLinks statisticsModal__infoLinks/);
+  assert.match(statsSrc, /onOpenInfoPage\("privacy"\)/);
+  assert.match(statsSrc, /onOpenInfoPage\("terms"\)/);
+  assert.match(statsSrc, /onOpenInfoPage\("how-it-works"\)/);
   assert.match(appSrc, /openInfoPage\("terms"\)/);
   assert.match(appSrc, /stanceSuspendedForInfoRef/);
+});
+
+test("privacy copy does not advertise hidden self-service account deletion", () => {
+  assert.doesNotMatch(src, /delete your account/i);
+  assert.doesNotMatch(src, /personal data from the account menu/i);
 });

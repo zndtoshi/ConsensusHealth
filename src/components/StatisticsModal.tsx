@@ -12,6 +12,7 @@ export function StatisticsModal({
   proposalId = "bip110",
   heading = "Statistics",
   subtitle = "Current positions",
+  onOpenInfoPage,
   onRetryHistory,
 }: {
   open: boolean;
@@ -23,6 +24,7 @@ export function StatisticsModal({
   proposalId?: string;
   heading?: string;
   subtitle?: string;
+  onOpenInfoPage?: (page: "privacy" | "terms" | "how-it-works") => void;
   onRetryHistory?: () => void;
 }) {
   useEffect(() => {
@@ -131,6 +133,20 @@ export function StatisticsModal({
         <div style={{ marginTop: 16 }}>
           <StanceCsvExportSection proposalId={proposalId} />
         </div>
+
+        {onOpenInfoPage ? (
+          <nav className="legalFooterLinks statisticsModal__infoLinks" aria-label="Site information">
+            <button type="button" onClick={() => onOpenInfoPage("privacy")}>
+              Privacy
+            </button>
+            <button type="button" onClick={() => onOpenInfoPage("terms")}>
+              Terms
+            </button>
+            <button type="button" onClick={() => onOpenInfoPage("how-it-works")}>
+              How it works
+            </button>
+          </nav>
+        ) : null}
       </div>
     </div>
   );

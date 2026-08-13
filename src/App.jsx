@@ -7010,30 +7010,6 @@ export default function App() {
                   <div style={styles.profileMenu} role="menu" aria-label="Account">
                     <div style={styles.profileMenuHandle}>@{me.handle}</div>
                     <div style={styles.optionsDivider} role="separator" />
-                    <button
-                      type="button"
-                      className="optionsMenuAction"
-                      role="menuitem"
-                      onClick={() => openInfoPage("privacy")}
-                    >
-                      <span>Privacy</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="optionsMenuAction"
-                      role="menuitem"
-                      onClick={() => openInfoPage("terms")}
-                    >
-                      <span>Terms</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="optionsMenuAction"
-                      role="menuitem"
-                      onClick={() => openInfoPage("how-it-works")}
-                    >
-                      <span>How it works</span>
-                    </button>
                     {SELF_SERVICE_ACCOUNT_DELETION_ENABLED ? (
                       <button
                         type="button"
@@ -7049,7 +7025,6 @@ export default function App() {
                         <span>Delete my account and data</span>
                       </button>
                     ) : null}
-                    <div style={styles.optionsDivider} role="separator" />
                     {canDownloadHaloAvatar ? (
                       <button
                         type="button"
@@ -7374,17 +7349,6 @@ export default function App() {
         ) : (
           <div>Size of avatars is proportional to number of followers.</div>
         )}
-        <div className="legalFooterLinks" aria-label="Site information">
-          <button type="button" onClick={() => openInfoPage("privacy")}>
-            Privacy
-          </button>
-          <button type="button" onClick={() => openInfoPage("terms")}>
-            Terms
-          </button>
-          <button type="button" onClick={() => openInfoPage("how-it-works")}>
-            How it works
-          </button>
-        </div>
       </div>
       <div style={styles.bottomControls}>
         <button type="button" className="toolbarBtn" onClick={openStatsModal}>
@@ -7419,6 +7383,10 @@ export default function App() {
             proposalId={activeProposalId}
             heading={statsModalCopy.heading}
             subtitle={statsModalCopy.subtitle}
+            onOpenInfoPage={(page) => {
+              setShowStatsModal(false);
+              openInfoPage(page);
+            }}
             onRetryHistory={() => {
               statsFetchStartedAtRef.current = performance.now();
               fetchStats({ forceLoading: true });
