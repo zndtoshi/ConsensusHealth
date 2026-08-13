@@ -20,6 +20,7 @@ import {
   attachE2ELoginRoute,
   attachOauthCallbackCapture,
   e2eHandleForUser,
+  ensureStanceChoiceDialogOpen,
 } from "./helpers";
 
 const REAL = process.env.E2E_REAL_BACKEND === "1";
@@ -177,7 +178,8 @@ test.describe("4 — auto stance prompt rules", () => {
       .poll(async () => stanceChoiceDialog(page).count(), { timeout: 5_000 })
       .toBe(0);
     await expect(page.getByRole("button", { name: /Choose position/i })).toHaveCount(0);
-    await expect(page.getByText(/No position recorded/i)).toBeVisible();
+    const me = await fetchMe(page);
+    expect((me.body as { proposal_stances?: Record<string, string | null> }).proposal_stances?.bip110 ?? null).toBeNull();
   });
 });
 
@@ -247,9 +249,7 @@ test.describe("6 — explanation flow via card (E2E oEmbed stub)", () => {
     expect((me.body as { proposal_explanations?: Record<string, unknown> }).proposal_explanations?.bip54 == null).toBeTruthy();
 
     // Add valid own-post link.
-    await page.getByRole("button", { name: "Neutral" }).first().click();
-    let dialog = stanceChoiceDialog(page);
-    await expect(dialog).toBeVisible();
+    let dialog = await ensureStanceChoiceDialogOpen(page);
     await dialog
       .getByLabel(/Explain your stance on X/i)
       .fill(`https://x.com/${handle}/status/1987654321098765432`);
@@ -275,9 +275,7 @@ test.describe("6 — explanation flow via card (E2E oEmbed stub)", () => {
     }
 
     // Change link.
-    await page.getByRole("button", { name: "Neutral" }).first().click();
-    dialog = stanceChoiceDialog(page);
-    await expect(dialog).toBeVisible();
+    dialog = await ensureStanceChoiceDialogOpen(page);
     const changeBtn = dialog.getByRole("button", { name: /Change explanation/i });
     if (await changeBtn.isVisible().catch(() => false)) {
       await changeBtn.click();
@@ -298,9 +296,7 @@ test.describe("6 — explanation flow via card (E2E oEmbed stub)", () => {
       .toMatch(/1887654321098765432/);
 
     // Reject another handle.
-    await page.getByRole("button", { name: "Neutral" }).first().click();
-    dialog = stanceChoiceDialog(page);
-    await expect(dialog).toBeVisible();
+    dialog = await ensureStanceChoiceDialogOpen(page);
     if (await dialog.getByRole("button", { name: /Change explanation/i }).isVisible().catch(() => false)) {
       await dialog.getByRole("button", { name: /Change explanation/i }).click();
     }
@@ -312,9 +308,7 @@ test.describe("6 — explanation flow via card (E2E oEmbed stub)", () => {
     });
 
     // Reject non-post URL.
-    await page.getByRole("button", { name: "Neutral" }).first().click();
-    dialog = stanceChoiceDialog(page);
-    await expect(dialog).toBeVisible();
+    dialog = await ensureStanceChoiceDialogOpen(page);
     if (await dialog.getByRole("button", { name: /Change explanation/i }).isVisible().catch(() => false)) {
       await dialog.getByRole("button", { name: /Change explanation/i }).click();
     }
@@ -324,9 +318,7 @@ test.describe("6 — explanation flow via card (E2E oEmbed stub)", () => {
     await page.keyboard.press("Escape");
 
     // Verifier unavailable — stance retained.
-    await page.getByRole("button", { name: "Neutral" }).first().click();
-    dialog = stanceChoiceDialog(page);
-    await expect(dialog).toBeVisible();
+    dialog = await ensureStanceChoiceDialogOpen(page);
     await dialog.getByRole("button", { name: "Against", exact: true }).click();
     if (await dialog.getByRole("button", { name: /Change explanation|Remove explanation/i }).first().isVisible().catch(() => false)) {
       // Prefer remove path then attach unavailable id, or replace.
@@ -341,9 +333,7 @@ test.describe("6 — explanation flow via card (E2E oEmbed stub)", () => {
     await expectMeStance(page, "bip54", "against");
 
     // Remove explanation cleanly.
-    await page.getByRole("button", { name: "Against" }).first().click();
-    dialog = stanceChoiceDialog(page);
-    await expect(dialog).toBeVisible();
+    dialog = await ensureStanceChoiceDialogOpen(page);
     const removeOnly = dialog.getByRole("button", { name: /Remove explanation/i });
     if (await removeOnly.isVisible().catch(() => false)) {
       await removeOnly.click();
@@ -368,18 +358,24 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
 
   test("cancel: close popup before callback completes", async ({ page }) => {
     await ackPrivacyDisclosure(page);
-    await page.route("**/auth/x/callback*", (route) => route.abort());
-    await page.goto("/bip/54");
-    await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
+    const callbackPattern = "**/auth/x/callback*";
+    const abortCallback = (route: Route) => route.abort();
+    await page.context().route(callbackPattern, abortCallback);
+    try {
+      await page.goto("/bip/54");
+      await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
 
-    const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
-    await page.getByRole("button", { name: /Login with/i }).click();
-    const popup = await popupPromise;
-    await popup.close();
+      const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
+      await page.getByRole("button", { name: /Login with/i }).click();
+      const popup = await popupPromise;
+      await popup.close();
 
-    const me = await fetchMe(page);
-    expect(me.body).toBeNull();
-    await expect(page.getByRole("button", { name: /Login with/i })).toBeVisible();
+      const me = await fetchMe(page);
+      expect(me.body).toBeNull();
+      await expect(page.getByRole("button", { name: /Login with/i })).toBeVisible();
+    } finally {
+      await page.context().unroute(callbackPattern, abortCallback);
+    }
   });
 
   test("provider denial via real popup-mode login", async ({ page }) => {
@@ -498,7 +494,7 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
           /* BroadcastChannel unavailable */
         }
       });
-      const callbackCapture = attachOauthCallbackCapture(pageOwner, openerOrigin);
+      const callbackCapture = await attachOauthCallbackCapture(pageOwner, openerOrigin);
       try {
         const ownerPopupPromise = pageOwner.waitForEvent("popup", { timeout: 30_000 });
         await pageOwner.evaluate((url) => {

@@ -1,8 +1,5 @@
-import { expect, type APIRequestContext, type Page, type Response, type Route } from "@playwright/test";
-import {
-  createOauthCallbackCaptureController,
-  type BufferedOauthCallback,
-} from "../src/utils/oauthCallbackCapture";
+import { expect, type APIRequestContext, type Page, type Route } from "@playwright/test";
+import type { BufferedOauthCallback } from "../src/utils/oauthCallbackCapture";
 import {
   isStanceOverlayPointerInterceptError,
   resolveStanceDialogOpenPlan,
@@ -170,24 +167,72 @@ async function cleanupOpenerOauthListeners(page: Page) {
  * popup can auto-close and invalidate a later `.text()` call. Does not alter
  * the real callback request/response.
  */
-export function attachOauthCallbackCapture(
+export async function attachOauthCallbackCapture(
   page: Page,
   openerOrigin: string
-): { capturePromise: Promise<BufferedOauthCallback>; detach: DetachRoute } {
+): Promise<{ capturePromise: Promise<BufferedOauthCallback>; detach: DetachRoute }> {
   const context = page.context();
-  const controller = createOauthCallbackCaptureController({ openerOrigin });
+  let settled = false;
+  let resolveCapture!: (value: BufferedOauthCallback) => void;
+  let rejectCapture!: (error: Error) => void;
+  const capturePromise = new Promise<BufferedOauthCallback>((resolve, reject) => {
+    resolveCapture = resolve;
+    rejectCapture = reject;
+  });
+  const timer = setTimeout(() => {
+    if (settled) return;
+    settled = true;
+    rejectCapture(new Error("OAuth callback capture timed out after 30000ms"));
+  }, 30_000);
 
-  const onResponse = (response: Response) => {
-    controller.onResponse(response);
+  const callbackPattern = "**/auth/x/callback*";
+  const handler = async (route: Route) => {
+    if (settled) {
+      await route.continue();
+      return;
+    }
+    try {
+      const url = new URL(route.request().url());
+      if (url.origin !== openerOrigin || url.pathname !== "/auth/x/callback") {
+        await route.continue();
+        return;
+      }
+      // Buffer before fulfilling the popup navigation. The popup cannot close
+      // until it receives this exact response, eliminating the target-close race.
+      const response = await route.fetch();
+      const bytes = await response.body();
+      const headers = response.headers();
+      await route.fulfill({ response, body: bytes });
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolveCapture({
+          callbackStatus: response.status(),
+          csp: headers["content-security-policy"] || "",
+          html: bytes.toString("utf8"),
+        });
+      }
+    } catch (error) {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        rejectCapture(error instanceof Error ? error : new Error(String(error)));
+      }
+      await route.abort().catch(() => undefined);
+    }
   };
 
-  context.on("response", onResponse);
+  await context.route(callbackPattern, handler);
 
   return {
-    capturePromise: controller.capturePromise,
+    capturePromise,
     detach: async () => {
-      context.off("response", onResponse);
-      controller.detach();
+      clearTimeout(timer);
+      await context.unroute(callbackPattern, handler);
+      if (!settled) {
+        settled = true;
+        rejectCapture(new Error("OAuth callback capture detached before completion"));
+      }
     },
   };
 }
@@ -229,7 +274,7 @@ export async function mockOAuthLogin(
     await installOpenerOauthListeners(page);
     listenersInstalled = true;
 
-    const callbackCapture = attachOauthCallbackCapture(page, openerOrigin);
+    const callbackCapture = await attachOauthCallbackCapture(page, openerOrigin);
     detachCallbackCapture = callbackCapture.detach;
 
     const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });

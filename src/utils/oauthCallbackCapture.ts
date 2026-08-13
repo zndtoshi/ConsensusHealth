@@ -103,7 +103,13 @@ export function createOauthCallbackCaptureController(opts: {
     const csp = headers["content-security-policy"] || headers["Content-Security-Policy"] || "";
 
     // Eager body consumption — must start before any await yields to the event loop.
-    const bodyPromise = response.body();
+    let bodyPromise: Promise<Uint8Array | Buffer>;
+    try {
+      bodyPromise = response.body();
+    } catch (err) {
+      fail(err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
 
     void bodyPromise
       .then((bytes) => {
