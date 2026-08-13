@@ -68,7 +68,9 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,
-  maxFailures: process.env.CI ? 1 : 0,
+  // Verification branch diagnostic: expose several independent failures in one
+  // bounded run. Restore to 1 before the final main-branch merge.
+  maxFailures: process.env.CI ? 5 : 0,
   // Auth/stance/delete mutate shared mock user + DB — keep serial.
   workers: 1,
   reporter: process.env.CI ? "github" : "list",

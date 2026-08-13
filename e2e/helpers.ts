@@ -1,4 +1,10 @@
-import { expect, type APIRequestContext, type Page, type Route } from "@playwright/test";
+import { expect, type APIRequestContext, type Page, type Response, type Route } from "@playwright/test";
+import {
+  createOauthCallbackCaptureController,
+  type BufferedOauthCallback,
+} from "../src/utils/oauthCallbackCapture";
+
+export type { BufferedOauthCallback };
 
 export type StanceUiLabel = "Neutral" | "Against" | "Approve";
 
@@ -147,110 +153,38 @@ async function cleanupOpenerOauthListeners(page: Page) {
     });
 }
 
-export type BufferedOauthCallback = {
-  callbackStatus: number;
-  csp: string;
-  html: string;
-};
-
-const OAUTH_CALLBACK_ROUTE_PATTERN = "**/auth/x/callback*";
-const OAUTH_CALLBACK_CAPTURE_TIMEOUT_MS = 30_000;
-
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      }
-    );
-  });
-}
-
-function isOauthCallbackDocumentRequest(route: Route, openerOrigin: string): boolean {
-  const req = route.request();
-  try {
-    const url = new URL(req.url());
-    if (url.origin !== openerOrigin) return false;
-    if (url.pathname !== "/auth/x/callback") return false;
-    return req.isNavigationRequest() || req.resourceType() === "document";
-  } catch {
-    return false;
-  }
-}
-
 /**
- * Buffer the real same-origin `/auth/x/callback` document before the popup can
- * auto-close. One backend fetch via route.fetch, then fulfill with that exact
- * response so CSP/cookies/HTML/script execution stay real. Single-use per attach.
+ * Register a single-use BrowserContext `response` listener that starts
+ * `response.body()` immediately on the matching callback document — before the
+ * popup can auto-close and invalidate a later `.text()` call. Does not alter
+ * the real callback request/response.
  */
-export async function attachOauthCallbackCapture(
+export function attachOauthCallbackCapture(
   page: Page,
   openerOrigin: string
-): Promise<{ capturePromise: Promise<BufferedOauthCallback>; detach: DetachRoute }> {
+): { capturePromise: Promise<BufferedOauthCallback>; detach: DetachRoute } {
   const context = page.context();
-  let captured = false;
-  let settle!: (value: BufferedOauthCallback) => void;
-  let fail!: (err: Error) => void;
-  const capturePromise = new Promise<BufferedOauthCallback>((resolve, reject) => {
-    settle = resolve;
-    fail = reject;
-  });
+  const controller = createOauthCallbackCaptureController({ openerOrigin });
 
-  const handler = async (route: Route) => {
-    if (!isOauthCallbackDocumentRequest(route, openerOrigin)) {
-      await route.continue();
-      return;
-    }
-    // Already buffered this flow — do not issue a second callback to the server.
-    if (captured) {
-      await route.continue();
-      return;
-    }
-    captured = true;
-    try {
-      const response = await route.fetch();
-      const html = await response.text();
-      const headers = response.headers();
-      const callbackStatus = response.status();
-      const csp = headers["content-security-policy"] || "";
-      // Pass through the real APIResponse (status/headers/Set-Cookie) with buffered body.
-      // Resolve only after fulfill so the popup can run completion JS / auto-close.
-      await route.fulfill({ response, body: html });
-      settle({ callbackStatus, csp, html });
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      fail(error);
-      try {
-        await route.abort("failed");
-      } catch {
-        /* route may already be closed */
-      }
-    }
+  const onResponse = (response: Response) => {
+    controller.onResponse(response);
   };
 
-  await context.route(OAUTH_CALLBACK_ROUTE_PATTERN, handler);
+  context.on("response", onResponse);
+
   return {
-    capturePromise: withTimeout(
-      capturePromise,
-      OAUTH_CALLBACK_CAPTURE_TIMEOUT_MS,
-      "OAuth callback capture"
-    ),
+    capturePromise: controller.capturePromise,
     detach: async () => {
-      await context.unroute(OAUTH_CALLBACK_ROUTE_PATTERN, handler);
+      context.off("response", onResponse);
+      controller.detach();
     },
   };
 }
 
 /**
  * Race-safe mock OAuth via real popup login.
- * Buffers /auth/x/callback via context route (independent of popup lifetime) plus
- * parent completion signals. Does not require reading the closed popup DOM.
+ * Eagerly buffers /auth/x/callback via a BrowserContext response listener
+ * (independent of popup lifetime) plus parent completion signals.
  */
 export async function mockOAuthLogin(
   page: Page,
@@ -284,7 +218,7 @@ export async function mockOAuthLogin(
     await installOpenerOauthListeners(page);
     listenersInstalled = true;
 
-    const callbackCapture = await attachOauthCallbackCapture(page, openerOrigin);
+    const callbackCapture = attachOauthCallbackCapture(page, openerOrigin);
     detachCallbackCapture = callbackCapture.detach;
 
     const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
