@@ -119,8 +119,10 @@ export function validateEnv(env: EnvLike, opts: { isProd: boolean }): EnvValidat
     else warnings.push(msg);
   } else if (sessionSecret.length < MIN_SESSION_SECRET_LEN) {
     const msg = `SESSION_SECRET must be at least ${MIN_SESSION_SECRET_LEN} characters`;
-    if (opts.isProd) fatal.push(msg);
-    else warnings.push(msg);
+    // Compatibility: older live deployments may already use a shorter
+    // non-placeholder secret. Warn so it can be rotated without taking the
+    // service offline; missing and known-placeholder values remain fatal.
+    warnings.push(msg);
   }
 
   if (!databaseUrl) {
@@ -164,8 +166,9 @@ export function validateEnv(env: EnvLike, opts: { isProd: boolean }): EnvValidat
     const msg = raw
       ? "CONTACT_EMAIL (or PRIVACY_CONTACT_EMAIL) must be a valid public email address"
       : "CONTACT_EMAIL (or PRIVACY_CONTACT_EMAIL) is required for a public privacy contact";
-    if (opts.isProd) fatal.push(msg);
-    else warnings.push(msg);
+    // A public contact is strongly recommended, but it must not prevent an
+    // otherwise configured service from starting.
+    warnings.push(msg);
   }
 
   return { ok: fatal.length === 0, fatal, warnings };

@@ -34,10 +34,20 @@ test("validateEnv production fails on placeholder SESSION_SECRET", () => {
   assert.ok(r.fatal.some((m) => /placeholder|SESSION_SECRET/i.test(m)));
 });
 
-test("validateEnv production fails on short SESSION_SECRET", () => {
+test("validateEnv production warns on a legacy short SESSION_SECRET without blocking startup", () => {
   const r = validateEnv(prodBase({ SESSION_SECRET: "short-but-not-placeholder" }), { isProd: true });
-  assert.equal(r.ok, false);
-  assert.ok(r.fatal.some((m) => m.includes("32")));
+  assert.equal(r.ok, true);
+  assert.ok(r.warnings.some((m) => m.includes("32")));
+  assert.equal(r.fatal.some((m) => m.includes("32")), false);
+});
+
+test("validateEnv production warns on missing CONTACT_EMAIL without blocking startup", () => {
+  const r = validateEnv(prodBase({ CONTACT_EMAIL: "", PRIVACY_CONTACT_EMAIL: "" }), {
+    isProd: true,
+  });
+  assert.equal(r.ok, true);
+  assert.ok(r.warnings.some((m) => m.includes("CONTACT_EMAIL")));
+  assert.equal(r.fatal.some((m) => m.includes("CONTACT_EMAIL")), false);
 });
 
 test("validateEnv production fails on http APP_ORIGIN/APP_URL", () => {
