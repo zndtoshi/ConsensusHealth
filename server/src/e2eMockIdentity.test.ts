@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   deterministicMockUserId,
   isConsensusHealthE2E,
+  parseE2EOauthFailMode,
   parseE2EUserKey,
   resolveE2EMockIdentity,
 } from "./e2eMockIdentity.js";
@@ -27,6 +28,13 @@ test("parseE2EUserKey accepts safe keys only", () => {
   assert.equal(parseE2EUserKey("bad key"), null);
   assert.equal(parseE2EUserKey("../x"), null);
   assert.equal(parseE2EUserKey(""), null);
+});
+
+test("parseE2EOauthFailMode accepts token|deny|expired only", () => {
+  assert.equal(parseE2EOauthFailMode("token"), "token");
+  assert.equal(parseE2EOauthFailMode("DENY"), "deny");
+  assert.equal(parseE2EOauthFailMode("expired"), "expired");
+  assert.equal(parseE2EOauthFailMode("other"), null);
 });
 
 test("resolveE2EMockIdentity is deterministic and isolated per key", () => {
@@ -72,6 +80,16 @@ test("E2E oEmbed stub short-circuits when flags set", async () => {
       assert.equal(result.authorHandle, "e2e_u1");
       assert.match(result.tweetText, /E2E mock explanation/);
     }
+    const unavailable = await verifyPublicPostViaOEmbed({
+      canonicalPostUrl: "https://x.com/e2e_u1/status/9990000000000000001",
+      expectedTweetId: "9990000000000000001",
+      expectedHandle: "e2e_u1",
+      fetchImpl: async () => {
+        throw new Error("live oEmbed must not be called in E2E");
+      },
+    });
+    assert.equal(unavailable.ok, false);
+    if (!unavailable.ok) assert.equal(unavailable.reason, "oembed_unavailable");
   } finally {
     if (prevE2e == null) delete process.env.CONSENSUSHEALTH_E2E;
     else process.env.CONSENSUSHEALTH_E2E = prevE2e;

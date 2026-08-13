@@ -137,8 +137,22 @@ export function createDualWriteRateLimiters(
   return [createIpWriteLimiter(defaults, opts), createAccountWriteLimiter(defaults, opts)];
 }
 
+function e2eWriteMax(defaultMax: number): number {
+  // Strict E2E only — never lowers production quotas.
+  const env = process.env;
+  const nodeEnv = String(env.NODE_ENV || "").trim().toLowerCase();
+  const e2eOn =
+    nodeEnv === "test" &&
+    ["1", "true", "yes", "on"].includes(String(env.CONSENSUSHEALTH_E2E || "").trim().toLowerCase());
+  if (!e2eOn) return defaultMax;
+  const raw = Number(env.E2E_STANCE_WRITE_MAX || "");
+  if (Number.isFinite(raw) && raw > 0 && raw < defaultMax) return Math.floor(raw);
+  return defaultMax;
+}
+
 export function createStanceWriteRateLimiters(opts?: RateLimitFactoryOptions) {
-  return createDualWriteRateLimiters({ windowMs: 15 * 60_000, max: 30 }, opts);
+  const max = e2eWriteMax(opts?.max ?? 30);
+  return createDualWriteRateLimiters({ windowMs: 15 * 60_000, max }, { ...opts, max });
 }
 
 export function createStanceExplanationWriteRateLimiters(opts?: RateLimitFactoryOptions) {

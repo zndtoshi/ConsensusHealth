@@ -106,8 +106,10 @@ import {
 } from "./security/clientIp.js";
 import { getContactEmail } from "./security/envValidation.js";
 import {
+  E2E_OAUTH_FAIL_COOKIE,
   E2E_USER_COOKIE,
   isConsensusHealthE2E,
+  parseE2EOauthFailMode,
   parseE2EUserKey,
   resolveE2EMockIdentity,
 } from "./e2eMockIdentity.js";
@@ -748,11 +750,14 @@ async function startXAuth(req: Request, res: Response): Promise<void> {
   const code_verifier = createCodeVerifier();
   const challenge = createCodeChallenge(code_verifier);
   const isPopup = String(req.query.mode || "") === "popup";
+  const e2eFailMode = CONSENSUSHEALTH_E2E ? parseE2EOauthFailMode(req.query.e2e_fail) : null;
   await saveOAuthState(pool, {
     state,
     code_verifier,
     mode: isPopup ? "popup" : "redirect",
     browser_nonce,
+    // Expired-before-callback path for deterministic E2E (strict test mode only).
+    ...(e2eFailMode === "expired" ? { ttlMs: -1, now: new Date() } : {}),
   });
   // Browser binding cookie (value = browser_nonce; verified on callback).
   res.cookie("consensushealth_oauth_state", browser_nonce, {
@@ -786,6 +791,18 @@ async function startXAuth(req: Request, res: Response): Promise<void> {
       });
     } else {
       res.clearCookie(E2E_USER_COOKIE, { path: "/" });
+    }
+    if (e2eFailMode) {
+      res.cookie(E2E_OAUTH_FAIL_COOKIE, e2eFailMode, {
+        signed: true,
+        httpOnly: true,
+        sameSite: "lax",
+        secure: cookieSecure(req),
+        path: "/",
+        maxAge: 10 * 60 * 1000,
+      });
+    } else {
+      res.clearCookie(E2E_OAUTH_FAIL_COOKIE, { path: "/" });
     }
   }
 
@@ -823,8 +840,13 @@ async function startXAuth(req: Request, res: Response): Promise<void> {
   if (X_OAUTH_MOCK) {
     // Deterministic local/E2E path — no real X credentials or authorize URL.
     const mockCallback = new URL(`${base}/auth/x/callback`);
-    mockCallback.searchParams.set("code", "mock_oauth_code");
     mockCallback.searchParams.set("state", state);
+    if (e2eFailMode === "deny") {
+      // Provider denial: error + state, no code (popup mode cookie still set).
+      mockCallback.searchParams.set("error", "access_denied");
+    } else {
+      mockCallback.searchParams.set("code", "mock_oauth_code");
+    }
     res.redirect(mockCallback.toString());
     return;
   }
@@ -893,15 +915,22 @@ app.get("/auth/x/callback", async (req, res, next) => {
   try {
     const code = String(req.query.code || "");
     const state = String(req.query.state || "");
+    const oauthError = String(req.query.error || "").trim();
     // Cookie mode is only a fallback when no pending row is consumed.
     const modeCookiePopup = String(req.cookies?.consensushealth_oauth_mode || "") === "popup";
     res.clearCookie("consensushealth_oauth_mode", { path: "/" });
-    if (!code || !state) {
+    const e2eFailCookie = CONSENSUSHEALTH_E2E
+      ? parseE2EOauthFailMode(req.signedCookies?.[E2E_OAUTH_FAIL_COOKIE])
+      : null;
+    if (CONSENSUSHEALTH_E2E) {
+      res.clearCookie(E2E_OAUTH_FAIL_COOKIE, { path: "/" });
+    }
+    if (oauthError || !code || !state) {
       if (modeCookiePopup) {
         finishAuthResult(req, res, false, true);
         return;
       }
-      res.status(400).send("Missing OAuth code/state");
+      res.status(400).send(oauthError ? `OAuth error: ${oauthError}` : "Missing OAuth code/state");
       return;
     }
     const stateCookie = String(req.cookies?.consensushealth_oauth_state || "");
@@ -916,6 +945,12 @@ app.get("/auth/x/callback", async (req, res, next) => {
       return;
     }
     const isPopup = pending.mode === "popup";
+
+    // E2E-only: force token/provider failure after a real popup-mode consume.
+    if (CONSENSUSHEALTH_E2E && e2eFailCookie === "token") {
+      finishAuthResult(req, res, false, isPopup);
+      return;
+    }
 
     const redirectUri = computeOAuthRedirectUri(req);
     let data: {

@@ -6,10 +6,22 @@
 import { isEnvSwitchEnabled, isStrictTestMode } from "./security/testMode.js";
 
 export const E2E_USER_COOKIE = "consensushealth_e2e_user";
+/** Test-only OAuth failure mode cookie (token | deny | expired). Never set in production. */
+export const E2E_OAUTH_FAIL_COOKIE = "consensushealth_e2e_oauth_fail";
+
+export type E2EOauthFailMode = "token" | "deny" | "expired";
 
 export function isConsensusHealthE2E(env: NodeJS.ProcessEnv = process.env): boolean {
   if (!isStrictTestMode(env)) return false;
   return isEnvSwitchEnabled(env.X_OAUTH_MOCK);
+}
+
+export function parseE2EOauthFailMode(raw: unknown): E2EOauthFailMode | null {
+  const v = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  if (v === "token" || v === "deny" || v === "expired") return v;
+  return null;
 }
 
 /** Safe e2e_user key: short alphanumeric / _ / - for query + cookie. */

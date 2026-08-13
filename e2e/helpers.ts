@@ -35,54 +35,140 @@ export async function ackPrivacyDisclosure(page: Page) {
   });
 }
 
-/** Rewrite /auth/x/login to attach ?e2e_user= for per-context mock identities. */
-export async function attachE2EUserLoginRoute(page: Page, e2eUser: string) {
+/** Rewrite /auth/x/login to attach e2e_user / e2e_fail for per-context mock identities. */
+export async function attachE2ELoginRoute(
+  page: Page,
+  opts: { e2eUser?: string; e2eFail?: "token" | "deny" | "expired" }
+) {
   await page.route("**/auth/x/login*", async (route: Route) => {
     const url = new URL(route.request().url());
-    url.searchParams.set("e2e_user", e2eUser);
+    if (opts.e2eUser) url.searchParams.set("e2e_user", opts.e2eUser);
+    if (opts.e2eFail) url.searchParams.set("e2e_fail", opts.e2eFail);
     await route.continue({ url: url.toString() });
   });
 }
 
+export type OAuthPopupCapture = {
+  callbackStatus: number;
+  csp: string;
+  html: string;
+  completion: { source?: string; status?: string } | null;
+};
+
 /**
- * Complete mock OAuth via the real popup login route (helmet CSP + popup-complete.js).
- * Pass e2eUser for an isolated mock identity (requires CONSENSUSHEALTH_E2E=1).
+ * Race-safe mock OAuth via real popup login.
+ * Captures /auth/x/callback response (CSP + HTML) and completion signal on the parent
+ * before the popup auto-closes. Does not require reading the closed popup DOM.
  */
-export async function mockOAuthLogin(page: Page, opts?: { e2eUser?: string; path?: string }) {
+export async function mockOAuthLogin(
+  page: Page,
+  opts?: {
+    e2eUser?: string;
+    path?: string;
+    e2eFail?: "token" | "deny" | "expired";
+    expectSession?: boolean;
+  }
+): Promise<OAuthPopupCapture> {
   const path = opts?.path || "/bip/54";
-  if (opts?.e2eUser) {
-    await attachE2EUserLoginRoute(page, opts.e2eUser);
+  const expectSession = opts?.expectSession !== false && !opts?.e2eFail;
+  if (opts?.e2eUser || opts?.e2eFail) {
+    await attachE2ELoginRoute(page, { e2eUser: opts.e2eUser, e2eFail: opts.e2eFail });
   }
   await ackPrivacyDisclosure(page);
   await page.goto(path);
   await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
 
-  const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
-  await page.getByRole("button", { name: /Login with/i }).click();
-  const popup = await popupPromise;
+  // Parent listeners BEFORE click — popup may close before we can read its DOM.
+  await page.evaluate(() => {
+    const w = window as unknown as {
+      __chOauthMsgs: Array<{ source?: string; status?: string }>;
+      __chOauthBc?: BroadcastChannel;
+    };
+    w.__chOauthMsgs = [];
+    const push = (data: unknown) => {
+      if (data && typeof data === "object") {
+        w.__chOauthMsgs.push(data as { source?: string; status?: string });
+      }
+    };
+    window.addEventListener("message", (ev) => push(ev.data));
+    try {
+      w.__chOauthBc = new BroadcastChannel("consensushealth-oauth");
+      w.__chOauthBc.onmessage = (ev) => push(ev.data);
+    } catch {
+      /* BroadcastChannel unavailable */
+    }
+  });
 
-  await popup.waitForSelector("#ch-auth-payload", { state: "attached", timeout: 30_000 });
-  const popupHtml = await popup.content();
-  expect(popupHtml).toMatch(/Signed in/i);
-  expect(popupHtml).toContain("/auth/popup-complete.js");
-  expect(popupHtml).toContain('id="ch-auth-payload"');
-  expect(popupHtml).toMatch(
-    /type="application\/json"[^>]*id="ch-auth-payload"|id="ch-auth-payload"[^>]*type="application\/json"/
+  const callbackPromise = page.waitForResponse(
+    (res) => {
+      try {
+        const u = new URL(res.url());
+        return u.pathname === "/auth/x/callback";
+      } catch {
+        return false;
+      }
+    },
+    { timeout: 30_000 }
   );
 
-  await popup.waitForEvent("close", { timeout: 30_000 }).catch(async () => {
-    await popup.close();
-  });
+  const popupPromise = page.waitForEvent("popup", { timeout: 30_000 });
+  await page.getByRole("button", { name: /Login with/i }).click();
+  const [popup, callbackRes] = await Promise.all([popupPromise, callbackPromise]);
+
+  const csp = callbackRes.headers()["content-security-policy"] || "";
+  const html = await callbackRes.text();
+  const callbackStatus = callbackRes.status();
+
+  expect(csp, "Helmet CSP on OAuth callback").toMatch(/script-src[^;]*'self'/i);
+  expect(csp).not.toMatch(/script-src[^;]*'unsafe-inline'/i);
+  expect(html).toContain("/auth/popup-complete.js");
+  expect(html).toMatch(/id="ch-auth-payload"/);
+  expect(html).toMatch(/type="application\/json"/);
+  expect(html).not.toMatch(
+    /<script(?![^>]*\bsrc=)(?![^>]*type=["']application\/json["'])[^>]*>[\s\S]*?<\/script>/i
+  );
+
+  // Allow natural auto-close; do not keep the popup open or sleep.
+  await popup.waitForEvent("close", { timeout: 15_000 }).catch(() => undefined);
 
   await expect
     .poll(
-      async () => {
-        const me = await fetchMe(page);
-        return Boolean(me.body && typeof me.body === "object" && (me.body as { x_user_id?: string }).x_user_id);
-      },
-      { timeout: 30_000 }
+      async () =>
+        page.evaluate(() => {
+          const w = window as unknown as { __chOauthMsgs?: Array<{ status?: string }> };
+          return (w.__chOauthMsgs || []).length;
+        }),
+      { timeout: 15_000 }
     )
-    .toBeTruthy();
+    .toBeGreaterThan(0);
+
+  const completion = await page.evaluate(() => {
+    const w = window as unknown as { __chOauthMsgs?: Array<{ source?: string; status?: string }> };
+    return (w.__chOauthMsgs || [])[0] || null;
+  });
+
+  if (expectSession) {
+    expect(html).toMatch(/Signed in/i);
+    expect(completion?.status).toBe("success");
+    await expect
+      .poll(
+        async () => {
+          const me = await fetchMe(page);
+          return Boolean(
+            me.body && typeof me.body === "object" && (me.body as { x_user_id?: string }).x_user_id
+          );
+        },
+        { timeout: 30_000 }
+      )
+      .toBeTruthy();
+  } else {
+    expect(html).toMatch(/Sign-in failed/i);
+    expect(completion?.status).toBe("error");
+    const me = await fetchMe(page);
+    expect(me.body).toBeNull();
+  }
+
+  return { callbackStatus, csp, html, completion };
 }
 
 export function stanceChoiceDialog(page: Page) {
@@ -136,4 +222,25 @@ export async function communityHandles(page: Page, proposal: string): Promise<st
         .toLowerCase()
     );
   }, proposal);
+}
+
+export async function fetchStanceHistoryItems(page: Page, proposal: string, handle: string) {
+  return page.evaluate(
+    async ({ proposal: p, handle: h }) => {
+      const r = await fetch(
+        `/api/stance-history?proposal=${encodeURIComponent(p)}&handle=${encodeURIComponent(h)}`,
+        { credentials: "include" }
+      );
+      const body = await r.json();
+      const items = Array.isArray(body?.items)
+        ? body.items
+        : Array.isArray(body?.history)
+          ? body.history
+          : Array.isArray(body)
+            ? body
+            : [];
+      return { status: r.status, items };
+    },
+    { proposal, handle }
+  );
 }

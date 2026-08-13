@@ -17,7 +17,7 @@
     "backfill:join-dates:prod": "node server/dist/scripts/backfillAccountCreatedAt.js",
     "start": "node server/dist/index.js",
     "lint": "eslint .",
-    "test": "tsx --test server/src/**/*.test.ts src/**/*.test.ts",
+    "test": "node scripts/run-unit-tests.mjs",
     "test:integration": "node scripts/require-integration-passes.mjs",
     "test:e2e": "playwright test",
     "test:db:up": "node scripts/print-disposable-postgres.mjs",

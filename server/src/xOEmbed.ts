@@ -135,7 +135,14 @@ export async function verifyPublicPostViaOEmbed(args: {
   }
 
   // CONSENSUSHEALTH_E2E + X_OAUTH_MOCK (never production): skip live publish.x.com.
+  // Special tweet ids exercise failure paths without contacting X.
   if (isConsensusHealthE2E(process.env)) {
+    if (expectedTweetId === "9990000000000000001") {
+      return { ok: false, reason: "oembed_unavailable", statusHint: 503 };
+    }
+    if (expectedTweetId === "9990000000000000002") {
+      return { ok: false, reason: "timeout", statusHint: 503 };
+    }
     return {
       ok: true,
       tweetId: expectedTweetId,

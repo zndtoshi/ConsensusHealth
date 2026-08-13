@@ -5,15 +5,18 @@ import {
   communityHandles,
   expectMeStance,
   fetchMe,
+  fetchStanceHistoryItems,
   mockOAuthLogin,
   saveStanceViaUi,
   stanceChoiceDialog,
   dismissDisclosureIfPresent,
   ackPrivacyDisclosure,
+  attachE2ELoginRoute,
 } from "./helpers";
 
 const REAL = process.env.E2E_REAL_BACKEND === "1";
 const DEFAULT_MOCK_HANDLE = (process.env.X_OAUTH_MOCK_HANDLE || "e2e_mock_user").trim().toLowerCase();
+const ONGOING = ["bip54", "bip448", "bip460"] as const;
 
 const VIEWPORTS = [
   { name: "phone", width: 390, height: 844 },
@@ -24,7 +27,6 @@ const VIEWPORTS = [
 
 const BIP_PATHS = ["/", "/bip/54", "/bip/110", "/bip/448", "/bip/460"] as const;
 
-/** Root CI guard — not skipped when CI is set (config already throws if CI has no DB). */
 test("CI requires E2E_REAL_BACKEND===1", () => {
   if (!process.env.CI) {
     expect(["0", "1"]).toContain(process.env.E2E_REAL_BACKEND);
@@ -93,7 +95,6 @@ test.describe("2 — first-time Neutral / Against / Approve via UI", () => {
       const me = await fetchMe(page);
       expect((me.body as { handle?: string }).handle).toBe(`e2e_${c.e2eUser}`);
 
-      // Auto-prompt may already open the card on stance-less ongoing BIP.
       await saveStanceViaUi(page, c.stance);
       await expectMeStance(page, "bip54", c.api);
 
@@ -104,8 +105,9 @@ test.describe("2 — first-time Neutral / Against / Approve via UI", () => {
 });
 
 test.describe("3 — change existing stance + history", () => {
-  test("change Neutral → Against via UI; history via API", async ({ page }) => {
+  test("change Neutral → Against via UI; exact history events", async ({ page }) => {
     const e2eUser = "chg_stance";
+    const handle = `e2e_${e2eUser}`;
     await mockOAuthLogin(page, { e2eUser, path: "/bip/54" });
     await saveStanceViaUi(page, "Neutral");
     await expectMeStance(page, "bip54", "neutral");
@@ -113,71 +115,66 @@ test.describe("3 — change existing stance + history", () => {
     await saveStanceViaUi(page, "Against");
     await expectMeStance(page, "bip54", "against");
 
-    const history = await page.evaluate(async () => {
-      const r = await fetch("/api/stance-history?proposal=bip54&handle=e2e_chg_stance", {
-        credentials: "include",
-      });
-      return { status: r.status, body: await r.json() };
-    });
+    const history = await fetchStanceHistoryItems(page, "bip54", handle);
     expect(history.status).toBe(200);
-    const body = history.body as { history?: unknown[]; items?: unknown[] };
-    const items = Array.isArray(body?.history)
-      ? body.history
-      : Array.isArray(body?.items)
-        ? body.items
-        : Array.isArray(history.body)
-          ? history.body
-          : [];
-    expect(items.length).toBeGreaterThan(0);
-    const texts = JSON.stringify(items);
-    expect(texts).toMatch(/neutral/i);
-    expect(texts).toMatch(/against/i);
+    expect(history.items.length).toBeGreaterThanOrEqual(2);
+
+    const events = history.items.map((row: { previous_stance?: string | null; new_stance?: string }) => ({
+      previous: row.previous_stance ?? null,
+      next: row.new_stance,
+    }));
+    expect(events).toEqual(
+      expect.arrayContaining([
+        { previous: null, next: "neutral" },
+        { previous: "neutral", next: "against" },
+      ])
+    );
   });
 });
 
 test.describe("4 — auto stance prompt rules", () => {
-  test("stance-less ongoing auto-opens card", async ({ page }) => {
-    await mockOAuthLogin(page, { e2eUser: "auto_open", path: "/bip/54" });
-    await expect(stanceChoiceDialog(page)).toBeVisible({ timeout: 20_000 });
-  });
+  for (const proposal of ONGOING) {
+    const path = `/bip/${proposal.replace("bip", "")}`;
+    test(`stance-less auto-opens on ${proposal}`, async ({ page }) => {
+      await mockOAuthLogin(page, { e2eUser: `auto_${proposal}`, path });
+      await expect(stanceChoiceDialog(page)).toBeVisible({ timeout: 20_000 });
+    });
 
-  test("already stanced does not auto-open", async ({ page }) => {
-    await mockOAuthLogin(page, { e2eUser: "auto_stanced", path: "/bip/54" });
-    await saveStanceViaUi(page, "Neutral");
-    await page.goto("/bip/448");
-    await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
-    // Different proposal may auto-prompt; dismiss if so, then return to bip54.
-    const other = stanceChoiceDialog(page);
-    if (await other.isVisible().catch(() => false)) {
-      await other.getByRole("button", { name: /Not now|Keep current stance|Close/i }).click();
-    }
-    await page.goto("/bip/54");
-    await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
-    await page.waitForTimeout(800);
-    await expect(stanceChoiceDialog(page)).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Neutral" }).first()).toBeVisible();
-  });
+    test(`already stanced does not auto-open on ${proposal}`, async ({ page }) => {
+      const e2eUser = `stanced_${proposal}`;
+      await mockOAuthLogin(page, { e2eUser, path });
+      await saveStanceViaUi(page, "Neutral");
+      await page.goto(path);
+      await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
+      await expect
+        .poll(async () => stanceChoiceDialog(page).count(), { timeout: 5_000 })
+        .toBe(0);
+      await expect(page.getByRole("button", { name: "Neutral" }).first()).toBeVisible();
+    });
+  }
 
   test("logged out never shows writable stance card", async ({ page }) => {
     await page.goto("/bip/54");
     await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
-    await page.waitForTimeout(600);
-    await expect(stanceChoiceDialog(page)).toHaveCount(0);
+    await expect
+      .poll(async () => stanceChoiceDialog(page).count(), { timeout: 5_000 })
+      .toBe(0);
     await expect(page.getByRole("button", { name: /Login with/i })).toBeVisible();
     await expect(page.getByRole("button", { name: /Choose position/i })).toHaveCount(0);
   });
 
   test("final BIP110 has no writable Choose position prompt", async ({ page }) => {
     await mockOAuthLogin(page, { e2eUser: "auto_bip110", path: "/bip/110" });
-    await page.waitForTimeout(800);
-    await expect(stanceChoiceDialog(page)).toHaveCount(0);
+    await expect
+      .poll(async () => stanceChoiceDialog(page).count(), { timeout: 5_000 })
+      .toBe(0);
     await expect(page.getByRole("button", { name: /Choose position/i })).toHaveCount(0);
     await expect(page.getByText(/No position recorded/i)).toBeVisible();
   });
 });
 
 test.describe("5 — proposal isolation BIP54 / 448 / 460", () => {
-  test("different stances and explanations per proposal", async ({ page }) => {
+  test("different stances and explanations per ongoing proposal", async ({ page }) => {
     const e2eUser = "iso_multi";
     await mockOAuthLogin(page, { e2eUser, path: "/bip/54" });
     await saveStanceViaUi(page, "Neutral");
@@ -195,57 +192,168 @@ test.describe("5 — proposal isolation BIP54 / 448 / 460", () => {
     expect(stances.bip54).toBe("neutral");
     expect(stances.bip448).toBe("against");
     expect(stances.bip460).toBe("approve");
+    expect(stances.bip110 == null || stances.bip110 === null).toBeTruthy();
 
-    // Attach explanation on bip54 only (server oEmbed stubbed in E2E).
-    await page.goto("/bip/54");
-    await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
-    await page.getByRole("button", { name: "Neutral" }).first().click();
-    const dialog = stanceChoiceDialog(page);
-    await expect(dialog).toBeVisible();
-    await dismissDisclosureIfPresent(page);
-    await dialog.getByLabel(/Explain your stance on X/i).fill(
-      `https://x.com/e2e_${e2eUser}/status/1234567890123456789`
-    );
-    await dialog.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(dialog).toHaveCount(0, { timeout: 30_000 });
+    async function attachExplanation(bipPath: string, stanceLabel: string, statusId: string) {
+      await page.goto(bipPath);
+      await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
+      await page.getByRole("button", { name: stanceLabel }).first().click();
+      const dialog = stanceChoiceDialog(page);
+      await expect(dialog).toBeVisible();
+      await dismissDisclosureIfPresent(page);
+      await dialog
+        .getByLabel(/Explain your stance on X/i)
+        .fill(`https://x.com/e2e_${e2eUser}/status/${statusId}`);
+      await dialog.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(dialog).toHaveCount(0, { timeout: 30_000 });
+    }
+
+    await attachExplanation("/bip/54", "Neutral", "1111111111111111111");
+    await attachExplanation("/bip/448", "Against", "2222222222222222222");
+    await attachExplanation("/bip/460", "Approve", "3333333333333333333");
 
     const me2 = await fetchMe(page);
-    const exps = (me2.body as { proposal_explanations?: Record<string, unknown> })
-      .proposal_explanations || {};
-    expect(exps.bip54).toBeTruthy();
-    expect(exps.bip448 == null || exps.bip448 === null).toBeTruthy();
+    const exps =
+      (me2.body as { proposal_explanations?: Record<string, { canonical_url?: string }> })
+        .proposal_explanations || {};
+    expect(exps.bip54?.canonical_url).toMatch(/1111111111111111111/);
+    expect(exps.bip448?.canonical_url).toMatch(/2222222222222222222/);
+    expect(exps.bip460?.canonical_url).toMatch(/3333333333333333333/);
   });
 });
 
 test.describe("6 — explanation flow via card (E2E oEmbed stub)", () => {
-  test("attach explanation URL through stance card", async ({ page }) => {
-    const e2eUser = "explain_ok";
+  test("save without link; add/change/remove; reject bad URLs; verifier fail keeps stance", async ({
+    page,
+  }) => {
+    const e2eUser = "explain_full";
+    const handle = `e2e_${e2eUser}`;
     await mockOAuthLogin(page, { e2eUser, path: "/bip/54" });
     await saveStanceViaUi(page, "Approve");
+    await expectMeStance(page, "bip54", "approve");
 
-    await page.getByRole("button", { name: "Approve" }).first().click();
-    const dialog = stanceChoiceDialog(page);
+    // No-link save (change to Neutral without explanation).
+    await saveStanceViaUi(page, "Neutral");
+    await expectMeStance(page, "bip54", "neutral");
+    let me = await fetchMe(page);
+    expect((me.body as { proposal_explanations?: Record<string, unknown> }).proposal_explanations?.bip54 == null).toBeTruthy();
+
+    // Add valid own-post link.
+    await page.getByRole("button", { name: "Neutral" }).first().click();
+    let dialog = stanceChoiceDialog(page);
     await expect(dialog).toBeVisible();
-    await dialog.getByLabel(/Explain your stance on X/i).fill(
-      `https://x.com/e2e_${e2eUser}/status/1987654321098765432`
-    );
+    await dialog
+      .getByLabel(/Explain your stance on X/i)
+      .fill(`https://x.com/${handle}/status/1987654321098765432`);
     await dialog.getByRole("button", { name: "Save", exact: true }).click();
     await expect(dialog).toHaveCount(0, { timeout: 30_000 });
 
     await expect
       .poll(async () => {
-        const me = await fetchMe(page);
-        const exp = (me.body as { proposal_explanations?: Record<string, { canonical_url?: string }> })
-          ?.proposal_explanations?.bip54;
-        return exp?.canonical_url || "";
+        me = await fetchMe(page);
+        return (
+          (me.body as { proposal_explanations?: Record<string, { canonical_url?: string; tweet_text?: string }> })
+            ?.proposal_explanations?.bip54?.canonical_url || ""
+        );
       })
       .toMatch(/status\/1987654321098765432/);
+
+    // Snippet / full text on selected card.
+    await page.getByRole("button", { name: new RegExp(`@${handle}`, "i") }).first().click().catch(() => undefined);
+    // Selected header explanation uses tweet_text from community merge — open own avatar if present.
+    const selectedCard = page.locator(".selectedUserCard");
+    if (await selectedCard.isVisible().catch(() => false)) {
+      await expect(selectedCard).toContainText(/E2E mock explanation/i);
+    }
+
+    // Change link.
+    await page.getByRole("button", { name: "Neutral" }).first().click();
+    dialog = stanceChoiceDialog(page);
+    await expect(dialog).toBeVisible();
+    const changeBtn = dialog.getByRole("button", { name: /Change explanation/i });
+    if (await changeBtn.isVisible().catch(() => false)) {
+      await changeBtn.click();
+    }
+    await dialog
+      .getByLabel(/Explain your stance on X/i)
+      .fill(`https://x.com/${handle}/status/1887654321098765432`);
+    await dialog.getByRole("button", { name: /Save/i }).click();
+    await expect(dialog).toHaveCount(0, { timeout: 30_000 });
+    await expect
+      .poll(async () => {
+        me = await fetchMe(page);
+        return (
+          (me.body as { proposal_explanations?: Record<string, { canonical_url?: string }> })
+            ?.proposal_explanations?.bip54?.canonical_url || ""
+        );
+      })
+      .toMatch(/1887654321098765432/);
+
+    // Reject another handle.
+    await page.getByRole("button", { name: "Neutral" }).first().click();
+    dialog = stanceChoiceDialog(page);
+    await expect(dialog).toBeVisible();
+    if (await dialog.getByRole("button", { name: /Change explanation/i }).isVisible().catch(() => false)) {
+      await dialog.getByRole("button", { name: /Change explanation/i }).click();
+    }
+    await dialog.getByLabel(/Explain your stance on X/i).fill("https://x.com/someone_else/status/1777777777777777777");
+    await dialog.getByRole("button", { name: /Save/i }).click();
+    await expect(dialog.getByRole("alert")).toBeVisible({ timeout: 15_000 });
+    await dialog.getByRole("button", { name: /Not now|Cancel|Close|Keep/i }).click().catch(async () => {
+      await page.keyboard.press("Escape");
+    });
+
+    // Reject non-post URL.
+    await page.getByRole("button", { name: "Neutral" }).first().click();
+    dialog = stanceChoiceDialog(page);
+    await expect(dialog).toBeVisible();
+    if (await dialog.getByRole("button", { name: /Change explanation/i }).isVisible().catch(() => false)) {
+      await dialog.getByRole("button", { name: /Change explanation/i }).click();
+    }
+    await dialog.getByLabel(/Explain your stance on X/i).fill(`https://x.com/${handle}`);
+    await dialog.getByRole("button", { name: /Save/i }).click();
+    await expect(dialog.getByRole("alert")).toBeVisible({ timeout: 15_000 });
+    await page.keyboard.press("Escape");
+
+    // Verifier unavailable — stance retained.
+    await page.getByRole("button", { name: "Neutral" }).first().click();
+    dialog = stanceChoiceDialog(page);
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Against", exact: true }).click();
+    if (await dialog.getByRole("button", { name: /Change explanation|Remove explanation/i }).first().isVisible().catch(() => false)) {
+      // Prefer remove path then attach unavailable id, or replace.
+      const remove = dialog.getByRole("button", { name: /Remove explanation/i });
+      if (await remove.isVisible().catch(() => false)) await remove.click();
+    }
+    await dialog
+      .getByLabel(/Explain your stance on X/i)
+      .fill(`https://x.com/${handle}/status/9990000000000000001`);
+    await dialog.getByRole("button", { name: /Save/i }).click();
+    await expect(dialog.getByRole("alert")).toBeVisible({ timeout: 20_000 });
+    await expectMeStance(page, "bip54", "against");
+
+    // Remove explanation cleanly.
+    await page.getByRole("button", { name: "Against" }).first().click();
+    dialog = stanceChoiceDialog(page);
+    await expect(dialog).toBeVisible();
+    const removeOnly = dialog.getByRole("button", { name: /Remove explanation/i });
+    if (await removeOnly.isVisible().catch(() => false)) {
+      await removeOnly.click();
+      await expect(dialog).toHaveCount(0, { timeout: 30_000 }).catch(async () => {
+        await dialog.getByRole("button", { name: /Save|Done|Close/i }).click().catch(() => undefined);
+      });
+    } else {
+      await page.keyboard.press("Escape");
+    }
+    await expectMeStance(page, "bip54", "against");
   });
 });
 
 test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
-  test("success popup uses external script (CSP)", async ({ page }) => {
-    await mockOAuthLogin(page, { e2eUser: "oauth_ok", path: "/bip/54" });
+  test("success popup CSP + session via parent completion signal", async ({ page }) => {
+    const capture = await mockOAuthLogin(page, { e2eUser: "oauth_ok", path: "/bip/54" });
+    expect(capture.completion?.status).toBe("success");
+    expect(capture.html).toMatch(/Signed in/i);
     const me = await fetchMe(page);
     expect(me.body).toMatchObject({ handle: "e2e_oauth_ok", x_user_id: expect.any(String) });
   });
@@ -261,59 +369,150 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
     const popup = await popupPromise;
     await popup.close();
 
-    await page.waitForTimeout(500);
     const me = await fetchMe(page);
     expect(me.body).toBeNull();
     await expect(page.getByRole("button", { name: /Login with/i })).toBeVisible();
   });
 
-  test("error popup path shows Sign-in failed", async ({ page }) => {
-    await page.goto("/bip/54");
-    await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
-
-    const popupPromise = page.waitForEvent("popup");
-    await page.evaluate(() => {
-      window.open("/auth/x/callback?code=&state=", "ch_oauth_err", "width=480,height=640");
+  test("provider denial via real popup-mode login", async ({ page }) => {
+    const capture = await mockOAuthLogin(page, {
+      e2eUser: "oauth_deny",
+      e2eFail: "deny",
+      expectSession: false,
+      path: "/bip/54",
     });
-    const popup = await popupPromise;
-    await popup.waitForSelector("#ch-auth-payload", { state: "attached", timeout: 15_000 });
-    const html = await popup.content();
-    expect(html).toMatch(/Sign-in failed/i);
-    expect(html).toContain("/auth/popup-complete.js");
-    await popup.close().catch(() => undefined);
-
-    const me = await fetchMe(page);
-    expect(me.body).toBeNull();
+    expect(capture.completion?.status).toBe("error");
+    expect(capture.html).toMatch(/Sign-in failed/i);
   });
 
-  test("wrong-browser / expired state fails at API callback", async ({ request }) => {
+  test("token/provider failure via real popup-mode login", async ({ page }) => {
+    const capture = await mockOAuthLogin(page, {
+      e2eUser: "oauth_token",
+      e2eFail: "token",
+      expectSession: false,
+      path: "/bip/54",
+    });
+    expect(capture.completion?.status).toBe("error");
+    expect(capture.html).toMatch(/Sign-in failed/i);
+  });
+
+  test("expired state via real popup-mode login", async ({ page }) => {
+    const capture = await mockOAuthLogin(page, {
+      e2eUser: "oauth_exp",
+      e2eFail: "expired",
+      expectSession: false,
+      path: "/bip/54",
+    });
+    expect(capture.completion?.status).toBe("error");
+    expect(capture.html).toMatch(/Sign-in failed/i);
+  });
+
+  test("wrong-browser nonce does not create session; original browser can still succeed", async ({
+    browser,
+  }) => {
+    const contextOwner = await browser.newContext();
+    const pageOwner = await contextOwner.newPage();
+    await ackPrivacyDisclosure(pageOwner);
+    await attachE2ELoginRoute(pageOwner, { e2eUser: "oauth_wb" });
+    await pageOwner.goto("/bip/54");
+    await expect(pageOwner.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
+
+    let stolenUrl = "";
+    await pageOwner.route("**/auth/x/callback*", async (route) => {
+      stolenUrl = route.request().url();
+      await route.abort();
+    });
+    const popupPromise = pageOwner.waitForEvent("popup");
+    await pageOwner.getByRole("button", { name: /Login with/i }).click();
+    const popup = await popupPromise;
+    await expect.poll(() => stolenUrl.length > 0, { timeout: 15_000 }).toBeTruthy();
+    await popup.close().catch(() => undefined);
+
+    // Wrong browser: no oauth state/mode cookies → cannot consume; no session; row not burned.
+    const contextThief = await browser.newContext();
+    const pageThief = await contextThief.newPage();
+    const wrong = await pageThief.goto(stolenUrl);
+    expect(wrong).toBeTruthy();
+    // Without popup mode cookie the server returns a non-session error (400) or redirect.
+    expect([400, 302, 303]).toContain(wrong!.status());
+    expect((await fetchMe(pageThief)).body).toBeNull();
+    await contextThief.close();
+
+    // Original browser still has the nonce cookie — complete the same callback URL.
+    await pageOwner.unroute("**/auth/x/callback*");
+    await pageOwner.evaluate(() => {
+      const w = window as unknown as {
+        __chOauthMsgs: Array<{ status?: string }>;
+        __chOauthBc?: BroadcastChannel;
+      };
+      w.__chOauthMsgs = [];
+      window.addEventListener("message", (ev) => {
+        if (ev.data && typeof ev.data === "object") w.__chOauthMsgs.push(ev.data as { status?: string });
+      });
+      try {
+        w.__chOauthBc = new BroadcastChannel("consensushealth-oauth");
+        w.__chOauthBc.onmessage = (ev) => {
+          if (ev.data && typeof ev.data === "object") w.__chOauthMsgs.push(ev.data as { status?: string });
+        };
+      } catch {
+        /* ignore */
+      }
+    });
+    const cbPromise = pageOwner.waitForResponse(
+      (res) => {
+        try {
+          return new URL(res.url()).pathname === "/auth/x/callback";
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 30_000 }
+    );
+    const ownerPopupPromise = pageOwner.waitForEvent("popup");
+    await pageOwner.evaluate((url) => {
+      window.open(url, "oauth_retry", "width=480,height=640");
+    }, stolenUrl);
+    const [ownerPopup, cbRes] = await Promise.all([ownerPopupPromise, cbPromise]);
+    const html = await cbRes.text();
+    expect(html).toMatch(/Signed in/i);
+    await ownerPopup.waitForEvent("close", { timeout: 15_000 }).catch(() => undefined);
+    await expect
+      .poll(async () => {
+        const me = await fetchMe(pageOwner);
+        return Boolean((me.body as { x_user_id?: string } | null)?.x_user_id);
+      })
+      .toBeTruthy();
+    await contextOwner.close();
+  });
+
+  test("invalid state without popup cookies returns 400", async ({ request }) => {
     const res = await request.get("/auth/x/callback?code=mock_oauth_code&state=not-a-real-state");
-    // Non-popup without mode cookie → 400 or error finish; must not set a session.
-    expect([400, 200, 500]).toContain(res.status());
+    expect(res.status()).toBe(400);
     const me = await apiJson(request, "/api/me");
     expect(me.body).toBeNull();
   });
 });
 
 test.describe("8 — delete account via UI + keyboard", () => {
-  test("account menu → DeleteAccountDialog → tombstone", async ({ page }) => {
+  test("focus restore, immediate UI clear, privacy tombstone", async ({ page }) => {
     const e2eUser = "del_ui";
     const handle = `e2e_${e2eUser}`;
     await mockOAuthLogin(page, { e2eUser, path: "/bip/54" });
     await saveStanceViaUi(page, "Neutral");
 
-    await page.getByRole("button", { name: new RegExp(`Account menu for @${handle}`, "i") }).click();
+    const menuBtn = page.getByRole("button", { name: new RegExp(`Account menu for @${handle}`, "i") });
+    await menuBtn.click();
     await page.getByRole("menuitem", { name: /Delete my account and data/i }).click();
 
     const dialog = page.getByRole("dialog", { name: /Delete my account and data/i });
     await expect(dialog).toBeVisible();
     await expect(dialog.locator("input")).toBeFocused();
 
-    // Escape cancels.
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
+    await expect(menuBtn).toBeFocused();
 
-    await page.getByRole("button", { name: new RegExp(`Account menu for @${handle}`, "i") }).click();
+    await menuBtn.click();
     await page.getByRole("menuitem", { name: /Delete my account and data/i }).click();
     await expect(page.getByRole("dialog", { name: /Delete my account and data/i })).toBeVisible();
     await page.getByLabel(/Confirm handle/i).fill(handle);
@@ -323,12 +522,23 @@ test.describe("8 — delete account via UI + keyboard", () => {
       .poll(async () => (await fetchMe(page)).body, { timeout: 30_000 })
       .toBeNull();
 
+    await expect(page.getByRole("button", { name: new RegExp(`Account menu for @${handle}`, "i") })).toHaveCount(0);
+    await expect(page.locator(".selectedUserCard")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Login with/i })).toBeVisible();
+
     const handles = await communityHandles(page, "bip54");
     expect(handles).not.toContain(handle);
+
+    // Tombstone: re-login creates a new session, but prior bip54 row is gone and seed-style id stays suppressible.
+    await mockOAuthLogin(page, { e2eUser, path: "/bip/54" });
+    const me2 = await fetchMe(page);
+    expect((me2.body as { handle?: string }).handle).toBe(handle);
+    // Fresh account should not inherit the deleted stance.
+    expect((me2.body as { proposal_stances?: Record<string, string> }).proposal_stances?.bip54 == null).toBeTruthy();
   });
 });
 
-test.describe("9 — failure polish (429 / 500 / 503 / offline)", () => {
+test.describe("9 — failure polish + real dual rate limits", () => {
   test("community 500 shows maintenance + Retry", async ({ page }) => {
     await page.route("**/api/community**", async (route) => {
       await route.fulfill({
@@ -393,12 +603,10 @@ test.describe("9 — failure polish (429 / 500 / 503 / offline)", () => {
   test("offline community load shows maintenance + Retry", async ({ page, context }) => {
     await context.setOffline(true);
     await page.goto("/bip/54", { waitUntil: "domcontentloaded" }).catch(() => undefined);
-    // SPA shell may still paint; force reload of data path via Retry if already loaded from bfcache.
     await page.reload({ waitUntil: "domcontentloaded" }).catch(() => undefined);
     await expect(page.getByText(/Temporarily unavailable|Consensus Health/i).first()).toBeVisible({
       timeout: 30_000,
     });
-    // When PROD build cannot reach community, maintenance alert appears.
     const alert = page.getByRole("alert");
     if (await alert.isVisible().catch(() => false)) {
       await expect(alert).toContainText(/trouble loading/i);
@@ -407,68 +615,78 @@ test.describe("9 — failure polish (429 / 500 / 503 / offline)", () => {
     await context.setOffline(false);
   });
 
-  test("stance POST 429 surfaces friendly error in card", async ({ page }) => {
-    await mockOAuthLogin(page, { e2eUser: "fail_429", path: "/bip/54" });
-    await page.route("**/api/stance", async (route) => {
-      if (route.request().method() !== "POST") {
-        await route.continue();
-        return;
-      }
-      await route.fulfill({
-        status: 429,
-        contentType: "application/json",
-        headers: { "Retry-After": "60" },
-        body: JSON.stringify({
-          error: "rate_limited",
-          message: "Too many requests. Please wait and try again.",
-        }),
-      });
-    });
-
-    const dialog = stanceChoiceDialog(page);
-    if (!(await dialog.isVisible().catch(() => false))) {
-      await page.getByRole("button", { name: /Choose position/i }).click();
+  test("real dual IP/account stance 429 with Retry-After", async ({ page, browser }) => {
+    // E2E_STANCE_WRITE_MAX=3 — fourth write from same account must 429.
+    await mockOAuthLogin(page, { e2eUser: "rl_acct", path: "/bip/54" });
+    const stances: Array<"Neutral" | "Against" | "Approve"> = ["Neutral", "Against", "Approve", "Neutral"];
+    for (let i = 0; i < 3; i += 1) {
+      await saveStanceViaUi(page, stances[i]!);
     }
-    await expect(dialog).toBeVisible();
-    await dismissDisclosureIfPresent(page);
-    await dialog.getByRole("button", { name: "Neutral", exact: true }).click();
-    await dialog.getByRole("button", { name: "Save", exact: true }).click();
-    await expect(dialog.getByRole("alert")).toContainText(/rate_limited|Too many requests|Failed \(429\)/i);
+    // Fourth attempt via API to inspect headers.
+    const limited = await page.evaluate(async () => {
+      const r = await fetch("/api/stance", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ proposal: "bip54", stance: "neutral" }),
+      });
+      return {
+        status: r.status,
+        retryAfter: r.headers.get("retry-after"),
+        body: await r.json().catch(() => null),
+      };
+    });
+    expect(limited.status).toBe(429);
+    expect(Number(limited.retryAfter)).toBeGreaterThan(0);
+    expect(limited.body).toMatchObject({ error: "rate_limited" });
+
+    // New account, same IP — IP quota may also trip; prove a fresh account on a
+    // different IP can write (account rotation alone cannot bypass IP limit once IP is hot).
+    const contextB = await browser.newContext();
+    // Playwright cannot easily spoof Express req.ip; assert account limiter independence:
+    // a new user still succeeds while the limited account remains blocked.
+    const pageB = await contextB.newPage();
+    await mockOAuthLogin(pageB, { e2eUser: "rl_other", path: "/bip/54" });
+    await saveStanceViaUi(pageB, "Neutral");
+    await expectMeStance(pageB, "bip54", "neutral");
+
+    // Original account still blocked without waiting out the window.
+    const stillLimited = await page.evaluate(async () => {
+      const r = await fetch("/api/stance", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ proposal: "bip54", stance: "against" }),
+      });
+      return { status: r.status, retryAfter: r.headers.get("retry-after") };
+    });
+    expect(stillLimited.status).toBe(429);
+    expect(Number(stillLimited.retryAfter)).toBeGreaterThan(0);
+    await contextB.close();
   });
 });
 
 test.describe("10 — keyboard / focus / reduced motion", () => {
-  test("Privacy / Terms Escape + focus; delete focus trap", async ({ page }) => {
+  test("Privacy / Terms Escape + focus restoration", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
 
-    await page.getByRole("button", { name: "Privacy" }).first().click();
+    const privacyBtn = page.getByRole("button", { name: "Privacy" }).first();
+    await privacyBtn.click();
     const privacy = page.getByRole("dialog", { name: "Privacy" });
     await expect(privacy).toBeVisible();
     await expect(privacy.getByRole("button", { name: "Close" })).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(privacy).toHaveCount(0);
+    await expect(privacyBtn).toBeFocused();
 
-    await page.getByRole("button", { name: "Terms" }).first().click();
+    const termsBtn = page.getByRole("button", { name: "Terms" }).first();
+    await termsBtn.click();
     const terms = page.getByRole("dialog", { name: /Terms/i });
     await expect(terms).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(terms).toHaveCount(0);
-
-    await mockOAuthLogin(page, { e2eUser: "kb_del", path: "/bip/54" });
-    // Dismiss auto stance prompt so account menu is usable.
-    const stance = stanceChoiceDialog(page);
-    if (await stance.isVisible().catch(() => false)) {
-      await stance.getByRole("button", { name: /Not now/i }).click();
-    }
-    await page.getByRole("button", { name: /Account menu for @e2e_kb_del/i }).click();
-    await page.getByRole("menuitem", { name: /Delete my account and data/i }).click();
-    const del = page.getByRole("dialog", { name: /Delete my account and data/i });
-    await expect(del).toBeVisible();
-    await expect(del.locator("input")).toBeFocused();
-    await page.keyboard.press("Tab");
-    await page.keyboard.press("Escape");
-    await expect(del).toHaveCount(0);
+    await expect(termsBtn).toBeFocused();
   });
 
   test("reduced motion marks distant galaxies static", async ({ page }) => {
@@ -480,9 +698,9 @@ test.describe("10 — keyboard / focus / reduced motion", () => {
   });
 });
 
-test.describe("11 — viewports + galaxy slots + no overflow", () => {
-  test("distant galaxy slots use fixed percent left/top", async ({ page }) => {
-    await page.goto("/");
+test.describe("11 — viewports + galaxy slots + travel + overflow", () => {
+  test("distant galaxy slots use fixed percent left/top; active hidden", async ({ page }) => {
+    await page.goto("/bip/54");
     await page.waitForSelector(".distantGalaxy", { timeout: 30_000 });
     const slots = await page.locator(".distantGalaxy").evaluateAll((nodes) =>
       nodes.map((el) => {
@@ -492,6 +710,8 @@ test.describe("11 — viewports + galaxy slots + no overflow", () => {
       })
     );
     expect(slots.length).toBeGreaterThan(0);
+    // Active BIP-54 must not appear among distant galaxies.
+    expect(slots.every((s) => !/bip-?54/i.test(s.label))).toBeTruthy();
     let matched = 0;
     for (const slot of slots) {
       const match = Object.entries(CANONICAL_DISTANT_SLOTS).find(
@@ -506,19 +726,34 @@ test.describe("11 — viewports + galaxy slots + no overflow", () => {
       expect(slot.top).toBe(`${pose.y}%`);
     }
     expect(matched).toBeGreaterThan(0);
+
+    // Travel: click another distant galaxy.
+    const target = page.locator(".distantGalaxy").first();
+    await target.click();
+    await expect
+      .poll(async () => page.url(), { timeout: 20_000 })
+      .not.toMatch(/\/bip\/54\/?$/);
   });
 
   for (const vp of VIEWPORTS) {
-    test(`no horizontal overflow at ${vp.name} (${vp.width}px)`, async ({ page }) => {
+    test(`no horizontal/vertical control overflow at ${vp.name} (${vp.width}px)`, async ({ page }) => {
       await page.setViewportSize({ width: vp.width, height: vp.height });
       await page.goto("/");
       await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
       await page.waitForSelector(".distantGalaxy", { timeout: 30_000 }).catch(() => undefined);
       const overflow = await page.evaluate(() => {
         const root = document.documentElement;
-        return { scrollWidth: root.scrollWidth, clientWidth: root.clientWidth };
+        const body = document.body;
+        return {
+          scrollWidth: Math.max(root.scrollWidth, body.scrollWidth),
+          clientWidth: root.clientWidth,
+          scrollHeight: Math.max(root.scrollHeight, body.scrollHeight),
+          clientHeight: root.clientHeight,
+        };
       });
       expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
+      // Vertical: page may scroll, but controls should not force absurd overflow (>2 viewports).
+      expect(overflow.scrollHeight).toBeLessThanOrEqual(overflow.clientHeight * 2 + 40);
     });
   }
 });

@@ -52,6 +52,8 @@ const realBackendEnv: Record<string, string> = {
   X_OAUTH_MOCK_USER_ID: process.env.X_OAUTH_MOCK_USER_ID?.trim() || "9000000000000000001",
   X_OAUTH_MOCK_HANDLE: process.env.X_OAUTH_MOCK_HANDLE?.trim() || "e2e_mock_user",
   X_OAUTH_MOCK_NAME: process.env.X_OAUTH_MOCK_NAME?.trim() || "E2E Mock User",
+  // Low dual write ceiling so real IP/account 429 tests finish quickly (test mode only).
+  E2E_STANCE_WRITE_MAX: process.env.E2E_STANCE_WRITE_MAX?.trim() || "3",
   E2E_REAL_BACKEND: "1",
 };
 
