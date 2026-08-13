@@ -36,7 +36,7 @@ export function proposalStatusDetail(status: ProposalStatus | string | null | un
   if (key === "draft") {
     return "This proposal is still in draft. Positions may change as the text evolves.";
   }
-  return "This proposal is ongoing. Positions are self-reported and can be updated.";
+  return "";
 }
 
 /** Build structured about-info from an active catalog proposal. */

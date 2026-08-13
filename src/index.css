@@ -643,6 +643,10 @@ button:focus-visible {
 }
 
 .stanceChoiceCard__aboutHeading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
   margin: 0;
   font-size: 12px;
   font-weight: 700;
@@ -651,15 +655,7 @@ button:focus-visible {
   color: rgba(226, 232, 240, 0.78);
 }
 
-.stanceChoiceCard__aboutStatus {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 8px 0 0;
-}
-
 .stanceChoiceCard__aboutStatusPill {
-  align-self: flex-start;
   font-size: 10px;
   font-weight: 750;
   letter-spacing: 0.06em;

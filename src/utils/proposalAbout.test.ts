@@ -22,7 +22,7 @@ test("buildProposalAbout covers all four BIPs with distinct descriptions and Git
     assert.ok(about.description.length > 8, `${id} description`);
     assert.ok(about.title.toLowerCase().includes(id.replace("bip", "")), `${id} title`);
     assert.ok(about.statusLabel.length > 0);
-    assert.ok(about.statusDetail.length > 0);
+    if (about.status !== "ongoing") assert.ok(about.statusDetail.length > 0);
     assert.equal(about.githubUrl, proposalGithubUrl(id));
     assert.ok(about.githubUrl, `${id} github`);
     assert.match(about.heading, /^About /);
@@ -54,6 +54,7 @@ test("buildProposalAbout status labels match proposal status", () => {
   const ongoing = buildProposalAbout(FALLBACK_PROPOSALS.find((p) => p.id === "bip54")!);
   assert.equal(ongoing?.status, "ongoing");
   assert.equal(ongoing?.statusLabel, "Ongoing");
+  assert.equal(ongoing?.statusDetail, "");
 });
 
 test("buildProposalAbout returns null for missing proposal", () => {

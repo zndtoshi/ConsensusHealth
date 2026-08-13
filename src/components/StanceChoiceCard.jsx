@@ -149,14 +149,12 @@ export function StanceChoiceCard({
             >
               <h3 id={`${formId}-about-heading`} className="stanceChoiceCard__aboutHeading">
                 {aboutHeading}
-              </h3>
-              {aboutStatusLabel ? (
-                <p className="stanceChoiceCard__aboutStatus">
+                {aboutStatusLabel ? (
                   <span className="stanceChoiceCard__aboutStatusPill">{aboutStatusLabel}</span>
-                  {aboutStatusDetail ? (
-                    <span className="stanceChoiceCard__aboutStatusDetail">{aboutStatusDetail}</span>
-                  ) : null}
-                </p>
+                ) : null}
+              </h3>
+              {aboutStatusDetail ? (
+                <p className="stanceChoiceCard__aboutStatusDetail">{aboutStatusDetail}</p>
               ) : null}
               {aboutDescription ? (
                 <p className="stanceChoiceCard__aboutDesc">{aboutDescription}</p>

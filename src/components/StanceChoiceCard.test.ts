@@ -95,6 +95,11 @@ test("stance card renders About section and full BIP GitHub link in both modes",
   assert.match(cardSrc, /stanceChoiceCard__about/);
   assert.match(cardSrc, /stanceChoiceCard__scrollBody/);
   assert.match(cardSrc, /Read the full BIP on GitHub/);
+  assert.match(
+    cardSrc,
+    /stanceChoiceCard__aboutHeading[\s\S]*?aboutHeading[\s\S]*?stanceChoiceCard__aboutStatusPill/
+  );
+  assert.doesNotMatch(cardSrc, /stanceChoiceCard__aboutStatus"/);
   assert.match(cardSrc, /proposalGithubUrl/);
   assert.match(cardSrc, /rel="noopener noreferrer"/);
   assert.match(cardSrc, /target="_blank"/);
