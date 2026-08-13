@@ -80,6 +80,7 @@ import {
   ensureOAuthStateTable,
   saveOAuthState,
 } from "./oauthStateStore.js";
+import { reconcileOauthCommunityUser } from "./oauthAccountReconcile.js";
 import { renderAuthPopupPage } from "./oauthPopupPage.js";
 export { renderAuthPopupPage } from "./oauthPopupPage.js";
 import { createAccountDeletionHandler } from "./accountDeletion.js";
@@ -1093,114 +1094,19 @@ app.get("/auth/x/callback", async (req, res, next) => {
     const persistedBio = xBio || enrichedBio;
     const persistedAccountCreatedAt = xAccountCreatedAt || enrichedAccountCreatedAt;
 
-    // Link/login logic:
-    // 1) find by x_user_id and update profile fields (preserve stance)
-    // 2) else find by handle (case-insensitive), attach x_user_id and preserve stance
-    // 3) else create brand new row with stance NULL
-    // Safety: if both x_user_id row and handle row exist, merge to one row preferring non-null stance.
+    // Link/login via x_user_id + handle only (no legacy community_users.id dependency).
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
-      const byIdRes = await client.query(
-        `SELECT * FROM community_users WHERE x_user_id = $1 LIMIT 1`,
-        [xUserId]
-      );
-      const byHandleRes = await client.query(
-        `
-          SELECT * FROM community_users
-          WHERE lower(handle) = $1
-          ORDER BY (stance IS NOT NULL) DESC, updated_at DESC NULLS LAST
-          LIMIT 1
-        `,
-        [handle]
-      );
-
-      const byId = byIdRes.rows[0] as { id: number; stance?: string | null } | undefined;
-      const byHandle = byHandleRes.rows[0] as { id: number; stance?: string | null } | undefined;
-
-      if (byId && byHandle && byId.id !== byHandle.id) {
-        const byIdHasStance = Boolean(byId.stance);
-        const byHandleHasStance = Boolean(byHandle.stance);
-        const winner = byHandleHasStance && !byIdHasStance ? byHandle : byId;
-        const loser = winner.id === byId.id ? byHandle : byId;
-
-        await client.query(
-          `
-          UPDATE community_users
-          SET x_user_id = $1,
-              handle = $2,
-              name = COALESCE(NULLIF($3, ''), community_users.name),
-              avatar_url = COALESCE(NULLIF($4, ''), community_users.avatar_url),
-              followers_count = COALESCE(NULLIF($5, 0), community_users.followers_count),
-              bio = CASE
-                WHEN NULLIF($6, '') IS NOT NULL THEN $6
-                ELSE community_users.bio
-              END,
-              account_created_at = COALESCE(community_users.account_created_at, $7::timestamptz),
-              updated_at = now()
-          WHERE id = $8
-        `,
-          [xUserId, handle, name, avatarUrl, followersCount, persistedBio, persistedAccountCreatedAt, winner.id]
-        );
-        await client.query(`DELETE FROM community_users WHERE id = $1`, [loser.id]);
-      } else if (byId) {
-        await client.query(
-          `
-          UPDATE community_users
-          SET handle = $2,
-              name = COALESCE(NULLIF($3, ''), community_users.name),
-              avatar_url = COALESCE(NULLIF($4, ''), community_users.avatar_url),
-              followers_count = COALESCE(NULLIF($5, 0), community_users.followers_count),
-              bio = CASE
-                WHEN NULLIF($6, '') IS NOT NULL THEN $6
-                ELSE community_users.bio
-              END,
-              account_created_at = COALESCE(community_users.account_created_at, $7::timestamptz),
-              updated_at = now()
-          WHERE x_user_id = $1
-        `,
-          [xUserId, handle, name, avatarUrl, followersCount, persistedBio, persistedAccountCreatedAt]
-        );
-      } else {
-        if (byHandle) {
-          await client.query(
-            `
-            UPDATE community_users
-            SET x_user_id = $1,
-                handle = $2,
-                name = COALESCE(NULLIF($3, ''), community_users.name),
-                avatar_url = COALESCE(NULLIF($4, ''), community_users.avatar_url),
-                followers_count = COALESCE(NULLIF($5, 0), community_users.followers_count),
-                bio = CASE
-                  WHEN NULLIF($6, '') IS NOT NULL THEN $6
-                  ELSE community_users.bio
-                END,
-                account_created_at = COALESCE(community_users.account_created_at, $7::timestamptz),
-                updated_at = now()
-            WHERE id = $8
-          `,
-            [xUserId, handle, name, avatarUrl, followersCount, persistedBio, persistedAccountCreatedAt, byHandle.id]
-          );
-        } else {
-          await client.query(
-            `
-            INSERT INTO community_users (
-              x_user_id,
-              handle,
-              name,
-              avatar_url,
-              followers_count,
-              bio,
-              account_created_at,
-              stance,
-              updated_at
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, NULL, now())
-          `,
-            [xUserId, handle, name, avatarUrl, followersCount, persistedBio, persistedAccountCreatedAt]
-          );
-        }
-      }
+      await reconcileOauthCommunityUser(client, {
+        xUserId,
+        handle,
+        name,
+        avatarUrl,
+        followersCount,
+        bio: persistedBio,
+        accountCreatedAt: persistedAccountCreatedAt,
+      });
       await client.query("COMMIT");
     } catch (e) {
       await client.query("ROLLBACK");

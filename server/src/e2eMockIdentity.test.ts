@@ -1,12 +1,51 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  buildE2EMockHandle,
+  deterministicMockHandleSuffix,
   deterministicMockUserId,
+  E2E_MOCK_HANDLE_MAX_LEN,
+  E2E_MOCK_HANDLE_SUFFIX_LEN,
   isConsensusHealthE2E,
   parseE2EOauthFailMode,
   parseE2EUserKey,
   resolveE2EMockIdentity,
 } from "./e2eMockIdentity.js";
+
+/** Keys exercised by launch Playwright + common short keys + long shared prefixes. */
+const CURRENT_E2E_KEYS = [
+  "u1",
+  "u2",
+  "ft_neutral",
+  "ft_against",
+  "ft_approve",
+  "chg_stance",
+  "auto_bip54",
+  "auto_bip448",
+  "auto_bip460",
+  "stanced_bip54",
+  "stanced_bip448",
+  "stanced_bip460",
+  "auto_bip110",
+  "iso_multi",
+  "explain_full",
+  "oauth_ok",
+  "oauth_deny",
+  "oauth_token",
+  "oauth_exp",
+  "oauth_wb",
+  "del_ui",
+  "rl_acct",
+  "rl_other",
+  // Extra long common-prefix stress keys
+  "stanced_bip999",
+  "stanced_bip1000",
+  "stanced_bip_alpha",
+  "stanced_bip_beta",
+  "user_long_prefix_one",
+  "user_long_prefix_two",
+  "user_long_prefix_three",
+];
 
 test("isConsensusHealthE2E requires strict test mode and X_OAUTH_MOCK", () => {
   assert.equal(isConsensusHealthE2E({ NODE_ENV: "test", CONSENSUSHEALTH_E2E: "1", X_OAUTH_MOCK: "1" }), true);
@@ -37,14 +76,42 @@ test("parseE2EOauthFailMode accepts token|deny|expired only", () => {
   assert.equal(parseE2EOauthFailMode("other"), null);
 });
 
+test("handle suffix uses full fixed-width base36 of the 32-bit digest", () => {
+  const suffix = deterministicMockHandleSuffix("stanced_bip54");
+  assert.equal(suffix.length, E2E_MOCK_HANDLE_SUFFIX_LEN);
+  assert.match(suffix, /^[0-9a-z]+$/);
+  assert.equal(deterministicMockHandleSuffix("stanced_bip54"), suffix);
+  assert.notEqual(suffix, deterministicMockHandleSuffix("stanced_bip448"));
+});
+
+test("buildE2EMockHandle is deterministic, X-safe, and <=15 chars", () => {
+  const a = buildE2EMockHandle("explain_full");
+  const b = buildE2EMockHandle("explain_full");
+  assert.equal(a, b);
+  assert.ok(a.length <= E2E_MOCK_HANDLE_MAX_LEN);
+  assert.equal(a.length, E2E_MOCK_HANDLE_MAX_LEN);
+  assert.match(a, /^[a-z0-9_]+$/);
+  assert.ok(a.startsWith("e2e_"));
+  assert.equal(a.slice(-E2E_MOCK_HANDLE_SUFFIX_LEN), deterministicMockHandleSuffix("explain_full"));
+});
+
+test("buildE2EMockHandle does not collide across current and long shared-prefix keys", () => {
+  const handles = CURRENT_E2E_KEYS.map((k) => buildE2EMockHandle(k));
+  assert.equal(new Set(handles).size, handles.length, `collision among ${handles.join(",")}`);
+  const stanced = ["stanced_bip54", "stanced_bip448", "stanced_bip460"].map(buildE2EMockHandle);
+  assert.equal(new Set(stanced).size, 3);
+  assert.ok(!stanced.every((h) => h === "e2e_stanced_bip"));
+});
+
 test("resolveE2EMockIdentity is deterministic and isolated per key", () => {
   const a = resolveE2EMockIdentity("u1");
   const b = resolveE2EMockIdentity("u1");
   const c = resolveE2EMockIdentity("u2");
   assert.deepEqual(a, b);
   assert.notEqual(a.id, c.id);
-  assert.equal(a.handle, "e2e_u1");
-  assert.equal(c.handle, "e2e_u2");
+  assert.notEqual(a.handle, c.handle);
+  assert.equal(a.handle, buildE2EMockHandle("u1"));
+  assert.equal(c.handle, buildE2EMockHandle("u2"));
   assert.match(a.id, /^\d{10,19}$/);
   assert.equal(deterministicMockUserId("u1"), a.id);
 });
@@ -65,25 +132,26 @@ test("E2E oEmbed stub short-circuits when flags set", async () => {
   process.env.CONSENSUSHEALTH_E2E = "1";
   process.env.X_OAUTH_MOCK = "1";
   process.env.NODE_ENV = "test";
+  const handle = buildE2EMockHandle("u1");
   try {
     const { verifyPublicPostViaOEmbed } = await import("./xOEmbed.js");
     const result = await verifyPublicPostViaOEmbed({
-      canonicalPostUrl: "https://x.com/e2e_u1/status/1234567890123456789",
+      canonicalPostUrl: `https://x.com/${handle}/status/1234567890123456789`,
       expectedTweetId: "1234567890123456789",
-      expectedHandle: "e2e_u1",
+      expectedHandle: handle,
       fetchImpl: async () => {
         throw new Error("live oEmbed must not be called in E2E");
       },
     });
     assert.equal(result.ok, true);
     if (result.ok) {
-      assert.equal(result.authorHandle, "e2e_u1");
+      assert.equal(result.authorHandle, handle);
       assert.match(result.tweetText, /E2E mock explanation/);
     }
     const unavailable = await verifyPublicPostViaOEmbed({
-      canonicalPostUrl: "https://x.com/e2e_u1/status/9990000000000000001",
+      canonicalPostUrl: `https://x.com/${handle}/status/9990000000000000001`,
       expectedTweetId: "9990000000000000001",
-      expectedHandle: "e2e_u1",
+      expectedHandle: handle,
       fetchImpl: async () => {
         throw new Error("live oEmbed must not be called in E2E");
       },

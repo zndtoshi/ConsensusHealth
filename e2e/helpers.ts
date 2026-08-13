@@ -3,8 +3,19 @@ import {
   createOauthCallbackCaptureController,
   type BufferedOauthCallback,
 } from "../src/utils/oauthCallbackCapture";
+import {
+  isStanceOverlayPointerInterceptError,
+  resolveStanceDialogOpenPlan,
+} from "../src/utils/stanceChoiceUi";
+import { buildE2EMockHandle, resolveE2EMockIdentity } from "../server/src/e2eMockIdentity";
 
 export type { BufferedOauthCallback };
+export { buildE2EMockHandle, resolveE2EMockIdentity };
+
+/** Expected mock handle for an e2e_user key (same builder as the server). */
+export function e2eHandleForUser(e2eUserKey: string): string {
+  return buildE2EMockHandle(e2eUserKey);
+}
 
 export type StanceUiLabel = "Neutral" | "Against" | "Approve";
 
@@ -305,16 +316,44 @@ export async function dismissDisclosureIfPresent(page: Page) {
   }
 }
 
+/** Ensure the stance choice dialog is open without clicking through its overlay. */
+export async function ensureStanceChoiceDialogOpen(page: Page) {
+  const dialog = stanceChoiceDialog(page);
+  const overlay = page.locator(".stanceChoiceOverlay");
+
+  const overlayPresent = (await overlay.count().catch(() => 0)) > 0;
+  const dialogPresent =
+    (await dialog.count().catch(() => 0)) > 0 ||
+    (await dialog.isVisible().catch(() => false));
+
+  if (resolveStanceDialogOpenPlan({ overlayPresent, dialogPresent }) === "wait-for-dialog") {
+    await expect(dialog).toBeVisible({ timeout: 15_000 });
+    return dialog;
+  }
+
+  const openBtn = page
+    .getByRole("button", { name: /Choose position|Neutral|Against|Approve|Change your position/i })
+    .first();
+  try {
+    await openBtn.click({ timeout: 3_000 });
+  } catch (err) {
+    const overlayNow = (await overlay.count().catch(() => 0)) > 0;
+    const dialogNow =
+      (await dialog.isVisible().catch(() => false)) || (await dialog.count().catch(() => 0)) > 0;
+    if (overlayNow || dialogNow || isStanceOverlayPointerInterceptError(err)) {
+      await expect(dialog).toBeVisible({ timeout: 15_000 });
+      return dialog;
+    }
+    throw err;
+  }
+
+  await expect(dialog).toBeVisible({ timeout: 15_000 });
+  return dialog;
+}
+
 /** Open stance card if needed, pick stance, Save (first-time or change). */
 export async function saveStanceViaUi(page: Page, stance: StanceUiLabel) {
-  const dialog = stanceChoiceDialog(page);
-  if (!(await dialog.isVisible().catch(() => false))) {
-    const openBtn = page
-      .getByRole("button", { name: /Choose position|Neutral|Against|Approve|Change your position/i })
-      .first();
-    await openBtn.click();
-  }
-  await expect(dialog).toBeVisible({ timeout: 15_000 });
+  const dialog = await ensureStanceChoiceDialogOpen(page);
   await dismissDisclosureIfPresent(page);
   await dialog.getByRole("button", { name: stance, exact: true }).click();
 

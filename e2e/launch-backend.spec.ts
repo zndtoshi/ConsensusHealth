@@ -19,6 +19,7 @@ import {
   ackPrivacyDisclosure,
   attachE2ELoginRoute,
   attachOauthCallbackCapture,
+  e2eHandleForUser,
 } from "./helpers";
 
 const REAL = process.env.E2E_REAL_BACKEND === "1";
@@ -100,13 +101,13 @@ test.describe("2 — first-time Neutral / Against / Approve via UI", () => {
     test(`first-time ${c.stance} save for e2e_user=${c.e2eUser}`, async ({ page }) => {
       await mockOAuthLogin(page, { e2eUser: c.e2eUser, path: "/bip/54" });
       const me = await fetchMe(page);
-      expect((me.body as { handle?: string }).handle).toBe(`e2e_${c.e2eUser}`);
+      expect((me.body as { handle?: string }).handle).toBe(e2eHandleForUser(c.e2eUser));
 
       await saveStanceViaUi(page, c.stance);
       await expectMeStance(page, "bip54", c.api);
 
       const handles = await communityHandles(page, "bip54");
-      expect(handles).toContain(`e2e_${c.e2eUser}`);
+      expect(handles).toContain(e2eHandleForUser(c.e2eUser));
     });
   }
 });
@@ -114,7 +115,7 @@ test.describe("2 — first-time Neutral / Against / Approve via UI", () => {
 test.describe("3 — change existing stance + history", () => {
   test("change Neutral → Against via UI; exact history events", async ({ page }) => {
     const e2eUser = "chg_stance";
-    const handle = `e2e_${e2eUser}`;
+    const handle = e2eHandleForUser(e2eUser);
     await mockOAuthLogin(page, { e2eUser, path: "/bip/54" });
     await saveStanceViaUi(page, "Neutral");
     await expectMeStance(page, "bip54", "neutral");
@@ -210,7 +211,7 @@ test.describe("5 — proposal isolation BIP54 / 448 / 460", () => {
       await dismissDisclosureIfPresent(page);
       await dialog
         .getByLabel(/Explain your stance on X/i)
-        .fill(`https://x.com/e2e_${e2eUser}/status/${statusId}`);
+        .fill(`https://x.com/${e2eHandleForUser(e2eUser)}/status/${statusId}`);
       await dialog.getByRole("button", { name: "Save", exact: true }).click();
       await expect(dialog).toHaveCount(0, { timeout: 30_000 });
     }
@@ -234,7 +235,7 @@ test.describe("6 — explanation flow via card (E2E oEmbed stub)", () => {
     page,
   }) => {
     const e2eUser = "explain_full";
-    const handle = `e2e_${e2eUser}`;
+    const handle = e2eHandleForUser(e2eUser);
     await mockOAuthLogin(page, { e2eUser, path: "/bip/54" });
     await saveStanceViaUi(page, "Approve");
     await expectMeStance(page, "bip54", "approve");
@@ -362,7 +363,7 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
     expect(capture.completion?.status).toBe("success");
     expect(capture.html).toMatch(/Signed in/i);
     const me = await fetchMe(page);
-    expect(me.body).toMatchObject({ handle: "e2e_oauth_ok", x_user_id: expect.any(String) });
+    expect(me.body).toMatchObject({ handle: e2eHandleForUser("oauth_ok"), x_user_id: expect.any(String) });
   });
 
   test("cancel: close popup before callback completes", async ({ page }) => {
@@ -563,7 +564,7 @@ test.describe("7 — OAuth popup success / cancel / error / CSP", () => {
 test.describe("8 — delete account via UI + keyboard", () => {
   test("focus restore, immediate UI clear, privacy tombstone", async ({ page }) => {
     const e2eUser = "del_ui";
-    const handle = `e2e_${e2eUser}`;
+    const handle = e2eHandleForUser(e2eUser);
     await mockOAuthLogin(page, { e2eUser, path: "/bip/54" });
     await saveStanceViaUi(page, "Neutral");
 
