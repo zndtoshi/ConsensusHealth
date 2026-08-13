@@ -65,7 +65,8 @@ export default defineConfig({
   testDir: "e2e",
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
+  retries: 0,
+  maxFailures: process.env.CI ? 1 : 0,
   // Auth/stance/delete mutate shared mock user + DB — keep serial.
   workers: 1,
   reporter: process.env.CI ? "github" : "list",
