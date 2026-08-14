@@ -58,7 +58,7 @@ export function DistantGalaxies({
               onNavigate?.(p.id);
             }}
             style={{
-              left: `${pos.x}%`,
+              "--galaxy-x": `${pos.x}%`,
               top: `${pos.y}%`,
               "--galaxy-accent": theme.accent,
               "--galaxy-glow": theme.distantGlow,

@@ -2091,6 +2091,9 @@ html[data-browser="firefox"] .stanceGlow {
 
 .distantGalaxy {
   position: absolute;
+  /* Keep the visible galaxies near the outer edge while retaining a usable
+     click target on narrow screens. */
+  left: clamp(48px, var(--galaxy-x, 50%), calc(100% - 48px));
   width: 112px;
   height: 86px;
   margin: -43px 0 0 -56px;
@@ -2099,8 +2102,8 @@ html[data-browser="firefox"] .stanceGlow {
   cursor: pointer;
   pointer-events: auto;
   padding: 0;
-  opacity: 0.52;
-  filter: saturate(0.72) blur(0.35px);
+  opacity: 0.44;
+  filter: saturate(0.62) blur(0.45px);
   transform: scale(var(--galaxy-scale, 1)) rotate(var(--galaxy-rotate, 0deg));
   transition:
     opacity 180ms ease,
@@ -2280,7 +2283,12 @@ html[data-browser="firefox"] .stanceGlow {
 
 @media (max-width: 720px) {
   .distantGalaxy {
-    transform: scale(0.82);
+    transform: scale(calc(var(--galaxy-scale, 1) * 0.9)) rotate(var(--galaxy-rotate, 0deg));
+  }
+
+  .distantGalaxy:hover:not(:disabled),
+  .distantGalaxy:focus-visible:not(:disabled) {
+    transform: scale(calc(var(--galaxy-scale, 1) * 0.97)) rotate(var(--galaxy-rotate, 0deg));
   }
 }
 
