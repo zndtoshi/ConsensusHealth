@@ -142,7 +142,7 @@ test("selected-user card keeps the compact left-aligned identity layout", () => 
 });
 
 test("own stance chooser is available on ongoing proposals; final can manage explanations", () => {
-  assert.match(appSrc, /canChooseOwnStance = me\?\.authenticated === true && isOngoingProposal\(activeProposal\)/);
+  assert.match(appSrc, /canChooseOwnStance =\s*\n?\s*!showOverview && me\?\.authenticated === true && isOngoingProposal\(activeProposal\)/);
   assert.match(appSrc, /canManageOwnExplanation/);
   assert.match(appSrc, /openOwnStanceChoice/);
   assert.match(appSrc, /Choose your position/);

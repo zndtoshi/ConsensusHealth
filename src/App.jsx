@@ -64,9 +64,16 @@ import {
 import {
   normalizeIncomingProposalId,
   readProposalIdFromLocation,
+  readShowOverviewFromLocation,
+  writeOverviewToLocation,
   writeProposalIdToLocation,
 } from "./utils/proposalNavigation";
+import {
+  listOverviewOngoingProposals,
+  overviewHeading,
+} from "./utils/consensusOverview";
 import { fetchAccessibleProposals } from "./api/proposals";
+import { ConsensusOverview } from "./components/ConsensusOverview";
 import { usePrefersReducedMotion } from "./hooks/usePrefersReducedMotion";
 import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
 import { followersForAvatarSize } from "./utils/avatarSize";
@@ -993,7 +1000,14 @@ export default function App() {
   const searchWrapRef = useRef(null);
   const searchInputRef = useRef(null);
   const [me, setMe] = useState(null);
-  const [activeProposalId, setActiveProposalId] = useState(() => readProposalIdFromLocation());
+  const [showOverview, setShowOverview] = useState(() => readShowOverviewFromLocation());
+  const [activeProposalId, setActiveProposalId] = useState(() => {
+    const fromPath = readProposalIdFromLocation();
+    return fromPath || DEFAULT_PROPOSAL_ID;
+  });
+  const resumeAfterInfoRef = useRef(
+    /** @type {{ kind: "overview" } | { kind: "proposal"; id: string }} */ ({ kind: "overview" })
+  );
   const [galaxyTravel, setGalaxyTravel] = useState(null); // { from, to, progress } | null
   const galaxyTravelLockRef = useRef(false);
   const proposalReloadAbortRef = useRef(null);
@@ -1447,7 +1461,8 @@ export default function App() {
     () => getProposalById(activeProposalId, proposalCatalog),
     [activeProposalId, proposalCatalog]
   );
-  const canChooseOwnStance = me?.authenticated === true && isOngoingProposal(activeProposal);
+  const canChooseOwnStance =
+    !showOverview && me?.authenticated === true && isOngoingProposal(activeProposal);
   const canManageOwnExplanation =
     me?.authenticated === true &&
     (canChooseOwnStance || (isFinalProposal(activeProposal) && meHasStance));
@@ -1516,6 +1531,9 @@ export default function App() {
   const openInfoPage = useCallback((page) => {
     const next = parseInfoPagePath(`/${page}`) || page;
     if (!next) return;
+    resumeAfterInfoRef.current = showOverview
+      ? { kind: "overview" }
+      : { kind: "proposal", id: activeProposalId };
     // Avoid two aria-modal dialogs: suspend stance choice while legal pages are open.
     setStanceChoiceOpen((wasOpen) => {
       if (wasOpen) stanceSuspendedForInfoRef.current = true;
@@ -1530,11 +1548,20 @@ export default function App() {
     }
     setInfoPagePath(next);
     setProfileMenuOpen(false);
-  }, []);
+  }, [activeProposalId, showOverview]);
 
   const closeInfoPage = useCallback(() => {
     if (typeof window !== "undefined") {
-      writeProposalIdToLocation(activeProposalId, false, proposalCatalog);
+      const resume = resumeAfterInfoRef.current;
+      if (resume?.kind === "overview") {
+        writeOverviewToLocation(false);
+        setShowOverview(true);
+      } else {
+        const id = resume?.id || activeProposalId;
+        writeProposalIdToLocation(id, false, proposalCatalog);
+        setShowOverview(false);
+        setActiveProposalId(id);
+      }
     }
     setInfoPagePath(null);
     if (stanceSuspendedForInfoRef.current) {
@@ -1615,6 +1642,7 @@ export default function App() {
   // Auto-prompt once per visit to an ongoing galaxy with no persisted stance.
   // Declared after the close-on-proposal-change effect so open wins in the same commit.
   useEffect(() => {
+    if (showOverview) return;
     if (loading) return;
     if (galaxyTravel) return;
     if (!proposalAccessReady) return;
@@ -1635,6 +1663,7 @@ export default function App() {
     setStanceChoiceSession((n) => n + 1);
     setStanceChoiceOpen(true);
   }, [
+    showOverview,
     loading,
     galaxyTravel,
     proposalAccessReady,
@@ -1691,7 +1720,7 @@ export default function App() {
   useEffect(() => {
     if (typeof document === "undefined") return;
     const theme = activeProposal?.visualTheme;
-    if (adminGalaxiesEnabled && theme) {
+    if (!showOverview && adminGalaxiesEnabled && theme) {
       document.documentElement.style.setProperty("--galaxy-nebula-from", theme.nebulaFrom);
       document.documentElement.style.setProperty("--galaxy-nebula-to", theme.nebulaTo);
       document.documentElement.style.setProperty("--galaxy-accent", theme.accent);
@@ -1700,9 +1729,9 @@ export default function App() {
       document.documentElement.style.removeProperty("--galaxy-nebula-from");
       document.documentElement.style.removeProperty("--galaxy-nebula-to");
       document.documentElement.style.removeProperty("--galaxy-accent");
-      document.title = "Consensus Health";
+      document.title = showOverview ? "Consensus Health · Overview" : "Consensus Health";
     }
-  }, [adminGalaxiesEnabled, activeProposal]);
+  }, [adminGalaxiesEnabled, activeProposal, showOverview]);
 
   useEffect(() => {
     historyCacheRef.current?.clear?.();
@@ -2773,6 +2802,11 @@ export default function App() {
   // briefly show seed-only accounts and then expand to the full live set.
   useEffect(() => {
     if (!proposalAccessReady) return undefined;
+    if (showOverview) {
+      setLoading(false);
+      setErr("");
+      return undefined;
+    }
     let dead = false;
     const proposalId = normalizeIncomingProposalId(activeProposalId, adminGalaxiesEnabled, proposalCatalog);
     if (proposalId !== activeProposalId) {
@@ -2824,15 +2858,22 @@ export default function App() {
       dead = true;
       controller.abort();
     };
-  }, [activeProposalId, adminGalaxiesEnabled, proposalAccessReady, proposalCatalog, dataReloadToken]);
+  }, [activeProposalId, adminGalaxiesEnabled, proposalAccessReady, proposalCatalog, dataReloadToken, showOverview]);
 
   useEffect(() => {
     function onPopState() {
       const info = parseInfoPagePath(window.location.pathname);
       setInfoPagePath(info);
       if (info) return;
+      if (readShowOverviewFromLocation()) {
+        setShowOverview(true);
+        setStanceChoiceOpen(false);
+        return;
+      }
+      setShowOverview(false);
+      const fromPath = readProposalIdFromLocation(proposalCatalog);
       const next = normalizeIncomingProposalId(
-        readProposalIdFromLocation(proposalCatalog),
+        fromPath || DEFAULT_PROPOSAL_ID,
         adminGalaxiesEnabled,
         proposalCatalog
       );
@@ -2842,13 +2883,23 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, [adminGalaxiesEnabled, proposalCatalog]);
 
+  const goToOverview = useCallback(() => {
+    if (showOverview) return;
+    if (galaxyTravelLockRef.current) return;
+    setStanceChoiceOpen(false);
+    setShowStatsModal(false);
+    setSelectedHandle(null);
+    setShowOverview(true);
+    writeOverviewToLocation(false);
+  }, [showOverview]);
+
   const travelToGalaxy = useCallback((nextId) => {
-    if (!adminGalaxiesEnabled) return;
+    if (!adminGalaxiesEnabled && !showOverview) return;
     const target = normalizeIncomingProposalId(nextId, true, proposalCatalog);
-    if (target === activeProposalId) return;
+    if (!showOverview && target === activeProposalId) return;
     if (galaxyTravelLockRef.current) return;
     galaxyTravelLockRef.current = true;
-    const from = activeProposalId;
+    const from = showOverview ? null : activeProposalId;
     const duration = prefersGalaxyReducedMotion ? 280 : 700;
     const t0 = performance.now();
     setGalaxyTravel({ from, to: target, progress: 0 });
@@ -2859,6 +2910,7 @@ export default function App() {
       setGalaxyTravel({ from, to: target, progress: p });
       if (!midSwapped && p >= 0.45) {
         midSwapped = true;
+        setShowOverview(false);
         writeProposalIdToLocation(target, false, proposalCatalog);
         setActiveProposalId(target);
         setSelectedHandle(null);
@@ -2877,7 +2929,7 @@ export default function App() {
       galaxyTravelLockRef.current = false;
       setGalaxyTravel(null);
     };
-  }, [activeProposalId, adminGalaxiesEnabled, prefersGalaxyReducedMotion, proposalCatalog]);
+  }, [activeProposalId, adminGalaxiesEnabled, prefersGalaxyReducedMotion, proposalCatalog, showOverview]);
 
   useEffect(() => () => {
     if (travelCleanupRef.current) travelCleanupRef.current();
@@ -6590,14 +6642,19 @@ export default function App() {
     <div
       style={{
         ...styles.page,
-        ...(adminGalaxiesEnabled && activeProposal?.visualTheme
+        ...(showOverview
           ? {
-              background: `radial-gradient(ellipse 85% 38% at 50% -8%, ${activeProposal.visualTheme.nebulaFrom} 0%, ${activeProposal.visualTheme.nebulaTo} 42%, #000 72%)`,
+              background:
+                "radial-gradient(ellipse 85% 38% at 50% -8%, rgba(30, 41, 59, 0.35) 0%, rgba(2, 6, 23, 0.85) 42%, #000 72%)",
             }
-          : null),
+          : adminGalaxiesEnabled && activeProposal?.visualTheme
+            ? {
+                background: `radial-gradient(ellipse 85% 38% at 50% -8%, ${activeProposal.visualTheme.nebulaFrom} 0%, ${activeProposal.visualTheme.nebulaTo} 42%, #000 72%)`,
+              }
+            : null),
       }}
       onPointerMove={
-        adminGalaxiesEnabled && !prefersGalaxyReducedMotion
+        adminGalaxiesEnabled && !showOverview && !prefersGalaxyReducedMotion
           ? (e) => {
               if (e.pointerType === "touch") return;
               if (cameraInteractingRef.current) return;
@@ -6686,7 +6743,14 @@ export default function App() {
           )}
         </div>
         <div className="appHeader__center" style={styles.headerCenter}>
-          {adminGalaxiesEnabled ? (
+          {showOverview ? (
+            <div className="consensusOverviewHeader">
+              <div className="consensusOverviewHeader__title">
+                {overviewHeading(listOverviewOngoingProposals(proposalCatalog).length)}
+              </div>
+              <div className="consensusOverviewHeader__meta">Consensus Overview</div>
+            </div>
+          ) : adminGalaxiesEnabled ? (
             <Suspense fallback={<div className="galaxyHeaderNav" aria-hidden="true" />}>
               <ConsensusUniverseChrome
                 slot="header"
@@ -6694,10 +6758,11 @@ export default function App() {
                 catalog={proposalCatalog}
                 disabled={Boolean(galaxyTravel)}
                 onNavigate={travelToGalaxy}
+                onOverview={goToOverview}
               />
             </Suspense>
           ) : null}
-          {selectedHandle ? (
+          {!showOverview && selectedHandle ? (
             <div
               className={`selectedUserCard${selectedHeaderExplanation ? " selectedUserCard--withExplanation" : ""}`}
               role="status"
@@ -7085,7 +7150,33 @@ export default function App() {
           ref={setCanvasWrapRef}
           style={styles.canvasWrap}
         >
-          {!stanceListsViewEnabled ? (
+          {showOverview ? (
+            <>
+              <ConsensusOverview
+                catalog={proposalCatalog}
+                apiBase={API_BASE}
+                reducedMotion={prefersGalaxyReducedMotion}
+                onEnterProposal={travelToGalaxy}
+              />
+              {galaxyTravel ? (
+                <Suspense fallback={null}>
+                  <ConsensusUniverseChrome
+                    slot="overlays"
+                    proposalId={activeProposalId}
+                    catalog={proposalCatalog}
+                    disabled
+                    onNavigate={travelToGalaxy}
+                    reducedMotion={prefersGalaxyReducedMotion}
+                    parallaxRef={parallaxLayerRef}
+                    travel={galaxyTravel}
+                    fromProposal={getProposalById(galaxyTravel?.from, proposalCatalog)}
+                    toProposal={getProposalById(galaxyTravel?.to, proposalCatalog)}
+                    showDistantGalaxies={false}
+                  />
+                </Suspense>
+              ) : null}
+            </>
+          ) : !stanceListsViewEnabled ? (
             <>
               <canvas
                 ref={canvasRef}
@@ -7129,6 +7220,7 @@ export default function App() {
                     catalog={proposalCatalog}
                     disabled={Boolean(galaxyTravel)}
                     onNavigate={travelToGalaxy}
+                    onOverview={goToOverview}
                     reducedMotion={prefersGalaxyReducedMotion}
                     parallaxRef={parallaxLayerRef}
                     travel={galaxyTravel}
@@ -7324,7 +7416,7 @@ export default function App() {
           ) : null}
         </div>
       </div>
-      <div style={styles.footerNote}>
+      {!showOverview ? <div style={styles.footerNote}>
         <div style={styles.footerNoteLine}>
           <span>
             {isFinalProposal(activeProposal)
@@ -7343,16 +7435,20 @@ export default function App() {
         ) : (
           <div>Size of avatars is proportional to number of followers.</div>
         )}
-      </div>
+      </div> : null}
       <div style={styles.bottomControls}>
-        <button type="button" className="toolbarBtn" onClick={openStatsModal}>
-          {statsActionLabel}
-        </button>
-        <div style={styles.barDivider} aria-hidden="true" />
+        {!showOverview ? (
+          <>
+            <button type="button" className="toolbarBtn" onClick={openStatsModal}>
+              {statsActionLabel}
+            </button>
+            <div style={styles.barDivider} aria-hidden="true" />
+          </>
+        ) : null}
         <button type="button" className="toolbarBtn" onClick={() => setShowDonateModal(true)}>
           Donate
         </button>
-        {stancePlaybackSequenceCount > 0 && !stanceListsViewEnabled ? (
+        {!showOverview && stancePlaybackSequenceCount > 0 && !stanceListsViewEnabled ? (
           <>
             <div style={styles.barDivider} aria-hidden="true" />
             <button
@@ -7388,7 +7484,7 @@ export default function App() {
           />
         </Suspense>
       )}
-      {stanceChoiceOpen && canManageOwnExplanation ? (
+      {stanceChoiceOpen && canManageOwnExplanation && !showOverview ? (
         <StanceChoiceCard
           key={`stance-card:${stanceChoiceSession}:${activeProposalId}`}
           open={stanceChoiceOpen}

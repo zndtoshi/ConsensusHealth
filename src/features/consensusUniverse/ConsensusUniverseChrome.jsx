@@ -10,6 +10,7 @@ export default function ConsensusUniverseChrome({
   catalog,
   disabled,
   onNavigate,
+  onOverview,
   reducedMotion,
   parallaxRef,
   travel,
@@ -24,6 +25,7 @@ export default function ConsensusUniverseChrome({
         catalog={catalog}
         disabled={disabled}
         onNavigate={onNavigate}
+        onOverview={onOverview}
       />
     );
   }

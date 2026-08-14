@@ -27,11 +27,13 @@ test("frontend resolveProposalId matches bip numbers", () => {
   assert.equal(resolveProposalId("xyz"), DEFAULT_PROPOSAL_ID);
 });
 
-test("parseProposalFromPathname reads /bip/:n", () => {
+test("parseProposalFromPathname reads /bip/:n and treats / as overview", () => {
   assert.equal(parseProposalFromPathname("/bip/110"), "bip110");
   assert.equal(parseProposalFromPathname("/bip/54"), "bip54");
+  assert.equal(parseProposalFromPathname("/bip/448"), "bip448");
   assert.equal(parseProposalFromPathname("/bip/460"), "bip460");
-  assert.equal(parseProposalFromPathname("/"), DEFAULT_PROPOSAL_ID);
+  assert.equal(parseProposalFromPathname("/"), null);
+  assert.equal(parseProposalFromPathname(""), null);
 });
 
 test("non-admin can open public ongoing proposals from the accessible catalog", () => {

@@ -15,20 +15,25 @@ function proposalStatusLabel(proposal) {
   return "";
 }
 
+const OVERVIEW_OPTION_INDEX = 0;
+
 /**
  * Centered BIP dropdown — sole galaxy navigation control.
+ * Includes an "All proposals" entry to return to Consensus Overview.
  */
 export function GalaxyHeaderNav({
   proposalId,
   catalog,
   disabled = false,
   onNavigate,
+  onOverview,
 }) {
   const list = useMemo(() => listEnabledProposals(catalog), [catalog]);
   const current = getProposalById(proposalId, list) || list[0];
   const theme = current?.visualTheme;
   const proposalUrl = proposalGithubUrl(current?.id);
   const isFinalSnapshot = isFinalProposal(current);
+  const optionCount = list.length + 1;
 
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -45,7 +50,6 @@ export function GalaxyHeaderNav({
   function closeMenu({ restoreFocus = false } = {}) {
     setOpen(false);
     if (restoreFocus) {
-      // Escape / same-proposal: trigger is not travel-disabled; restore now.
       queueMicrotask(() => focusTrigger());
     }
   }
@@ -57,7 +61,7 @@ export function GalaxyHeaderNav({
   function openMenu() {
     if (disabled) return;
     const idx = Math.max(0, list.findIndex((p) => p.id === current?.id));
-    setActiveIndex(idx);
+    setActiveIndex(idx + 1);
     setOpen(true);
   }
 
@@ -86,13 +90,22 @@ export function GalaxyHeaderNav({
     if (el && typeof el.focus === "function") el.focus();
   }, [open, activeIndex]);
 
-  // After galaxy travel ends, the trigger is enabled again — restore focus once.
   useEffect(() => {
     if (disabled) return;
     if (!restoreFocusAfterTravelRef.current) return;
     restoreFocusAfterTravelRef.current = false;
     focusTrigger();
   }, [disabled]);
+
+  function selectOverview() {
+    if (disabled) {
+      closeMenu({ restoreFocus: true });
+      return;
+    }
+    closeMenu({ restoreFocus: false });
+    restoreFocusAfterTravelRef.current = true;
+    onOverview?.();
+  }
 
   function selectProposal(id) {
     if (!id || disabled) {
@@ -103,7 +116,6 @@ export function GalaxyHeaderNav({
       closeMenu({ restoreFocus: true });
       return;
     }
-    // Travel will disable the trigger; defer focus until disabled returns to false.
     closeMenu({ restoreFocus: false });
     restoreFocusAfterTravelRef.current = true;
     onNavigate?.(id);
@@ -120,19 +132,20 @@ export function GalaxyHeaderNav({
   function onOptionKeyDown(e, index) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActiveIndex((index + 1) % list.length);
+      setActiveIndex((index + 1) % optionCount);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setActiveIndex((index - 1 + list.length) % list.length);
+      setActiveIndex((index - 1 + optionCount) % optionCount);
     } else if (e.key === "Home") {
       e.preventDefault();
       setActiveIndex(0);
     } else if (e.key === "End") {
       e.preventDefault();
-      setActiveIndex(Math.max(0, list.length - 1));
+      setActiveIndex(Math.max(0, optionCount - 1));
     } else if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      selectProposal(list[index]?.id);
+      if (index === OVERVIEW_OPTION_INDEX) selectOverview();
+      else selectProposal(list[index - 1]?.id);
     } else if (e.key === "Escape") {
       e.preventDefault();
       closeMenu({ restoreFocus: true });
@@ -222,7 +235,29 @@ export function GalaxyHeaderNav({
             aria-label="Consensus proposals"
             tabIndex={-1}
           >
+            <li role="presentation" className="galaxyHeaderNav__overviewOption">
+              <button
+                type="button"
+                role="option"
+                data-option-index={OVERVIEW_OPTION_INDEX}
+                className={`galaxyHeaderNav__option${
+                  activeIndex === OVERVIEW_OPTION_INDEX ? " is-active" : ""
+                }`}
+                aria-selected={false}
+                tabIndex={activeIndex === OVERVIEW_OPTION_INDEX ? 0 : -1}
+                onMouseEnter={() => setActiveIndex(OVERVIEW_OPTION_INDEX)}
+                onKeyDown={(e) => onOptionKeyDown(e, OVERVIEW_OPTION_INDEX)}
+                onClick={() => selectOverview()}
+              >
+                <span className="galaxyHeaderNav__optionTitle">
+                  <span className="galaxyHeaderNav__checkSpacer" aria-hidden="true" />
+                  <strong>All proposals</strong>
+                </span>
+                <span className="galaxyHeaderNav__optionDesc">Return to Consensus Overview</span>
+              </button>
+            </li>
             {list.map((p, index) => {
+              const optionIndex = index + 1;
               const selected = p.id === current.id;
               const optionStatus = proposalStatusLabel(p);
               return (
@@ -230,14 +265,14 @@ export function GalaxyHeaderNav({
                   <button
                     type="button"
                     role="option"
-                    data-option-index={index}
+                    data-option-index={optionIndex}
                     className={`galaxyHeaderNav__option${selected ? " is-selected" : ""}${
-                      index === activeIndex ? " is-active" : ""
+                      optionIndex === activeIndex ? " is-active" : ""
                     }`}
                     aria-selected={selected}
-                    tabIndex={index === activeIndex ? 0 : -1}
-                    onMouseEnter={() => setActiveIndex(index)}
-                    onKeyDown={(e) => onOptionKeyDown(e, index)}
+                    tabIndex={optionIndex === activeIndex ? 0 : -1}
+                    onMouseEnter={() => setActiveIndex(optionIndex)}
+                    onKeyDown={(e) => onOptionKeyDown(e, optionIndex)}
                     onClick={() => selectProposal(p.id)}
                     style={{
                       "--option-accent": p.visualTheme?.accent,

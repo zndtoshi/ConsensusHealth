@@ -86,6 +86,7 @@ export { renderAuthPopupPage } from "./oauthPopupPage.js";
 import { createAccountDeletionHandler } from "./accountDeletion.js";
 import { ensurePrivacySuppressionsTable } from "./privacySuppressions.js";
 import { createHealthRouter } from "./healthRoutes.js";
+import { queryConsensusOverview } from "./consensusOverview.js";
 import {
   loadMergedCommunityUsersWithStance as loadMergedCommunityUsersWithStanceShared,
   loadSeededAccountsForCommunity as loadSeededAccountsForCommunityShared,
@@ -1158,6 +1159,29 @@ app.get("/api/proposals", async (req, res, next) => {
     next(err);
   }
 });
+
+/** Public Consensus Overview aggregates (canonical user_proposal_stances only). */
+app.get(
+  "/api/consensus-overview",
+  createStatsReadRateLimiter({ getClientIpKey: rateLimitClientIp }),
+  async (req, res, next) => {
+    try {
+      const user = getSessionUser(req);
+      const { items } = await loadAccessibleProposals(pool, user?.handle);
+      const publicItems = items.filter((p) => !p.admin_only);
+      const ongoingIds = publicItems
+        .filter((p) => String(p.status || "").toLowerCase() === "ongoing")
+        .map((p) => String(p.id));
+      const completedIds = publicItems
+        .filter((p) => String(p.status || "").toLowerCase() === "final")
+        .map((p) => String(p.id));
+      const payload = await queryConsensusOverview(pool, { ongoingIds, completedIds });
+      res.json(payload);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 app.get("/api/community", async (req, res, next) => {
   try {

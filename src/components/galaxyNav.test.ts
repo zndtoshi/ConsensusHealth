@@ -77,6 +77,8 @@ test("header BIP nav is a centered dropdown without prev/next controls", () => {
   assert.doesNotMatch(headerSrc, /p\.id === "bip110"/);
   assert.match(headerSrc, /FINAL SNAPSHOT/);
   assert.match(headerSrc, /ONGOING/);
+  assert.match(headerSrc, /All proposals/);
+  assert.match(headerSrc, /onOverview/);
   assert.match(headerSrc, /galaxyHeaderNav__optionStatus/);
   assert.doesNotMatch(headerSrc, /galaxyHeaderNav__tooltip/);
   assert.doesNotMatch(headerSrc, /role="tooltip"/);
@@ -121,6 +123,7 @@ test("distant galaxies are interactive travel shortcuts with capped neighbors", 
   assert.match(appSrc, /showDistantGalaxies=\{!equalAvatarSizeEnabled\}/);
   assert.doesNotMatch(appSrc, /showDistantGalaxies=\{defaultAccountFilterActive\}/);
   assert.match(appSrc, /equalAvatarSizeEnabled/);
+  assert.match(appSrc, /onOverview=\{goToOverview\}/);
   // Other account filters must not control distant-galaxy visibility.
   assert.doesNotMatch(
     appSrc,

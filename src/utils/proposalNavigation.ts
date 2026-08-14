@@ -8,10 +8,16 @@ import {
   type ProposalConfig,
   type ProposalId,
 } from "../config/proposals";
+import { isOverviewPath, OVERVIEW_PATH } from "./consensusOverview";
 
-export function readProposalIdFromLocation(catalog?: ProposalConfig[]): ProposalId {
+export function readProposalIdFromLocation(catalog?: ProposalConfig[]): ProposalId | null {
   if (typeof window === "undefined") return DEFAULT_PROPOSAL_ID;
   return parseProposalFromPathname(window.location.pathname, catalog);
+}
+
+export function readShowOverviewFromLocation(): boolean {
+  if (typeof window === "undefined") return true;
+  return isOverviewPath(window.location.pathname);
 }
 
 export function writeProposalIdToLocation(
@@ -26,6 +32,15 @@ export function writeProposalIdToLocation(
   if (current === target) return;
   if (replace) window.history.replaceState({ proposalId: id }, "", target);
   else window.history.pushState({ proposalId: id }, "", target);
+}
+
+export function writeOverviewToLocation(replace = false): void {
+  if (typeof window === "undefined") return;
+  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  const target = `${OVERVIEW_PATH}${window.location.search}${window.location.hash}`;
+  if (current === target) return;
+  if (replace) window.history.replaceState({ overview: true }, "", target);
+  else window.history.pushState({ overview: true }, "", target);
 }
 
 export function getAdjacent(id: ProposalId, catalog?: ProposalConfig[]) {

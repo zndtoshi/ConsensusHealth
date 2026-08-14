@@ -229,11 +229,17 @@ export function proposalPath(id: ProposalId, catalog: ProposalConfig[] = FALLBAC
   return `/bip/${p?.bipNumber ?? 110}`;
 }
 
+/**
+ * Parse `/bip/:n` deep links. Returns `null` for `/` (Consensus Overview).
+ * Unknown non-BIP paths still fall back to DEFAULT_PROPOSAL_ID for legacy callers.
+ */
 export function parseProposalFromPathname(
   pathname: string,
   catalog: ProposalConfig[] = FALLBACK_PROPOSALS
-): ProposalId {
-  const m = String(pathname || "").match(/\/bip\/(\d+)/i);
+): ProposalId | null {
+  const path = String(pathname || "").split("?")[0].split("#")[0].replace(/\/+$/, "") || "/";
+  if (path === "/" || path === "") return null;
+  const m = path.match(/\/bip\/(\d+)/i);
   if (m) return resolveProposalId(m[1], catalog);
   return DEFAULT_PROPOSAL_ID;
 }
