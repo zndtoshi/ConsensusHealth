@@ -1,5 +1,6 @@
 /**
- * "Name the Fork" easter-egg naming poll — separate from BIP proposal stances.
+ * "Name the PoW change fork" easter-egg naming poll — separate from BIP stances.
+ * Route/API/table identifiers keep the historical name-the-fork names.
  */
 
 import type { Pool, PoolClient } from "pg";
@@ -11,11 +12,25 @@ import {
 import { loadRemovedCommunityUserKeys } from "./communityPublicSurfaces.js";
 
 export const NAME_THE_FORK_PATH = "/name-the-fork";
+/** Exact user-facing title (display only; route/API ids unchanged). */
+export const NAME_THE_FORK_TITLE = "Name the PoW change fork";
 export const NAME_THE_FORK_ADVISORY_LOCK_KEY = 0x4e_54_46_4b; // "NTFK"
 export const NAME_THE_FORK_MIGRATION_VERSION = "2026-08-name-the-fork-v1";
+export const NAME_THE_FORK_MIGRATION_VERSION_V2 = "2026-08-name-the-fork-v2-moderation";
 export const NAME_THE_FORK_MAX_CHARS = 14;
 export const NTF_UNIQUE_NORMALIZED_KEY = "idx_ntf_candidates_normalized_key";
+export const NTF_UNIQUE_NORMALIZED_ACTIVE = "idx_ntf_candidates_normalized_active";
 export const NTF_UNIQUE_ONE_CUSTOM_PER_USER = "idx_ntf_candidates_one_custom_per_user";
+export const NTF_UNIQUE_ONE_ACTIVE_CUSTOM = "idx_ntf_candidates_one_active_custom";
+
+export const NTF_STATUS = {
+  pending: "pending",
+  approved: "approved",
+  rejected: "rejected",
+  hidden: "hidden",
+} as const;
+
+export type NtfModerationStatus = (typeof NTF_STATUS)[keyof typeof NTF_STATUS];
 
 export const NAME_THE_FORK_SEEDS = [
   { id: "seed_bcashjr", displayName: "BcashJr", order: 0 },
@@ -47,7 +62,6 @@ export type NameNormalizeErr = {
 
 export type NameNormalizeResult = NameNormalizeOk | NameNormalizeErr;
 
-/** Count user-perceived characters (grapheme clusters). */
 export function graphemeLength(text: string): number {
   const s = String(text ?? "");
   if (typeof Intl !== "undefined" && "Segmenter" in Intl) {
@@ -61,10 +75,6 @@ export function graphemeLength(text: string): number {
   return [...s].length;
 }
 
-/**
- * Trim, collapse internal whitespace, validate charset + length.
- * Server is authoritative; client mirrors for guidance.
- */
 export function normalizeCandidateName(raw: unknown): NameNormalizeResult {
   let s = String(raw ?? "");
   if (/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\u2060\uFEFF]/.test(s)) {
@@ -76,7 +86,6 @@ export function normalizeCandidateName(raw: unknown): NameNormalizeResult {
   if (s.includes("@")) return { ok: false, error: "handle" };
   if (/[<>&`]/.test(s) || /<\/?[a-z]/i.test(s)) return { ok: false, error: "markup" };
   if (/^[\s\-_]|[\s\-_]$/.test(s) || /[\s\-_]{2,}/.test(s)) return { ok: false, error: "separator" };
-  // Letters/numbers from common scripts + single internal spaces/hyphens/underscores.
   if (!/^[\p{L}\p{N}]+(?:[ \-_][\p{L}\p{N}]+)*$/u.test(s)) {
     return { ok: false, error: "invalid_chars" };
   }
@@ -95,9 +104,35 @@ export function isReservedSeedName(normalizedKey: string): boolean {
   return false;
 }
 
+function mapUniqueConstraintError(err: unknown): string | null {
+  const code = (err as { code?: string })?.code;
+  if (code !== "23505") return null;
+  const constraint = String((err as { constraint?: string })?.constraint || "");
+  const message = String((err as { message?: string })?.message || "");
+  if (
+    constraint === NTF_UNIQUE_ONE_ACTIVE_CUSTOM ||
+    constraint === NTF_UNIQUE_ONE_CUSTOM_PER_USER ||
+    message.includes(NTF_UNIQUE_ONE_ACTIVE_CUSTOM) ||
+    message.includes(NTF_UNIQUE_ONE_CUSTOM_PER_USER)
+  ) {
+    return "custom_already_submitted";
+  }
+  if (
+    constraint === NTF_UNIQUE_NORMALIZED_ACTIVE ||
+    constraint === NTF_UNIQUE_NORMALIZED_KEY ||
+    message.includes(NTF_UNIQUE_NORMALIZED_ACTIVE) ||
+    message.includes(NTF_UNIQUE_NORMALIZED_KEY)
+  ) {
+    return "duplicate_name";
+  }
+  return "duplicate_name";
+}
+
 export async function ensureNameTheForkSchema(pool: Pool): Promise<void> {
   const client = await pool.connect();
-  console.log("[name-the-fork] migration started", { version: NAME_THE_FORK_MIGRATION_VERSION });
+  console.log("[name-the-fork] migration started", {
+    version: NAME_THE_FORK_MIGRATION_VERSION_V2,
+  });
   try {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1)", [NAME_THE_FORK_ADVISORY_LOCK_KEY]);
@@ -118,23 +153,68 @@ export async function ensureNameTheForkSchema(pool: Pool): Promise<void> {
         seed_order INTEGER NULL,
         proposer_x_user_id TEXT NULL REFERENCES community_users(x_user_id) ON DELETE SET NULL,
         proposer_handle TEXT NULL,
+        moderation_status TEXT NOT NULL DEFAULT 'pending',
+        reviewed_at TIMESTAMPTZ NULL,
+        reviewed_by_x_user_id TEXT NULL,
+        reviewed_by_handle TEXT NULL,
+        review_reason TEXT NULL,
         hidden_at TIMESTAMPTZ NULL,
         hidden_by TEXT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
     `);
+
+    // v2 columns for installs that already have v1 tables.
     await client.query(
-      `CREATE UNIQUE INDEX IF NOT EXISTS ${NTF_UNIQUE_NORMALIZED_KEY}
-       ON name_the_fork_candidates (normalized_key)`
+      `ALTER TABLE name_the_fork_candidates
+       ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'pending'`
     );
     await client.query(
-      `CREATE UNIQUE INDEX IF NOT EXISTS ${NTF_UNIQUE_ONE_CUSTOM_PER_USER}
+      `ALTER TABLE name_the_fork_candidates ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ NULL`
+    );
+    await client.query(
+      `ALTER TABLE name_the_fork_candidates ADD COLUMN IF NOT EXISTS reviewed_by_x_user_id TEXT NULL`
+    );
+    await client.query(
+      `ALTER TABLE name_the_fork_candidates ADD COLUMN IF NOT EXISTS reviewed_by_handle TEXT NULL`
+    );
+    await client.query(
+      `ALTER TABLE name_the_fork_candidates ADD COLUMN IF NOT EXISTS review_reason TEXT NULL`
+    );
+
+    // Conservative: existing custom rows become pending until admin review.
+    await client.query(`
+      UPDATE name_the_fork_candidates
+      SET moderation_status = 'approved'
+      WHERE is_seed = TRUE
+    `);
+    await client.query(`
+      UPDATE name_the_fork_candidates
+      SET moderation_status = 'hidden',
+          hidden_at = COALESCE(hidden_at, now())
+      WHERE is_seed = FALSE
+        AND hidden_at IS NOT NULL
+        AND moderation_status IS DISTINCT FROM 'hidden'
+    `);
+
+    await client.query(`DROP INDEX IF EXISTS ${NTF_UNIQUE_NORMALIZED_KEY}`);
+    await client.query(`DROP INDEX IF EXISTS ${NTF_UNIQUE_ONE_CUSTOM_PER_USER}`);
+
+    await client.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS ${NTF_UNIQUE_NORMALIZED_ACTIVE}
+       ON name_the_fork_candidates (normalized_key)
+       WHERE moderation_status IN ('pending', 'approved', 'hidden')`
+    );
+    await client.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS ${NTF_UNIQUE_ONE_ACTIVE_CUSTOM}
        ON name_the_fork_candidates (proposer_x_user_id)
-       WHERE is_seed = FALSE AND proposer_x_user_id IS NOT NULL`
+       WHERE is_seed = FALSE
+         AND proposer_x_user_id IS NOT NULL
+         AND moderation_status IN ('pending', 'approved', 'hidden')`
     );
     await client.query(
-      `CREATE INDEX IF NOT EXISTS idx_ntf_candidates_visible
-       ON name_the_fork_candidates (hidden_at NULLS FIRST, created_at)`
+      `CREATE INDEX IF NOT EXISTS idx_ntf_candidates_status_created
+       ON name_the_fork_candidates (moderation_status, created_at)`
     );
 
     await client.query(`
@@ -158,6 +238,10 @@ export async function ensureNameTheForkSchema(pool: Pool): Promise<void> {
       `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
       [NAME_THE_FORK_MIGRATION_VERSION]
     );
+    await client.query(
+      `INSERT INTO schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING`,
+      [NAME_THE_FORK_MIGRATION_VERSION_V2]
+    );
     await client.query("COMMIT");
     console.log("[name-the-fork] migration complete");
   } catch (err) {
@@ -179,13 +263,15 @@ export async function seedNameTheForkCandidates(client: Pool | PoolClient): Prom
     await client.query(
       `
         INSERT INTO name_the_fork_candidates (
-          id, normalized_key, display_name, is_seed, seed_order, created_at
-        ) VALUES ($1, $2, $3, TRUE, $4, now())
+          id, normalized_key, display_name, is_seed, seed_order,
+          moderation_status, created_at
+        ) VALUES ($1, $2, $3, TRUE, $4, 'approved', now())
         ON CONFLICT (id) DO UPDATE SET
           normalized_key = EXCLUDED.normalized_key,
           display_name = EXCLUDED.display_name,
           is_seed = TRUE,
-          seed_order = EXCLUDED.seed_order
+          seed_order = EXCLUDED.seed_order,
+          moderation_status = 'approved'
         WHERE name_the_fork_candidates.is_seed = TRUE
       `,
       [seed.id, norm.normalizedKey, seed.displayName, seed.order]
@@ -212,6 +298,20 @@ export type NameTheForkCandidatePublic = {
   voters: NameTheForkVoterPublic[];
 };
 
+export type NameTheForkMySubmission = {
+  id: string;
+  display_name: string;
+  status: "pending" | "rejected";
+  created_at: string;
+};
+
+export type NameTheForkPendingAdminItem = {
+  id: string;
+  display_name: string;
+  proposer_handle: string | null;
+  created_at: string;
+};
+
 export type NameTheForkPayload = {
   generated_at: string;
   title: string;
@@ -223,7 +323,10 @@ export type NameTheForkPayload = {
     selected_candidate_id: string | null;
     has_custom_slot_used: boolean;
     can_moderate: boolean;
+    my_submission: NameTheForkMySubmission | null;
   } | null;
+  /** Admin-only; null/absent for ordinary viewers. */
+  pending_suggestions: NameTheForkPendingAdminItem[] | null;
 };
 
 type VoteRow = {
@@ -241,8 +344,10 @@ type CandidateRow = {
   is_seed: boolean;
   seed_order: number | null;
   proposer_handle: string | null;
+  proposer_x_user_id?: string | null;
   created_at: Date | string;
   normalized_key: string;
+  moderation_status: string;
   hidden_at: Date | string | null;
 };
 
@@ -253,7 +358,7 @@ function compareCandidates(
   if (b.vote_count !== a.vote_count) return b.vote_count - a.vote_count;
   const aSeed = a.is_seed ? 1 : 0;
   const bSeed = b.is_seed ? 1 : 0;
-  if (aSeed !== bSeed) return bSeed - aSeed; // seeds first on ties only when both same count — brief: seeded retain catalog order
+  if (aSeed !== bSeed) return bSeed - aSeed;
   if (a.is_seed && b.is_seed) {
     return (a.seed_order ?? 0) - (b.seed_order ?? 0);
   }
@@ -263,6 +368,41 @@ function compareCandidates(
   return String(a.normalized_key).localeCompare(String(b.normalized_key));
 }
 
+async function upsertVote(
+  client: PoolClient,
+  opts: {
+    xUserId: string;
+    candidateId: string;
+    handle?: string | null;
+    name?: string | null;
+    avatarUrl?: string | null;
+    avatarPath?: string | null;
+  }
+): Promise<void> {
+  await client.query(
+    `
+      INSERT INTO name_the_fork_votes (
+        x_user_id, candidate_id, handle, display_name, avatar_url, avatar_path, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, now())
+      ON CONFLICT (x_user_id) DO UPDATE SET
+        candidate_id = EXCLUDED.candidate_id,
+        handle = EXCLUDED.handle,
+        display_name = EXCLUDED.display_name,
+        avatar_url = EXCLUDED.avatar_url,
+        avatar_path = EXCLUDED.avatar_path,
+        updated_at = now()
+    `,
+    [
+      opts.xUserId,
+      opts.candidateId,
+      opts.handle ? String(opts.handle).toLowerCase().replace(/^@+/, "") : null,
+      opts.name ? String(opts.name) : null,
+      opts.avatarUrl ? String(opts.avatarUrl) : null,
+      opts.avatarPath ? String(opts.avatarPath) : null,
+    ]
+  );
+}
+
 export async function buildNameTheForkPayload(
   pool: Pool,
   opts?: { viewerXUserId?: string | null; viewerHandle?: string | null; canModerate?: boolean }
@@ -270,15 +410,13 @@ export async function buildNameTheForkPayload(
   const candRes = await pool.query(
     `
       SELECT id, display_name, is_seed, seed_order, proposer_handle, proposer_x_user_id,
-             created_at, normalized_key, hidden_at
+             created_at, normalized_key, moderation_status, hidden_at
       FROM name_the_fork_candidates
       ORDER BY created_at ASC
     `
   );
-  const candidates = candRes.rows as Array<
-    CandidateRow & { proposer_x_user_id?: string | null }
-  >;
-  const visible = candidates.filter((c) => !c.hidden_at);
+  const candidates = candRes.rows as CandidateRow[];
+  const visible = candidates.filter((c) => c.moderation_status === NTF_STATUS.approved);
 
   const voteRes = await pool.query(
     `
@@ -363,22 +501,73 @@ export async function buildNameTheForkPayload(
   });
 
   const viewerId = String(opts?.viewerXUserId || "").trim();
+  const canModerate = Boolean(opts?.canModerate);
   let selected: string | null = null;
   let hasCustom = false;
+  let mySubmission: NameTheForkMySubmission | null = null;
+
   if (viewerId) {
     const mine = votes.find((v) => v.x_user_id === viewerId);
     if (mine && visibleIds.has(mine.candidate_id)) selected = mine.candidate_id;
-    const customRes = await pool.query(
-      `SELECT 1 FROM name_the_fork_candidates
-       WHERE is_seed = FALSE AND proposer_x_user_id = $1 LIMIT 1`,
+
+    const mineCustom = await pool.query(
+      `
+        SELECT id, display_name, moderation_status, created_at
+        FROM name_the_fork_candidates
+        WHERE is_seed = FALSE AND proposer_x_user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 5
+      `,
       [viewerId]
     );
-    hasCustom = (customRes.rowCount ?? 0) > 0;
+    const rows = mineCustom.rows as Array<{
+      id: string;
+      display_name: string;
+      moderation_status: string;
+      created_at: Date | string;
+    }>;
+    hasCustom = rows.some(
+      (r) =>
+        r.moderation_status === NTF_STATUS.pending ||
+        r.moderation_status === NTF_STATUS.approved ||
+        r.moderation_status === NTF_STATUS.hidden
+    );
+    const latest = rows[0];
+    if (
+      latest &&
+      (latest.moderation_status === NTF_STATUS.pending ||
+        latest.moderation_status === NTF_STATUS.rejected)
+    ) {
+      mySubmission = {
+        id: latest.id,
+        display_name: String(latest.display_name),
+        status: latest.moderation_status as "pending" | "rejected",
+        created_at: new Date(latest.created_at).toISOString(),
+      };
+    }
+  }
+
+  let pendingSuggestions: NameTheForkPendingAdminItem[] | null = null;
+  if (canModerate) {
+    const pendingRes = await pool.query(
+      `
+        SELECT id, display_name, proposer_handle, created_at
+        FROM name_the_fork_candidates
+        WHERE is_seed = FALSE AND moderation_status = 'pending'
+        ORDER BY created_at ASC
+      `
+    );
+    pendingSuggestions = pendingRes.rows.map((r) => ({
+      id: String(r.id),
+      display_name: String(r.display_name),
+      proposer_handle: r.proposer_handle ? String(r.proposer_handle) : null,
+      created_at: new Date(r.created_at).toISOString(),
+    }));
   }
 
   return {
     generated_at: new Date().toISOString(),
-    title: "Name the Fork",
+    title: NAME_THE_FORK_TITLE,
     subtitle:
       "An informal community naming poll for the new PoW fork — not an official protocol decision.",
     total_voters: totalVoters,
@@ -387,8 +576,10 @@ export async function buildNameTheForkPayload(
       authenticated: Boolean(viewerId),
       selected_candidate_id: selected,
       has_custom_slot_used: hasCustom,
-      can_moderate: Boolean(opts?.canModerate),
+      can_moderate: canModerate,
+      my_submission: mySubmission,
     },
+    pending_suggestions: pendingSuggestions,
   };
 }
 
@@ -412,39 +603,25 @@ export async function castNameTheForkVote(
   try {
     await client.query("BEGIN");
     const cand = await client.query(
-      `SELECT id, hidden_at FROM name_the_fork_candidates WHERE id = $1 FOR UPDATE`,
+      `SELECT id, moderation_status FROM name_the_fork_candidates WHERE id = $1 FOR UPDATE`,
       [candidateId]
     );
     if (!cand.rowCount) {
       await client.query("ROLLBACK");
       return { ok: false, error: "unknown_candidate", status: 404 };
     }
-    if (cand.rows[0].hidden_at) {
+    if (cand.rows[0].moderation_status !== NTF_STATUS.approved) {
       await client.query("ROLLBACK");
-      return { ok: false, error: "candidate_hidden", status: 403 };
+      return { ok: false, error: "candidate_not_votable", status: 403 };
     }
-    await client.query(
-      `
-        INSERT INTO name_the_fork_votes (
-          x_user_id, candidate_id, handle, display_name, avatar_url, avatar_path, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, now())
-        ON CONFLICT (x_user_id) DO UPDATE SET
-          candidate_id = EXCLUDED.candidate_id,
-          handle = EXCLUDED.handle,
-          display_name = EXCLUDED.display_name,
-          avatar_url = EXCLUDED.avatar_url,
-          avatar_path = EXCLUDED.avatar_path,
-          updated_at = now()
-      `,
-      [
-        xUserId,
-        candidateId,
-        opts.handle ? String(opts.handle).toLowerCase().replace(/^@+/, "") : null,
-        opts.name ? String(opts.name) : null,
-        opts.avatarUrl ? String(opts.avatarUrl) : null,
-        opts.avatarPath ? String(opts.avatarPath) : null,
-      ]
-    );
+    await upsertVote(client, {
+      xUserId,
+      candidateId,
+      handle: opts.handle,
+      name: opts.name,
+      avatarUrl: opts.avatarUrl,
+      avatarPath: opts.avatarPath,
+    });
     await client.query("COMMIT");
     return { ok: true };
   } catch (err) {
@@ -475,9 +652,6 @@ export async function submitCustomNameTheForkCandidate(
     xUserId: string;
     displayName: unknown;
     handle?: string | null;
-    name?: string | null;
-    avatarUrl?: string | null;
-    avatarPath?: string | null;
   }
 ): Promise<
   | { ok: true; candidate_id: string }
@@ -513,7 +687,10 @@ export async function submitCustomNameTheForkCandidate(
     await client.query("BEGIN");
     const existing = await client.query(
       `SELECT id FROM name_the_fork_candidates
-       WHERE is_seed = FALSE AND proposer_x_user_id = $1 LIMIT 1`,
+       WHERE is_seed = FALSE
+         AND proposer_x_user_id = $1
+         AND moderation_status IN ('pending', 'approved', 'hidden')
+       LIMIT 1`,
       [xUserId]
     );
     if (existing.rowCount) {
@@ -521,7 +698,10 @@ export async function submitCustomNameTheForkCandidate(
       return { ok: false, error: "custom_already_submitted", status: 409 };
     }
     const dup = await client.query(
-      `SELECT id FROM name_the_fork_candidates WHERE normalized_key = $1 LIMIT 1`,
+      `SELECT id FROM name_the_fork_candidates
+       WHERE normalized_key = $1
+         AND moderation_status IN ('pending', 'approved', 'hidden')
+       LIMIT 1`,
       [norm.normalizedKey]
     );
     if (dup.rowCount) {
@@ -532,32 +712,10 @@ export async function submitCustomNameTheForkCandidate(
       `
         INSERT INTO name_the_fork_candidates (
           id, normalized_key, display_name, is_seed, seed_order,
-          proposer_x_user_id, proposer_handle, created_at
-        ) VALUES ($1, $2, $3, FALSE, NULL, $4, $5, now())
+          proposer_x_user_id, proposer_handle, moderation_status, created_at
+        ) VALUES ($1, $2, $3, FALSE, NULL, $4, $5, 'pending', now())
       `,
       [candidateId, norm.normalizedKey, norm.displayName, xUserId, handle]
-    );
-    await client.query(
-      `
-        INSERT INTO name_the_fork_votes (
-          x_user_id, candidate_id, handle, display_name, avatar_url, avatar_path, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, now())
-        ON CONFLICT (x_user_id) DO UPDATE SET
-          candidate_id = EXCLUDED.candidate_id,
-          handle = EXCLUDED.handle,
-          display_name = EXCLUDED.display_name,
-          avatar_url = EXCLUDED.avatar_url,
-          avatar_path = EXCLUDED.avatar_path,
-          updated_at = now()
-      `,
-      [
-        xUserId,
-        candidateId,
-        handle,
-        opts.name ? String(opts.name) : null,
-        opts.avatarUrl ? String(opts.avatarUrl) : null,
-        opts.avatarPath ? String(opts.avatarPath) : null,
-      ]
     );
     await client.query("COMMIT");
     return { ok: true, candidate_id: candidateId };
@@ -567,23 +725,185 @@ export async function submitCustomNameTheForkCandidate(
     } catch {
       /* ignore */
     }
-    const code = (err as { code?: string; constraint?: string; message?: string })?.code;
-    const constraint = String((err as { constraint?: string })?.constraint || "");
-    const message = String((err as { message?: string })?.message || "");
-    if (code === "23505") {
-      if (
-        constraint === NTF_UNIQUE_ONE_CUSTOM_PER_USER ||
-        message.includes(NTF_UNIQUE_ONE_CUSTOM_PER_USER)
-      ) {
-        return { ok: false, error: "custom_already_submitted", status: 409 };
-      }
-      if (
-        constraint === NTF_UNIQUE_NORMALIZED_KEY ||
-        message.includes(NTF_UNIQUE_NORMALIZED_KEY)
-      ) {
-        return { ok: false, error: "duplicate_name", status: 409 };
-      }
-      return { ok: false, error: "duplicate_name", status: 409 };
+    const mapped = mapUniqueConstraintError(err);
+    if (mapped) return { ok: false, error: mapped, status: 409 };
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function approveNameTheForkCandidate(
+  pool: Pool,
+  opts: {
+    candidateId: string;
+    adminXUserId: string;
+    adminHandle: string;
+  }
+): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
+  const candidateId = String(opts.candidateId || "").trim();
+  if (!candidateId) return { ok: false, error: "invalid_candidate", status: 400 };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const res = await client.query(
+      `SELECT id, is_seed, moderation_status, proposer_x_user_id, proposer_handle
+       FROM name_the_fork_candidates WHERE id = $1 FOR UPDATE`,
+      [candidateId]
+    );
+    if (!res.rowCount) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "unknown_candidate", status: 404 };
+    }
+    const row = res.rows[0];
+    if (row.is_seed) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "cannot_review_seed", status: 403 };
+    }
+    if (row.moderation_status !== NTF_STATUS.pending) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "already_reviewed", status: 409 };
+    }
+
+    const proposerId = row.proposer_x_user_id ? String(row.proposer_x_user_id) : "";
+    if (!proposerId) {
+      // Proposer deleted before review — keep audit as rejected/orphaned, do not publish.
+      await client.query(
+        `
+          UPDATE name_the_fork_candidates
+          SET moderation_status = 'rejected',
+              reviewed_at = now(),
+              reviewed_by_x_user_id = $2,
+              reviewed_by_handle = $3,
+              review_reason = 'proposer_deleted'
+          WHERE id = $1
+        `,
+        [candidateId, String(opts.adminXUserId || ""), String(opts.adminHandle || "zndtoshi")]
+      );
+      await client.query("COMMIT");
+      return { ok: false, error: "proposer_deleted", status: 409 };
+    }
+
+    const proposerExists = await client.query(
+      `SELECT x_user_id, handle, name, avatar_url, avatar_path
+       FROM community_users WHERE x_user_id = $1 FOR UPDATE`,
+      [proposerId]
+    );
+    if (!proposerExists.rowCount) {
+      await client.query(
+        `
+          UPDATE name_the_fork_candidates
+          SET moderation_status = 'rejected',
+              reviewed_at = now(),
+              reviewed_by_x_user_id = $2,
+              reviewed_by_handle = $3,
+              review_reason = 'proposer_deleted',
+              proposer_x_user_id = NULL,
+              proposer_handle = NULL
+          WHERE id = $1
+        `,
+        [candidateId, String(opts.adminXUserId || ""), String(opts.adminHandle || "zndtoshi")]
+      );
+      await client.query("COMMIT");
+      return { ok: false, error: "proposer_deleted", status: 409 };
+    }
+
+    await client.query(
+      `
+        UPDATE name_the_fork_candidates
+        SET moderation_status = 'approved',
+            reviewed_at = now(),
+            reviewed_by_x_user_id = $2,
+            reviewed_by_handle = $3,
+            review_reason = NULL,
+            hidden_at = NULL,
+            hidden_by = NULL
+        WHERE id = $1
+      `,
+      [candidateId, String(opts.adminXUserId || ""), String(opts.adminHandle || "zndtoshi")]
+    );
+
+    const proposer = proposerExists.rows[0];
+    await upsertVote(client, {
+      xUserId: proposerId,
+      candidateId,
+      handle: proposer.handle || row.proposer_handle,
+      name: proposer.name,
+      avatarUrl: proposer.avatar_url,
+      avatarPath: proposer.avatar_path,
+    });
+
+    await client.query("COMMIT");
+    return { ok: true };
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      /* ignore */
+    }
+    const mapped = mapUniqueConstraintError(err);
+    if (mapped) return { ok: false, error: mapped, status: 409 };
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function rejectNameTheForkCandidate(
+  pool: Pool,
+  opts: {
+    candidateId: string;
+    adminXUserId: string;
+    adminHandle: string;
+    reason?: string | null;
+  }
+): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
+  const candidateId = String(opts.candidateId || "").trim();
+  if (!candidateId) return { ok: false, error: "invalid_candidate", status: 400 };
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const res = await client.query(
+      `SELECT id, is_seed, moderation_status FROM name_the_fork_candidates WHERE id = $1 FOR UPDATE`,
+      [candidateId]
+    );
+    if (!res.rowCount) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "unknown_candidate", status: 404 };
+    }
+    const row = res.rows[0];
+    if (row.is_seed) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "cannot_review_seed", status: 403 };
+    }
+    if (row.moderation_status !== NTF_STATUS.pending) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "already_reviewed", status: 409 };
+    }
+    await client.query(
+      `
+        UPDATE name_the_fork_candidates
+        SET moderation_status = 'rejected',
+            reviewed_at = now(),
+            reviewed_by_x_user_id = $2,
+            reviewed_by_handle = $3,
+            review_reason = $4
+        WHERE id = $1
+      `,
+      [
+        candidateId,
+        String(opts.adminXUserId || ""),
+        String(opts.adminHandle || "zndtoshi"),
+        opts.reason ? String(opts.reason).slice(0, 500) : null,
+      ]
+    );
+    await client.query("COMMIT");
+    return { ok: true };
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      /* ignore */
     }
     throw err;
   } finally {
@@ -593,7 +913,7 @@ export async function submitCustomNameTheForkCandidate(
 
 export async function hideNameTheForkCandidate(
   pool: Pool,
-  opts: { candidateId: string; adminHandle: string }
+  opts: { candidateId: string; adminHandle: string; adminXUserId?: string }
 ): Promise<{ ok: true } | { ok: false; error: string; status: number }> {
   const candidateId = String(opts.candidateId || "").trim();
   if (!candidateId) return { ok: false, error: "invalid_candidate", status: 400 };
@@ -601,7 +921,7 @@ export async function hideNameTheForkCandidate(
   try {
     await client.query("BEGIN");
     const res = await client.query(
-      `SELECT id, is_seed, hidden_at FROM name_the_fork_candidates WHERE id = $1 FOR UPDATE`,
+      `SELECT id, is_seed, moderation_status FROM name_the_fork_candidates WHERE id = $1 FOR UPDATE`,
       [candidateId]
     );
     if (!res.rowCount) {
@@ -612,16 +932,27 @@ export async function hideNameTheForkCandidate(
       await client.query("ROLLBACK");
       return { ok: false, error: "cannot_hide_seed", status: 403 };
     }
-    if (!res.rows[0].hidden_at) {
-      await client.query(
-        `UPDATE name_the_fork_candidates
-         SET hidden_at = now(), hidden_by = $2
-         WHERE id = $1 AND is_seed = FALSE`,
-        [candidateId, String(opts.adminHandle || "zndtoshi")]
-      );
+    if (res.rows[0].moderation_status !== NTF_STATUS.approved) {
+      await client.query("ROLLBACK");
+      return { ok: false, error: "cannot_hide_unapproved", status: 403 };
     }
-    // Drop votes so a concurrent cast that lost the row lock cannot leave a
-    // newly accepted vote on a hidden candidate.
+    await client.query(
+      `
+        UPDATE name_the_fork_candidates
+        SET moderation_status = 'hidden',
+            hidden_at = now(),
+            hidden_by = $2,
+            reviewed_at = COALESCE(reviewed_at, now()),
+            reviewed_by_handle = COALESCE(reviewed_by_handle, $2),
+            reviewed_by_x_user_id = COALESCE(reviewed_by_x_user_id, $3)
+        WHERE id = $1 AND is_seed = FALSE
+      `,
+      [
+        candidateId,
+        String(opts.adminHandle || "zndtoshi"),
+        opts.adminXUserId ? String(opts.adminXUserId) : null,
+      ]
+    );
     await client.query(`DELETE FROM name_the_fork_votes WHERE candidate_id = $1`, [candidateId]);
     await client.query("COMMIT");
     return { ok: true };

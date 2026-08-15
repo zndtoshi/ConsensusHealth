@@ -2,6 +2,16 @@ import type { NameTheForkPayload } from "./nameTheForkTypes";
 
 export type { NameTheForkPayload };
 
+async function parsePayload(res: Response): Promise<NameTheForkPayload> {
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(String((data as { error?: string })?.error || `request_failed_${res.status}`));
+    (err as Error & { code?: string }).code = String((data as { error?: string })?.error || "");
+    throw err;
+  }
+  return data as NameTheForkPayload;
+}
+
 export async function fetchNameTheFork(opts?: {
   apiBase?: string;
   signal?: AbortSignal;
@@ -11,7 +21,7 @@ export async function fetchNameTheFork(opts?: {
     credentials: "include",
     signal: opts?.signal,
   });
-  if (!res.ok) throw new Error(`Failed to load Name the Fork (${res.status})`);
+  if (!res.ok) throw new Error(`Failed to load Name the PoW change fork (${res.status})`);
   return (await res.json()) as NameTheForkPayload;
 }
 
@@ -26,13 +36,7 @@ export async function postNameTheForkVote(opts: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ candidate_id: opts.candidateId }),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(String(data?.error || `vote_failed_${res.status}`));
-    (err as Error & { code?: string }).code = String(data?.error || "");
-    throw err;
-  }
-  return data as NameTheForkPayload;
+  return parsePayload(res);
 }
 
 export async function deleteNameTheForkVote(opts?: {
@@ -43,13 +47,7 @@ export async function deleteNameTheForkVote(opts?: {
     method: "DELETE",
     credentials: "include",
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(String(data?.error || `remove_failed_${res.status}`));
-    (err as Error & { code?: string }).code = String(data?.error || "");
-    throw err;
-  }
-  return data as NameTheForkPayload;
+  return parsePayload(res);
 }
 
 export async function postNameTheForkCandidate(opts: {
@@ -63,13 +61,35 @@ export async function postNameTheForkCandidate(opts: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ display_name: opts.displayName }),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(String(data?.error || `candidate_failed_${res.status}`));
-    (err as Error & { code?: string }).code = String(data?.error || "");
-    throw err;
-  }
-  return data as NameTheForkPayload;
+  return parsePayload(res);
+}
+
+export async function postNameTheForkApprove(opts: {
+  apiBase?: string;
+  candidateId: string;
+}): Promise<NameTheForkPayload> {
+  const base = (opts.apiBase || "").replace(/\/$/, "");
+  const res = await fetch(`${base}/api/name-the-fork/admin/approve`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ candidate_id: opts.candidateId }),
+  });
+  return parsePayload(res);
+}
+
+export async function postNameTheForkReject(opts: {
+  apiBase?: string;
+  candidateId: string;
+}): Promise<NameTheForkPayload> {
+  const base = (opts.apiBase || "").replace(/\/$/, "");
+  const res = await fetch(`${base}/api/name-the-fork/admin/reject`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ candidate_id: opts.candidateId }),
+  });
+  return parsePayload(res);
 }
 
 export async function postNameTheForkHide(opts: {
@@ -83,11 +103,5 @@ export async function postNameTheForkHide(opts: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ candidate_id: opts.candidateId }),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(String(data?.error || `hide_failed_${res.status}`));
-    (err as Error & { code?: string }).code = String(data?.error || "");
-    throw err;
-  }
-  return data as NameTheForkPayload;
+  return parsePayload(res);
 }

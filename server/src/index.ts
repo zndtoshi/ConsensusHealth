@@ -88,10 +88,12 @@ import { ensurePrivacySuppressionsTable } from "./privacySuppressions.js";
 import { createHealthRouter } from "./healthRoutes.js";
 import { queryConsensusOverview } from "./consensusOverview.js";
 import {
+  approveNameTheForkCandidate,
   buildNameTheForkPayload,
   castNameTheForkVote,
   ensureNameTheForkSchema,
   hideNameTheForkCandidate,
+  rejectNameTheForkCandidate,
   removeNameTheForkVote,
   submitCustomNameTheForkCandidate,
 } from "./nameTheFork.js";
@@ -1192,7 +1194,7 @@ app.get(
   }
 );
 
-/** Name the Fork easter-egg poll (separate from BIP stances). */
+/** Name the PoW change fork easter-egg poll (separate from BIP stances). */
 app.get(
   "/api/name-the-fork",
   createStatsReadRateLimiter({ getClientIpKey: rateLimitClientIp }),
@@ -1292,9 +1294,6 @@ app.post(
         xUserId: user.x_user_id,
         displayName: req.body?.display_name ?? req.body?.name,
         handle: user.handle,
-        name: user.name,
-        avatarUrl: user.avatar_url,
-        avatarPath: null,
       });
       if (!result.ok) {
         res.status(result.status).json({ error: result.error });
@@ -1306,6 +1305,77 @@ app.post(
         canModerate: isPrivilegedManualEditorHandle(user.handle),
       });
       res.status(201).json(payload);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+app.post(
+  "/api/name-the-fork/admin/approve",
+  ...createAdminWriteRateLimiters({
+    getXUserId: rateLimitUserId,
+    getClientIpKey: rateLimitClientIp,
+  }),
+  async (req, res, next) => {
+    try {
+      const user = getSessionUser(req);
+      if (!user || !isPrivilegedManualEditorHandle(user.handle)) {
+        res.status(403).json({ error: "forbidden" });
+        return;
+      }
+      const candidateId = String(req.body?.candidate_id || "").trim();
+      const result = await approveNameTheForkCandidate(pool, {
+        candidateId,
+        adminXUserId: user.x_user_id,
+        adminHandle: user.handle,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error });
+        return;
+      }
+      const payload = await buildNameTheForkPayload(pool, {
+        viewerXUserId: user.x_user_id,
+        viewerHandle: user.handle,
+        canModerate: true,
+      });
+      res.json(payload);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+app.post(
+  "/api/name-the-fork/admin/reject",
+  ...createAdminWriteRateLimiters({
+    getXUserId: rateLimitUserId,
+    getClientIpKey: rateLimitClientIp,
+  }),
+  async (req, res, next) => {
+    try {
+      const user = getSessionUser(req);
+      if (!user || !isPrivilegedManualEditorHandle(user.handle)) {
+        res.status(403).json({ error: "forbidden" });
+        return;
+      }
+      const candidateId = String(req.body?.candidate_id || "").trim();
+      const result = await rejectNameTheForkCandidate(pool, {
+        candidateId,
+        adminXUserId: user.x_user_id,
+        adminHandle: user.handle,
+        reason: req.body?.reason ?? null,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error });
+        return;
+      }
+      const payload = await buildNameTheForkPayload(pool, {
+        viewerXUserId: user.x_user_id,
+        viewerHandle: user.handle,
+        canModerate: true,
+      });
+      res.json(payload);
     } catch (err) {
       next(err);
     }
@@ -1329,6 +1399,7 @@ app.post(
       const result = await hideNameTheForkCandidate(pool, {
         candidateId,
         adminHandle: user.handle,
+        adminXUserId: user.x_user_id,
       });
       if (!result.ok) {
         res.status(result.status).json({ error: result.error });

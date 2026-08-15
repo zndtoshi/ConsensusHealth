@@ -73,9 +73,11 @@ import {
   overviewHeading,
 } from "./utils/consensusOverview";
 import {
+  clearPendingNameTheForkVote,
   isNameTheForkPath,
   NAME_THE_FORK_PATH,
   NAME_THE_FORK_THEME,
+  NAME_THE_FORK_TITLE,
 } from "./utils/nameTheFork";
 import { scheduleFocusRestore } from "./utils/scheduleFocusRestore";
 import { fetchAccessibleProposals } from "./api/proposals";
@@ -1205,7 +1207,7 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/me`, { credentials: "include" });
       if (!res.ok) {
         setMe({ authenticated: false });
-        return;
+        return false;
       }
       const data = await res.json();
       const authenticated = Boolean(data && data.x_user_id);
@@ -1222,8 +1224,10 @@ export default function App() {
           }));
         }
       }
+      return authenticated;
     } catch {
       setMe({ authenticated: false });
+      return false;
     }
   }
 
@@ -1262,8 +1266,10 @@ export default function App() {
       // ignore cross-origin close errors
     }
     authPopupRef.current = null;
-    await loadMe();
+    const authenticated = await loadMe();
     setAuthBusy(false);
+    // Cancelled/closed popup or failed session: drop one-click vote intent.
+    if (!authenticated) clearPendingNameTheForkVote();
   }
 
   function beginLogin() {
@@ -1304,6 +1310,7 @@ export default function App() {
         authInFlightRef.current = false;
         authPopupRef.current = null;
         setAuthBusy(false);
+        clearPendingNameTheForkVote();
       }
     }, 500);
   }
@@ -1315,6 +1322,7 @@ export default function App() {
         credentials: "include",
       });
     } finally {
+      clearPendingNameTheForkVote();
       setMe(null);
       setEqualAvatarSizeEnabled(false);
     }
@@ -1425,6 +1433,7 @@ export default function App() {
       if (isAuthSuccessMessage(event.data)) void completeLogin();
       else {
         // Auth failed in the popup: stop the spinner without touching the graph.
+        clearPendingNameTheForkVote();
         stopAuthPopupWatch();
         authInFlightRef.current = false;
         authPopupRef.current = null;
@@ -1751,7 +1760,7 @@ export default function App() {
       document.documentElement.style.setProperty("--galaxy-nebula-from", NAME_THE_FORK_THEME.nebulaFrom);
       document.documentElement.style.setProperty("--galaxy-nebula-to", NAME_THE_FORK_THEME.nebulaTo);
       document.documentElement.style.setProperty("--galaxy-accent", NAME_THE_FORK_THEME.accent);
-      document.title = "Consensus Health · Name the Fork";
+      document.title = `Consensus Health · ${NAME_THE_FORK_TITLE}`;
       return;
     }
     const theme = activeProposal?.visualTheme;
@@ -2906,6 +2915,7 @@ export default function App() {
         setStanceChoiceOpen(false);
         return;
       }
+      clearPendingNameTheForkVote();
       setShowNameTheFork(false);
       if (readShowOverviewFromLocation()) {
         setShowOverview(true);
@@ -2931,6 +2941,7 @@ export default function App() {
     setStanceChoiceOpen(false);
     setShowStatsModal(false);
     setSelectedHandle(null);
+    clearPendingNameTheForkVote();
     setShowNameTheFork(false);
     setShowOverview(true);
     writeOverviewToLocation(false);
@@ -2942,6 +2953,7 @@ export default function App() {
       nameTheForkTravelTimerRef.current = 0;
     }
     nameTheForkTravelLockRef.current = false;
+    clearPendingNameTheForkVote();
     setShowNameTheFork(false);
     setNameTheForkTravel(false);
     if (typeof window !== "undefined" && window.history.length > 1 && nameTheForkEnteredFromRef.current) {
@@ -6874,9 +6886,9 @@ export default function App() {
           {showNameTheFork ? (
             <div className="consensusOverviewHeader">
               <div className="consensusOverviewHeader__title" style={{ color: NAME_THE_FORK_THEME.accent }}>
-                Name the Fork
+                Hidden galaxy
               </div>
-              <div className="consensusOverviewHeader__meta">Hidden galaxy</div>
+              <div className="consensusOverviewHeader__meta">Easter egg</div>
             </div>
           ) : showOverview ? (
             <div className="consensusOverviewHeader">

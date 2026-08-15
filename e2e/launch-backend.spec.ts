@@ -718,10 +718,27 @@ test.describe("10b — Name the Fork easter egg", () => {
     await expect(star).toBeFocused();
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(/\/name-the-fork/, { timeout: 15_000 });
-    await expect(page.getByRole("heading", { name: "Name the Fork" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("heading", { name: "Name the PoW change fork" })).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(page.getByRole("button", { name: "Return to consensus" })).toBeVisible();
     await page.goBack();
     await expect(page).toHaveURL(/\/bip\/54/, { timeout: 15_000 });
+  });
+
+  test("discovery star appears in stance-lists galaxy view", async ({ page }) => {
+    await page.goto("/bip/54");
+    await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Options" }).click();
+    await page.getByLabel("Stance lists view").check();
+    await expect(page.getByText(/Within each stance/i)).toBeVisible({ timeout: 15_000 });
+    const star = page.getByRole("button", { name: "Discover a hidden galaxy" });
+    await expect(star).toBeVisible({ timeout: 15_000 });
+    await star.click();
+    await expect(page).toHaveURL(/\/name-the-fork/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: "Name the PoW change fork" })).toBeVisible({
+      timeout: 30_000,
+    });
   });
 
   test("reduced motion navigates without travel overlay delay", async ({ page }) => {
@@ -742,16 +759,16 @@ test.describe("10b — Name the Fork easter egg", () => {
     { name: "375", width: 375, height: 667 },
     { name: "landscape-short", width: 667, height: 320 },
   ] as const) {
-    test(`Name the Fork usable at ${vp.name} (${vp.width}x${vp.height})`, async ({ page }) => {
+    test(`Name the PoW change fork usable at ${vp.name} (${vp.width}x${vp.height})`, async ({
+      page,
+    }) => {
       await page.setViewportSize({ width: vp.width, height: vp.height });
-      const mobileUser = `ntfm_${vp.width}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-      await mockOAuthLogin(page, { e2eUser: mobileUser, path: "/name-the-fork" });
-      await expect(page.getByRole("heading", { name: "Name the Fork" })).toBeVisible({
+      await page.goto("/name-the-fork");
+      await expect(page.getByRole("heading", { name: "Name the PoW change fork" })).toBeVisible({
         timeout: 30_000,
       });
       await expect(page.getByRole("button", { name: "Return to consensus" })).toBeVisible();
       await expect(page.getByRole("list", { name: "Ranked name candidates" })).toBeVisible();
-      await expect(page.getByRole("complementary", { name: "Voting controls" })).toBeVisible();
 
       const overflow = await page.evaluate(() => {
         const root = document.documentElement;
@@ -768,37 +785,40 @@ test.describe("10b — Name the Fork easter egg", () => {
       await expect(input).toBeVisible();
       await input.scrollIntoViewIfNeeded();
       await expect(input).toBeInViewport();
-      await expect(page.getByRole("button", { name: /Submit name/i })).toBeInViewport();
+      await expect(page.getByRole("button", { name: /Submit for review|Sign in with X/i })).toBeVisible();
       await expect(page.getByRole("button", { name: "Return to consensus" })).toBeInViewport();
+      await expect(page.locator(".nameTheFork__shell")).toBeVisible();
+      await expect(page.getByRole("button", { name: /^Vote$/ })).toHaveCount(0);
     });
   }
 
   test("popup login on /name-the-fork refreshes authenticated poll state", async ({ page }) => {
     await mockOAuthLogin(page, { e2eUser: "ntf_login", path: "/name-the-fork" });
     await expect(page).toHaveURL(/\/name-the-fork/);
-    await expect(page.getByRole("heading", { name: "Name the Fork" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Name the PoW change fork" })).toBeVisible({
       timeout: 30_000,
     });
-    await expect(page.getByRole("button", { name: "Sign in with X" })).toHaveCount(0);
-    await expect(page.getByText(/Pick a candidate|You can change or remove/i)).toBeVisible();
+    await expect(page.getByText(/Tap a name below to cast your vote/i)).toBeVisible();
   });
 
-  test("authenticated vote, change, remove, and custom name", async ({ page }) => {
+  test("one-click vote, change, remove, custom pending, and current-vote noop", async ({ page }) => {
     const voteUser = `ntfv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     await mockOAuthLogin(page, { e2eUser: voteUser, path: "/name-the-fork" });
-    await expect(page.getByRole("heading", { name: "Name the Fork" })).toBeVisible({
+    await expect(page.getByRole("heading", { name: "Name the PoW change fork" })).toBeVisible({
       timeout: 30_000,
     });
+    await expect(page.getByRole("button", { name: /^Vote$/ })).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Select Bdash" }).click();
-    await page.getByRole("button", { name: "Vote", exact: true }).click();
+    await page.getByRole("button", { name: "Vote for Bdash" }).click();
     await expect(page.getByText("Vote recorded.")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText(/Current vote:\s*Bdash/i)).toBeVisible();
+    await expect(page.getByText(/Your vote:\s*Bdash/i)).toBeVisible();
 
-    await page.getByRole("button", { name: "Select BcashJr" }).click();
-    await page.getByRole("button", { name: "Change vote" }).click();
+    await page.getByRole("button", { name: "Vote for Bdash" }).click();
+    await expect(page.getByText("This is your current vote.")).toBeVisible({ timeout: 10_000 });
+
+    await page.getByRole("button", { name: "Vote for BcashJr" }).click();
     await expect(page.getByText("Vote changed.")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText(/Current vote:\s*BcashJr/i)).toBeVisible();
+    await expect(page.getByText(/Your vote:\s*BcashJr/i)).toBeVisible();
 
     await page.getByRole("button", { name: "Remove vote" }).click();
     await page.getByRole("button", { name: "Confirm remove" }).click();
@@ -807,10 +827,11 @@ test.describe("10b — Name the Fork easter egg", () => {
     await page.getByRole("button", { name: "Suggest a name" }).click();
     const unique = `Ntf${Date.now().toString(36).slice(-6)}`;
     await page.getByLabel(/Custom name/i).fill(unique);
-    await page.getByRole("button", { name: /Submit name/i }).click();
-    await expect(page.getByText("Custom name submitted.")).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("button", { name: /Submit for review/i }).click();
+    await expect(page.getByText("Suggestion submitted for review.")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("Pending review")).toBeVisible();
     await expect(page.getByText(unique)).toBeVisible();
-    await expect(page.getByText(/already used your custom-name slot/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: `Vote for ${unique}` })).toHaveCount(0);
   });
 
   test("Name the Fork is absent from Consensus Overview", async ({ page }) => {
@@ -821,7 +842,9 @@ test.describe("10b — Name the Fork easter egg", () => {
 
   test("anonymous can read poll and write is rejected", async ({ page, request }) => {
     await page.goto("/name-the-fork");
-    await expect(page.getByRole("heading", { name: "Name the Fork" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("heading", { name: "Name the PoW change fork" })).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(page.getByText("BcashJr")).toBeVisible();
     await expect(page.getByText("Bdash")).toBeVisible();
     await expect(page.getByText("Bitcoin110")).toBeVisible();

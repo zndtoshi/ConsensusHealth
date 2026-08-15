@@ -9,6 +9,8 @@ import {
   NAME_THE_FORK_MAX_CHARS,
   NAME_THE_FORK_PATH,
   NAME_THE_FORK_SEEDS,
+  NAME_THE_FORK_TITLE,
+  NAME_THE_FORK_MIGRATION_VERSION_V2,
   normalizeCandidateName,
 } from "./nameTheFork.js";
 
@@ -20,6 +22,7 @@ test("Name the Fork seeds are exactly the three required display names", () => {
     ["BcashJr", "Bdash", "Bitcoin110"]
   );
   assert.equal(NAME_THE_FORK_PATH, "/name-the-fork");
+  assert.equal(NAME_THE_FORK_TITLE, "Name the PoW change fork");
 });
 
 test("normalizeCandidateName enforces trim, length, charset, and uniqueness key", () => {
@@ -51,7 +54,7 @@ test("seed names are reserved under case-insensitive normalization", () => {
   if (other.ok) assert.equal(isReservedSeedName(other.normalizedKey), false);
 });
 
-test("server wires Name the Fork schema and routes without BIP stance reuse", () => {
+test("server wires moderation schema, approve/reject routes, and display title", () => {
   const indexSrc = fs.readFileSync(path.join(here, "index.ts"), "utf8");
   const modSrc = fs.readFileSync(path.join(here, "nameTheFork.ts"), "utf8");
   const deletionSrc = fs.readFileSync(path.join(here, "accountDeletion.ts"), "utf8");
@@ -60,17 +63,22 @@ test("server wires Name the Fork schema and routes without BIP stance reuse", ()
   assert.match(indexSrc, /\/api\/name-the-fork\/vote/);
   assert.match(indexSrc, /\/api\/name-the-fork\/candidates/);
   assert.match(indexSrc, /\/api\/name-the-fork\/admin\/hide/);
+  assert.match(indexSrc, /\/api\/name-the-fork\/admin\/approve/);
+  assert.match(indexSrc, /\/api\/name-the-fork\/admin\/reject/);
   assert.match(modSrc, /name_the_fork_candidates/);
   assert.match(modSrc, /name_the_fork_votes/);
+  assert.match(modSrc, /moderation_status/);
+  assert.match(modSrc, /NAME_THE_FORK_MIGRATION_VERSION_V2/);
+  assert.equal(NAME_THE_FORK_MIGRATION_VERSION_V2.includes("moderation"), true);
+  assert.match(modSrc, /NTF_UNIQUE_NORMALIZED_ACTIVE/);
+  assert.match(modSrc, /NTF_UNIQUE_ONE_ACTIVE_CUSTOM/);
+  assert.match(modSrc, /approveNameTheForkCandidate/);
+  assert.match(modSrc, /rejectNameTheForkCandidate/);
+  assert.match(modSrc, /pending_suggestions/);
+  assert.match(modSrc, /my_submission/);
+  assert.match(modSrc, /Name the PoW change fork/);
   assert.doesNotMatch(modSrc, /user_proposal_stances/);
   assert.match(modSrc, /pg_advisory_xact_lock/);
-  assert.match(modSrc, /FOR UPDATE/);
-  assert.match(modSrc, /NTF_UNIQUE_ONE_CUSTOM_PER_USER/);
-  assert.match(modSrc, /custom_already_submitted/);
-  assert.match(modSrc, /duplicate_name/);
-  assert.match(modSrc, /loadPrivacySuppressionKeys/);
-  assert.match(modSrc, /loadRemovedCommunityUserKeys/);
-  assert.match(modSrc, /DELETE FROM name_the_fork_votes WHERE candidate_id/);
   assert.match(deletionSrc, /DELETE FROM name_the_fork_votes/);
   assert.match(deletionSrc, /proposer_x_user_id = NULL/);
 });

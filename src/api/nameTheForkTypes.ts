@@ -17,6 +17,20 @@ export type NameTheForkCandidate = {
   voters: NameTheForkVoter[];
 };
 
+export type NameTheForkMySubmission = {
+  id: string;
+  display_name: string;
+  status: "pending" | "rejected";
+  created_at: string;
+};
+
+export type NameTheForkPendingSuggestion = {
+  id: string;
+  display_name: string;
+  proposer_handle: string | null;
+  created_at: string;
+};
+
 export type NameTheForkPayload = {
   generated_at: string;
   title: string;
@@ -28,5 +42,7 @@ export type NameTheForkPayload = {
     selected_candidate_id: string | null;
     has_custom_slot_used: boolean;
     can_moderate: boolean;
+    my_submission: NameTheForkMySubmission | null;
   } | null;
+  pending_suggestions: NameTheForkPendingSuggestion[] | null;
 };

@@ -1,9 +1,12 @@
 /**
- * Client helpers for the Name the Fork easter-egg galaxy.
+ * Client helpers for the Name the PoW change fork easter-egg galaxy.
  */
 
 export const NAME_THE_FORK_PATH = "/name-the-fork";
+/** Exact user-facing title (route/API identifiers stay name-the-fork). */
+export const NAME_THE_FORK_TITLE = "Name the PoW change fork";
 export const NAME_THE_FORK_MAX_CHARS = 14;
+export const NTF_PENDING_VOTE_KEY = "ch_ntf_pending_vote";
 
 export function isNameTheForkPath(pathname: string): boolean {
   const path = String(pathname || "").split("?")[0].split("#")[0].replace(/\/+$/, "") || "/";
@@ -62,6 +65,128 @@ export function normalizeCandidateName(raw: unknown): NameNormalizeResult {
   };
 }
 
+export function readPendingNameTheForkVote(): string | null {
+  try {
+    const raw = sessionStorage.getItem(NTF_PENDING_VOTE_KEY);
+    const id = String(raw || "").trim();
+    return id || null;
+  } catch {
+    return null;
+  }
+}
+
+export function writePendingNameTheForkVote(candidateId: string): void {
+  try {
+    const id = String(candidateId || "").trim();
+    if (!id) return;
+    sessionStorage.setItem(NTF_PENDING_VOTE_KEY, id);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function clearPendingNameTheForkVote(): void {
+  try {
+    sessionStorage.removeItem(NTF_PENDING_VOTE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+export type PendingNameTheForkVoteDecision =
+  | { type: "wait" }
+  | { type: "clear" }
+  | { type: "already_selected"; candidateId: string }
+  | { type: "cast"; candidateId: string; changing: boolean };
+
+/** Synchronous exclusive lock for candidate-vote POSTs (not remove/suggest/moderation). */
+export type CandidateVoteWriteGate = {
+  isHeld(): boolean;
+  tryAcquire(): boolean;
+  release(): void;
+};
+
+export function createCandidateVoteWriteGate(): CandidateVoteWriteGate {
+  let held = false;
+  return {
+    isHeld: () => held,
+    tryAcquire() {
+      if (held) return false;
+      held = true;
+      return true;
+    },
+    release() {
+      held = false;
+    },
+  };
+}
+
+/**
+ * Run at most one candidate-vote write at a time.
+ * Concurrent callers get `skipped` without invoking `write` or busy/status callbacks.
+ */
+export async function runExclusiveCandidateVoteWrite<T>(options: {
+  gate: CandidateVoteWriteGate;
+  write: () => Promise<T>;
+  onBusy?: (busy: boolean) => void;
+  onSuccess?: (value: T) => void;
+  onError?: (error: unknown) => void;
+}): Promise<"ok" | "error" | "skipped"> {
+  if (!options.gate.tryAcquire()) return "skipped";
+  options.onBusy?.(true);
+  try {
+    const value = await options.write();
+    options.onSuccess?.(value);
+    return "ok";
+  } catch (error) {
+    options.onError?.(error);
+    return "error";
+  } finally {
+    options.gate.release();
+    options.onBusy?.(false);
+  }
+}
+
+/**
+ * Decide what to do with a stored anonymous one-click vote after auth/poll state settles.
+ * Does not clear while login is in progress (`authBusy`) or a cast is already running.
+ */
+export function decidePendingNameTheForkVoteAction(input: {
+  pendingCandidateId: string | null;
+  authenticated: boolean;
+  authBusy: boolean;
+  pollReady: boolean;
+  castInFlight: boolean;
+  approvedCandidateIds: Iterable<string>;
+  selectedCandidateId: string | null;
+  /** Candidate id already consumed for a cast/clear in this authenticated session. */
+  consumedCandidateId?: string | null;
+}): PendingNameTheForkVoteDecision {
+  const pendingId = String(input.pendingCandidateId || "").trim() || null;
+  if (!pendingId) return { type: "wait" };
+  if (input.authBusy || input.castInFlight) return { type: "wait" };
+  if (!input.authenticated) return { type: "wait" };
+  if (!input.pollReady) return { type: "wait" };
+  if (input.consumedCandidateId && input.consumedCandidateId === pendingId) {
+    return { type: "wait" };
+  }
+
+  const approved = new Set(
+    [...(input.approvedCandidateIds || [])].map((id) => String(id || "").trim()).filter(Boolean)
+  );
+  if (!approved.has(pendingId)) return { type: "clear" };
+
+  const selected = String(input.selectedCandidateId || "").trim() || null;
+  if (selected === pendingId) {
+    return { type: "already_selected", candidateId: pendingId };
+  }
+  return {
+    type: "cast",
+    candidateId: pendingId,
+    changing: Boolean(selected),
+  };
+}
+
 export function friendlyNameTheForkError(code: unknown): string {
   const key = String(code || "").trim();
   switch (key) {
@@ -74,13 +199,22 @@ export function friendlyNameTheForkError(code: unknown): string {
     case "reserved_name":
       return "That name is already a seeded choice.";
     case "duplicate_name":
-      return "That name is already on the ballot.";
+      return "That name is already on the ballot or awaiting review.";
     case "custom_already_submitted":
       return "You’ve already suggested a custom name for this poll.";
     case "candidate_hidden":
+    case "candidate_not_votable":
       return "That choice is no longer available.";
     case "unknown_candidate":
       return "That choice wasn’t found.";
+    case "already_reviewed":
+      return "That suggestion was already reviewed.";
+    case "proposer_deleted":
+      return "The proposer is no longer available; the suggestion was closed.";
+    case "cannot_review_seed":
+    case "cannot_hide_seed":
+    case "cannot_hide_unapproved":
+      return "That action isn’t allowed for this candidate.";
     case "rate_limited":
       return "Too many requests. Please wait and try again.";
     case "forbidden":

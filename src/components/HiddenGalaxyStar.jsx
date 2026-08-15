@@ -21,7 +21,13 @@ export function HiddenGalaxyStar({
         onDiscover?.();
       }}
     >
-      <span className="hiddenGalaxyStar__core" aria-hidden="true" />
+      <span className="hiddenGalaxyStar__glyph" aria-hidden="true">
+        <span className="hiddenGalaxyStar__ray hiddenGalaxyStar__ray--n" />
+        <span className="hiddenGalaxyStar__ray hiddenGalaxyStar__ray--e" />
+        <span className="hiddenGalaxyStar__ray hiddenGalaxyStar__ray--s" />
+        <span className="hiddenGalaxyStar__ray hiddenGalaxyStar__ray--w" />
+        <span className="hiddenGalaxyStar__core" />
+      </span>
     </button>
   );
 }
