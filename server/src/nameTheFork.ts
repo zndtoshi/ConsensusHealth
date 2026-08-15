@@ -34,8 +34,9 @@ export type NtfModerationStatus = (typeof NTF_STATUS)[keyof typeof NTF_STATUS];
 
 export const NAME_THE_FORK_SEEDS = [
   { id: "seed_bcashjr", displayName: "BcashJr", order: 0 },
-  { id: "seed_bdash", displayName: "Bdash", order: 1 },
-  { id: "seed_bitcoin110", displayName: "Bitcoin110", order: 2 },
+  { id: "seed_bdashjr", displayName: "BdashJr", order: 1 },
+  { id: "seed_bdash", displayName: "Bdash", order: 2 },
+  { id: "seed_bitcoin110", displayName: "Bitcoin110", order: 3 },
 ] as const;
 
 export type NameTheForkSeed = (typeof NAME_THE_FORK_SEEDS)[number];

@@ -16,10 +16,10 @@ import {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-test("Name the Fork seeds are exactly the three required display names", () => {
+test("Name the Fork seeds are exactly the four required display names", () => {
   assert.deepEqual(
     NAME_THE_FORK_SEEDS.map((s) => s.displayName),
-    ["BcashJr", "Bdash", "Bitcoin110"]
+    ["BcashJr", "BdashJr", "Bdash", "Bitcoin110"]
   );
   assert.equal(NAME_THE_FORK_PATH, "/name-the-fork");
   assert.equal(NAME_THE_FORK_TITLE, "Name the PoW change fork");

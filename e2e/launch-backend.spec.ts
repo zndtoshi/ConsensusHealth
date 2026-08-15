@@ -846,6 +846,7 @@ test.describe("10b — Name the Fork easter egg", () => {
       timeout: 30_000,
     });
     await expect(page.getByText("BcashJr")).toBeVisible();
+    await expect(page.getByText("BdashJr")).toBeVisible();
     await expect(page.getByText("Bdash")).toBeVisible();
     await expect(page.getByText("Bitcoin110")).toBeVisible();
     const vote = await apiJson(request, "/api/name-the-fork/vote", {

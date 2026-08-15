@@ -54,7 +54,7 @@ test("integration: schema + seed idempotency keeps seeds approved", async () => 
       `SELECT id, display_name, moderation_status
        FROM name_the_fork_candidates WHERE is_seed = TRUE ORDER BY seed_order ASC`
     );
-    assert.equal(seeds.rowCount, 3);
+    assert.equal(seeds.rowCount, 4);
     assert.deepEqual(
       seeds.rows.map((r) => r.display_name),
       NAME_THE_FORK_SEEDS.map((s) => s.displayName)
@@ -63,7 +63,7 @@ test("integration: schema + seed idempotency keeps seeds approved", async () => 
 
     const payload = await buildNameTheForkPayload(iso.pool);
     assert.equal(payload.title, NAME_THE_FORK_TITLE);
-    assert.equal(payload.candidates.length, 3);
+    assert.equal(payload.candidates.length, 4);
   } finally {
     await iso.cleanup();
   }
