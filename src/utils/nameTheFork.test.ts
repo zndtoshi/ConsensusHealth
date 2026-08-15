@@ -299,6 +299,8 @@ test("discovery star has exactly four decorative rays and reduced-motion static 
   assert.match(starSrc, /reducedMotion/);
   assert.match(cssSrc, /\.hiddenGalaxyStar__ray[\s\S]*?pointer-events:\s*none/);
   assert.match(cssSrc, /@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?\.hiddenGalaxyStar/);
+  assert.match(cssSrc, /\.hiddenGalaxyStar \{[\s\S]*?position:\s*fixed[\s\S]*?z-index:\s*30/);
+  assert.match(cssSrc, /@media \(max-width:\s*860px\)[\s\S]*?\.hiddenGalaxyStar \{[\s\S]*?width:\s*40px[\s\S]*?height:\s*40px/);
 });
 
 test("App mounts discovery star and one-click Name the PoW change fork UI", () => {

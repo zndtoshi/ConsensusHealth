@@ -7569,24 +7569,6 @@ export default function App() {
               })}
             </div>
           ) : null}
-          {!showOverview &&
-          !showNameTheFork &&
-          !showStatsModal &&
-          !showDonateModal &&
-          !stanceChoiceOpen &&
-          !infoPagePath &&
-          !adminOptionsOpen &&
-          !profileMenuOpen &&
-          !galaxyTravel &&
-          !nameTheForkTravel &&
-          !historyPlaybackPlaying &&
-          !(newStancesUi.headingOpacity > 0.01 || newStancesUi.bandActive) ? (
-            <HiddenGalaxyStar
-              reducedMotion={prefersGalaxyReducedMotion}
-              disabled={Boolean(galaxyTravel)}
-              onDiscover={travelToNameTheFork}
-            />
-          ) : null}
           {nameTheForkTravel ? <div className="nameTheForkTravel is-active" aria-hidden="true" /> : null}
         </div>
       </div>
@@ -7610,6 +7592,24 @@ export default function App() {
           <div>Size of avatars is proportional to number of followers.</div>
         )}
       </div> : null}
+      {!showOverview &&
+      !showNameTheFork &&
+      !showStatsModal &&
+      !showDonateModal &&
+      !stanceChoiceOpen &&
+      !infoPagePath &&
+      !adminOptionsOpen &&
+      !profileMenuOpen &&
+      !galaxyTravel &&
+      !nameTheForkTravel &&
+      !historyPlaybackPlaying &&
+      !(newStancesUi.headingOpacity > 0.01 || newStancesUi.bandActive) ? (
+        <HiddenGalaxyStar
+          reducedMotion={prefersGalaxyReducedMotion}
+          disabled={Boolean(galaxyTravel)}
+          onDiscover={travelToNameTheFork}
+        />
+      ) : null}
       <div style={styles.bottomControls}>
         {!showOverview && !showNameTheFork ? (
           <>

@@ -2813,10 +2813,10 @@ html[data-browser="firefox"] .stanceGlow {
    ================================ */
 
 .hiddenGalaxyStar {
-  position: absolute;
+  position: fixed;
   left: max(14px, env(safe-area-inset-left, 0px));
   bottom: max(88px, calc(72px + env(safe-area-inset-bottom, 0px)));
-  z-index: 8;
+  z-index: 30;
   width: 28px;
   height: 28px;
   border: none;
@@ -3457,6 +3457,20 @@ html[data-browser="firefox"] .stanceGlow {
   }
 
   .hiddenGalaxyStar {
+    left: max(10px, env(safe-area-inset-left, 0px));
     bottom: max(96px, calc(84px + env(safe-area-inset-bottom, 0px)));
+    width: 40px;
+    height: 40px;
+  }
+
+  .hiddenGalaxyStar__glyph {
+    width: 22px;
+    height: 22px;
+    filter: brightness(1.28);
+  }
+
+  .hiddenGalaxyStar__core {
+    width: 8px;
+    height: 8px;
   }
 }
