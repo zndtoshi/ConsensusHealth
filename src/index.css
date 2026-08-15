@@ -1001,7 +1001,8 @@ button:focus-visible {
 .infoPagesOverlay {
   position: fixed;
   inset: 0;
-  z-index: 240;
+  /* Above StatisticsModal (1000) so Privacy/Terms can open from its footer. */
+  z-index: 1100;
   display: flex;
   align-items: stretch;
   justify-content: center;
@@ -2804,5 +2805,469 @@ html[data-browser="firefox"] .stanceGlow {
 
   .consensusOverviewCard__breakdown.is-skeleton {
     animation: none;
+  }
+}
+
+/* ================================
+   Name the Fork easter-egg galaxy
+   ================================ */
+
+.hiddenGalaxyStar {
+  position: absolute;
+  left: max(14px, env(safe-area-inset-left, 0px));
+  bottom: max(88px, calc(72px + env(safe-area-inset-bottom, 0px)));
+  z-index: 8;
+  width: 28px;
+  height: 28px;
+  border: none;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  outline: none;
+}
+
+.hiddenGalaxyStar__core {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(226, 232, 240, 0.85);
+  box-shadow:
+    0 0 6px rgba(226, 232, 240, 0.45),
+    0 0 14px rgba(52, 211, 153, 0.25);
+  animation: hiddenGalaxyTwinkle 3.6s ease-in-out infinite;
+}
+
+.hiddenGalaxyStar:hover .hiddenGalaxyStar__core,
+.hiddenGalaxyStar:focus-visible .hiddenGalaxyStar__core {
+  background: #34d399;
+  box-shadow:
+    0 0 8px rgba(52, 211, 153, 0.7),
+    0 0 18px rgba(52, 211, 153, 0.35);
+}
+
+.hiddenGalaxyStar:focus-visible {
+  outline: 2px solid rgba(248, 250, 252, 0.8);
+  outline-offset: 3px;
+}
+
+.hiddenGalaxyStar:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.hiddenGalaxyStar.is-static .hiddenGalaxyStar__core {
+  animation: none;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.35);
+}
+
+@keyframes hiddenGalaxyTwinkle {
+  0%, 100% { opacity: 0.55; transform: scale(0.92); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hiddenGalaxyStar__core {
+    animation: none;
+  }
+}
+
+.nameTheForkTravel {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 18% 82%, rgba(52, 211, 153, 0.35), rgba(2, 6, 23, 0.92) 55%);
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.nameTheForkTravel.is-active {
+  opacity: 1;
+}
+
+.nameTheFork {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(ellipse 70% 40% at 50% -5%, var(--ntf-from, rgba(6, 78, 59, 0.22)) 0%, transparent 55%),
+    radial-gradient(ellipse 50% 40% at 80% 90%, rgba(6, 95, 70, 0.08) 0%, transparent 50%),
+    #000;
+  color: rgba(241, 245, 249, 0.94);
+}
+
+.nameTheFork__header {
+  flex: 0 0 auto;
+  padding: 16px 18px 8px;
+  padding-top: max(16px, env(safe-area-inset-top, 0px));
+  text-align: center;
+}
+
+.nameTheFork__return {
+  appearance: none;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.55);
+  color: rgba(226, 232, 240, 0.92);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+
+.nameTheFork__return:focus-visible {
+  outline: 2px solid rgba(248, 250, 252, 0.75);
+  outline-offset: 2px;
+}
+
+.nameTheFork__title {
+  margin: 0;
+  font-size: clamp(22px, 4vw, 30px);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--ntf-accent, #34d399);
+  text-shadow: 0 0 18px var(--ntf-glow, rgba(52, 211, 153, 0.18));
+}
+
+.nameTheFork__subtitle {
+  margin: 8px auto 0;
+  max-width: 36rem;
+  font-size: 13px;
+  line-height: 1.45;
+  color: rgba(203, 213, 225, 0.82);
+}
+
+.nameTheFork__totals {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.nameTheFork__retry {
+  margin-top: 8px;
+  appearance: none;
+  border: 1px solid rgba(52, 211, 153, 0.4);
+  background: rgba(6, 78, 59, 0.35);
+  color: #a7f3d0;
+  border-radius: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.nameTheFork__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) min(320px, 34vw);
+  gap: 12px;
+  padding: 8px 14px 18px;
+  padding-bottom: max(18px, env(safe-area-inset-bottom, 0px));
+}
+
+.nameTheFork__rankScroll {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  padding-right: 4px;
+}
+
+.nameTheForkCluster {
+  position: relative;
+  border: 1px solid rgba(52, 211, 153, 0.16);
+  border-radius: 16px;
+  background: linear-gradient(165deg, rgba(15, 23, 42, 0.55), rgba(2, 6, 23, 0.72));
+  transition: border-color 160ms ease, filter 160ms ease, box-shadow 160ms ease;
+}
+
+.nameTheForkCluster.is-selected,
+.nameTheForkCluster:hover,
+.nameTheForkCluster:focus-within {
+  border-color: rgba(52, 211, 153, 0.45);
+  box-shadow: 0 0 24px rgba(52, 211, 153, 0.12);
+  filter: brightness(1.05);
+}
+
+.nameTheForkCluster.is-mine {
+  box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.35), 0 0 28px rgba(52, 211, 153, 0.14);
+}
+
+.nameTheForkCluster__hit {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 42%);
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 16px;
+}
+
+.nameTheForkCluster__hit:focus-visible {
+  outline: 2px solid rgba(248, 250, 252, 0.75);
+  outline-offset: -2px;
+}
+
+.nameTheForkCluster__rank {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: rgba(148, 163, 184, 0.9);
+  font-weight: 700;
+}
+
+.nameTheForkCluster__name {
+  display: block;
+  margin-top: 2px;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--ntf-accent, #34d399);
+}
+
+.nameTheForkCluster__counts {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: rgba(203, 213, 225, 0.85);
+}
+
+.nameTheForkCluster__proposed {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: rgba(148, 163, 184, 0.88);
+}
+
+.nameTheForkCluster__orbit {
+  position: relative;
+  min-height: 72px;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.nameTheForkCluster__avatar {
+  border-radius: 50%;
+  object-fit: cover;
+  box-shadow: 0 0 0 2px rgba(2, 6, 23, 0.85), 0 0 10px var(--ntf-aura, rgba(52, 211, 153, 0.55));
+}
+
+.nameTheForkCluster__emptyDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(52, 211, 153, 0.35);
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.25);
+}
+
+.nameTheForkCluster__more {
+  align-self: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(167, 243, 208, 0.92);
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(6, 78, 59, 0.45);
+  border: 1px solid rgba(52, 211, 153, 0.28);
+}
+
+.nameTheFork__skeletons {
+  display: grid;
+  gap: 12px;
+}
+
+.nameTheFork__skeleton {
+  min-height: 88px;
+  border-radius: 16px;
+  border: 1px solid rgba(52, 211, 153, 0.12);
+  background: linear-gradient(
+    90deg,
+    rgba(15, 23, 42, 0.55) 0%,
+    rgba(6, 78, 59, 0.22) 50%,
+    rgba(15, 23, 42, 0.55) 100%
+  );
+  background-size: 200% 100%;
+  animation: nameTheForkSkeleton 1.2s ease-in-out infinite;
+}
+
+.nameTheFork.is-static .nameTheFork__skeleton {
+  animation: none;
+}
+
+@keyframes nameTheForkSkeleton {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+.nameTheFork__empty {
+  margin: 0;
+  padding: 18px 12px;
+  font-size: 13px;
+  color: rgba(148, 163, 184, 0.9);
+}
+
+.nameTheForkCluster__hide {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  appearance: none;
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  background: rgba(127, 29, 29, 0.35);
+  color: #fecaca;
+  border-radius: 8px;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.nameTheFork__panel {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid rgba(52, 211, 153, 0.18);
+  border-radius: 16px;
+  background: rgba(2, 6, 23, 0.72);
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.nameTheFork__panelTitle {
+  font-size: 13px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(226, 232, 240, 0.9);
+}
+
+.nameTheFork__panelHint,
+.nameTheFork__current {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(203, 213, 225, 0.82);
+}
+
+.nameTheFork__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.nameTheFork__suggestToggle,
+.nameTheFork__suggestInput {
+  width: 100%;
+}
+
+.nameTheFork__suggestToggle {
+  appearance: none;
+  border: 1px dashed rgba(52, 211, 153, 0.35);
+  background: rgba(6, 78, 59, 0.2);
+  color: #a7f3d0;
+  border-radius: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.nameTheFork__suggestLabel {
+  display: block;
+  font-size: 12px;
+  color: rgba(203, 213, 225, 0.85);
+  margin-bottom: 6px;
+}
+
+.nameTheFork__suggestInput {
+  appearance: none;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.7);
+  color: #f8fafc;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.nameTheFork__suggestMeta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: rgba(148, 163, 184, 0.9);
+  margin: 6px 0;
+}
+
+.nameTheFork__status {
+  margin: 0;
+  font-size: 12px;
+  color: #86efac;
+}
+
+.nameTheFork__error {
+  margin: 0;
+  font-size: 12px;
+  color: #fca5a5;
+}
+
+.nameTheFork.is-static .nameTheForkCluster {
+  transition: none;
+}
+
+@media (max-width: 860px) {
+  .nameTheFork {
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .nameTheFork__header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: linear-gradient(180deg, rgba(2, 6, 23, 0.96) 70%, rgba(2, 6, 23, 0.72));
+    backdrop-filter: blur(8px);
+  }
+
+  .nameTheFork__body {
+    grid-template-columns: 1fr;
+    overflow: visible;
+    padding-bottom: max(28px, calc(18px + env(safe-area-inset-bottom, 0px)));
+  }
+
+  .nameTheFork__rankScroll,
+  .nameTheFork__panel {
+    overflow: visible;
+    min-height: 0;
+  }
+
+  .nameTheForkCluster__hit {
+    grid-template-columns: 1fr;
+  }
+
+  .nameTheFork__actions .toolbarBtn,
+  .nameTheFork__suggestToggle,
+  .nameTheFork__suggestInput,
+  .nameTheForkCluster__hide {
+    min-height: 44px;
+  }
+
+  .hiddenGalaxyStar {
+    bottom: max(96px, calc(84px + env(safe-area-inset-bottom, 0px)));
   }
 }

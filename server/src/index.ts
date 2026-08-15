@@ -88,6 +88,14 @@ import { ensurePrivacySuppressionsTable } from "./privacySuppressions.js";
 import { createHealthRouter } from "./healthRoutes.js";
 import { queryConsensusOverview } from "./consensusOverview.js";
 import {
+  buildNameTheForkPayload,
+  castNameTheForkVote,
+  ensureNameTheForkSchema,
+  hideNameTheForkCandidate,
+  removeNameTheForkVote,
+  submitCustomNameTheForkCandidate,
+} from "./nameTheFork.js";
+import {
   loadMergedCommunityUsersWithStance as loadMergedCommunityUsersWithStanceShared,
   loadSeededAccountsForCommunity as loadSeededAccountsForCommunityShared,
   mapStanceHistoryPublicRow,
@@ -676,6 +684,7 @@ async function initDb(): Promise<void> {
 
   // Multi-BIP proposal tables + BIP110 backfill (idempotent).
   await ensureProposalSchema(pool);
+  await ensureNameTheForkSchema(pool);
   await ensureOAuthStateTable(pool);
   await ensurePrivacySuppressionsTable(pool);
 }
@@ -1176,6 +1185,160 @@ app.get(
         .filter((p) => String(p.status || "").toLowerCase() === "final")
         .map((p) => String(p.id));
       const payload = await queryConsensusOverview(pool, { ongoingIds, completedIds });
+      res.json(payload);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/** Name the Fork easter-egg poll (separate from BIP stances). */
+app.get(
+  "/api/name-the-fork",
+  createStatsReadRateLimiter({ getClientIpKey: rateLimitClientIp }),
+  async (req, res, next) => {
+    try {
+      const user = getSessionUser(req);
+      const payload = await buildNameTheForkPayload(pool, {
+        viewerXUserId: user?.x_user_id || null,
+        viewerHandle: user?.handle || null,
+        canModerate: isPrivilegedManualEditorHandle(user?.handle),
+      });
+      res.json(payload);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+app.post(
+  "/api/name-the-fork/vote",
+  ...createStanceWriteRateLimiters({
+    getXUserId: rateLimitUserId,
+    getClientIpKey: rateLimitClientIp,
+  }),
+  async (req, res, next) => {
+    try {
+      const user = getSessionUser(req);
+      if (!user) {
+        res.status(401).json({ error: "not_logged_in" });
+        return;
+      }
+      const candidateId = String(req.body?.candidate_id || "").trim();
+      const result = await castNameTheForkVote(pool, {
+        xUserId: user.x_user_id,
+        candidateId,
+        handle: user.handle,
+        name: user.name,
+        avatarUrl: user.avatar_url,
+        avatarPath: null,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error });
+        return;
+      }
+      const payload = await buildNameTheForkPayload(pool, {
+        viewerXUserId: user.x_user_id,
+        viewerHandle: user.handle,
+        canModerate: isPrivilegedManualEditorHandle(user.handle),
+      });
+      res.json(payload);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+app.delete(
+  "/api/name-the-fork/vote",
+  ...createStanceWriteRateLimiters({
+    getXUserId: rateLimitUserId,
+    getClientIpKey: rateLimitClientIp,
+  }),
+  async (req, res, next) => {
+    try {
+      const user = getSessionUser(req);
+      if (!user) {
+        res.status(401).json({ error: "not_logged_in" });
+        return;
+      }
+      await removeNameTheForkVote(pool, user.x_user_id);
+      const payload = await buildNameTheForkPayload(pool, {
+        viewerXUserId: user.x_user_id,
+        viewerHandle: user.handle,
+        canModerate: isPrivilegedManualEditorHandle(user.handle),
+      });
+      res.json(payload);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+app.post(
+  "/api/name-the-fork/candidates",
+  ...createStanceWriteRateLimiters({
+    getXUserId: rateLimitUserId,
+    getClientIpKey: rateLimitClientIp,
+  }),
+  async (req, res, next) => {
+    try {
+      const user = getSessionUser(req);
+      if (!user) {
+        res.status(401).json({ error: "not_logged_in" });
+        return;
+      }
+      const result = await submitCustomNameTheForkCandidate(pool, {
+        xUserId: user.x_user_id,
+        displayName: req.body?.display_name ?? req.body?.name,
+        handle: user.handle,
+        name: user.name,
+        avatarUrl: user.avatar_url,
+        avatarPath: null,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error });
+        return;
+      }
+      const payload = await buildNameTheForkPayload(pool, {
+        viewerXUserId: user.x_user_id,
+        viewerHandle: user.handle,
+        canModerate: isPrivilegedManualEditorHandle(user.handle),
+      });
+      res.status(201).json(payload);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+app.post(
+  "/api/name-the-fork/admin/hide",
+  ...createAdminWriteRateLimiters({
+    getXUserId: rateLimitUserId,
+    getClientIpKey: rateLimitClientIp,
+  }),
+  async (req, res, next) => {
+    try {
+      const user = getSessionUser(req);
+      if (!user || !isPrivilegedManualEditorHandle(user.handle)) {
+        res.status(403).json({ error: "forbidden" });
+        return;
+      }
+      const candidateId = String(req.body?.candidate_id || "").trim();
+      const result = await hideNameTheForkCandidate(pool, {
+        candidateId,
+        adminHandle: user.handle,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.error });
+        return;
+      }
+      const payload = await buildNameTheForkPayload(pool, {
+        viewerXUserId: user.x_user_id,
+        viewerHandle: user.handle,
+        canModerate: true,
+      });
       res.json(payload);
     } catch (err) {
       next(err);

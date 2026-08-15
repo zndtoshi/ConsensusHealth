@@ -20,6 +20,7 @@ function makeFakePool(opts?: {
       : opts.user;
   const deleted: string[] = [];
   const upserted: string[] = [];
+  const updated: string[] = [];
   let inTx = false;
   let committed = false;
   let rolledBack = false;
@@ -58,6 +59,10 @@ function makeFakePool(opts?: {
         if (!user) return { rows: [], rowCount: 0 };
         return { rows: [user], rowCount: 1 };
       }
+      if (text.startsWith("update name_the_fork_candidates")) {
+        updated.push("name_the_fork_candidates");
+        return { rows: [], rowCount: 1, params };
+      }
       if (text.startsWith("delete from")) {
         const table = text.match(/delete from (\w+)/)?.[1] ?? "unknown";
         deleted.push(table);
@@ -71,6 +76,7 @@ function makeFakePool(opts?: {
   const pool = {
     deleted,
     upserted,
+    updated,
     get committed() {
       return committed;
     },
@@ -135,6 +141,7 @@ test("deleteAuthenticatedAccount upserts privacy tombstone and deletes expected 
     if (table === "privacy_suppressions") continue;
     assert.ok(pool.deleted.includes(table), `expected delete of ${table}`);
   }
+  assert.ok(pool.updated.includes("name_the_fork_candidates"));
   assert.ok(unlinked.some((p) => p.replace(/\\/g, "/").endsWith("/42.jpg")));
 });
 

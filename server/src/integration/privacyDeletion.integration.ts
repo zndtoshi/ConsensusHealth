@@ -259,3 +259,75 @@ test("integration: account deletion transaction rolls back on mid-flight failure
     await iso.cleanup();
   }
 });
+
+test("integration: legacy privacy deletion also cleans Name the Fork vote + proposer attribution", async () => {
+  const iso = await createIsolatedSchemaPool("privntf");
+  try {
+    await ensureAccountDeletionSchema(iso.pool);
+    await ensurePrivacySuppressionsTable(iso.pool);
+    // Fixture already applied Name the Fork schema; second call must stay idempotent.
+    const { ensureNameTheForkSchema, castNameTheForkVote, submitCustomNameTheForkCandidate } =
+      await import("../nameTheFork.js");
+    await ensureNameTheForkSchema(iso.pool);
+
+    const proposer = uniqueTestId("ntf_prop");
+    const voter = uniqueTestId("ntf_voter");
+    const proposerHandle = `np_${proposer.slice(-6)}`;
+    const voterHandle = `nv_${voter.slice(-6)}`;
+    await seedUser(iso.pool, { x_user_id: proposer, handle: proposerHandle });
+    await seedUser(iso.pool, { x_user_id: voter, handle: voterHandle });
+
+    const created = await submitCustomNameTheForkCandidate(iso.pool, {
+      xUserId: proposer,
+      displayName: "PrivNtfKeep",
+      handle: proposerHandle,
+    });
+    assert.equal(created.ok, true);
+    if (!created.ok) return;
+
+    const voted = await castNameTheForkVote(iso.pool, {
+      xUserId: voter,
+      candidateId: created.candidate_id,
+      handle: voterHandle,
+    });
+    assert.equal(voted.ok, true);
+
+    const deleted = await deleteAuthenticatedAccount({
+      pool: iso.pool,
+      sessionUser: { x_user_id: proposer, handle: proposerHandle },
+      avatarsDir: "/tmp/avatars-integration",
+      unlink: async () => {},
+    });
+    assert.equal(deleted.deleted, true);
+
+    const voteGone = await iso.pool.query(
+      `SELECT 1 FROM name_the_fork_votes WHERE x_user_id = $1`,
+      [proposer]
+    );
+    assert.equal(voteGone.rowCount, 0);
+
+    const otherVote = await iso.pool.query(
+      `SELECT 1 FROM name_the_fork_votes WHERE x_user_id = $1`,
+      [voter]
+    );
+    assert.equal(otherVote.rowCount, 1);
+
+    const cand = await iso.pool.query(
+      `SELECT proposer_x_user_id, proposer_handle, display_name
+       FROM name_the_fork_candidates WHERE id = $1`,
+      [created.candidate_id]
+    );
+    assert.equal(cand.rowCount, 1);
+    assert.equal(cand.rows[0].display_name, "PrivNtfKeep");
+    assert.equal(cand.rows[0].proposer_x_user_id, null);
+    assert.equal(cand.rows[0].proposer_handle, null);
+
+    const tombstone = await iso.pool.query(
+      `SELECT 1 FROM privacy_suppressions WHERE x_user_id = $1`,
+      [proposer]
+    );
+    assert.equal(tombstone.rowCount, 1);
+  } finally {
+    await iso.cleanup();
+  }
+});

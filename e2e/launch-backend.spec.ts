@@ -675,9 +675,11 @@ test.describe("9 — failure polish + real dual rate limits", () => {
 
 test.describe("10 — keyboard / focus / reduced motion", () => {
   test("Privacy / Terms Escape + focus restoration", async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/bip/54");
     await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
 
+    // Legal links live in the Statistics modal footer.
+    await page.getByRole("button", { name: /Statistics|Final Results/i }).first().click();
     const privacyBtn = page.getByRole("button", { name: "Privacy", exact: true }).first();
     await privacyBtn.click();
     const privacy = page.getByRole("dialog", { name: "Privacy" });
@@ -691,6 +693,7 @@ test.describe("10 — keyboard / focus / reduced motion", () => {
     await termsBtn.click();
     const terms = page.getByRole("dialog", { name: /Terms/i });
     await expect(terms).toBeVisible();
+    await expect(terms.getByRole("button", { name: "Close" })).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(terms).toHaveCount(0);
     await expect(termsBtn).toBeFocused();
@@ -698,10 +701,136 @@ test.describe("10 — keyboard / focus / reduced motion", () => {
 
   test("reduced motion marks distant galaxies static", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.goto("/");
+    await page.goto("/bip/54");
     await page.waitForSelector(".distantGalaxy", { timeout: 30_000 });
     const staticCount = await page.locator(".distantGalaxy--static").count();
     expect(staticCount).toBeGreaterThan(0);
+  });
+});
+
+test.describe("10b — Name the Fork easter egg", () => {
+  test("discovery star appears on BIP galaxies and opens /name-the-fork", async ({ page }) => {
+    await page.goto("/bip/54");
+    await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
+    const star = page.getByRole("button", { name: "Discover a hidden galaxy" });
+    await expect(star).toBeVisible({ timeout: 30_000 });
+    await star.focus();
+    await expect(star).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(/\/name-the-fork/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: "Name the Fork" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: "Return to consensus" })).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/\/bip\/54/, { timeout: 15_000 });
+  });
+
+  test("reduced motion navigates without travel overlay delay", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/bip/54");
+    await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
+    const star = page.getByRole("button", { name: "Discover a hidden galaxy" });
+    await expect(star).toBeVisible({ timeout: 30_000 });
+    const started = Date.now();
+    await star.click();
+    await expect(page).toHaveURL(/\/name-the-fork/, { timeout: 5_000 });
+    expect(Date.now() - started).toBeLessThan(500);
+    await expect(page.locator(".nameTheForkTravel.is-active")).toHaveCount(0);
+  });
+
+  for (const vp of [
+    { name: "320", width: 320, height: 640 },
+    { name: "375", width: 375, height: 667 },
+    { name: "landscape-short", width: 667, height: 320 },
+  ] as const) {
+    test(`Name the Fork usable at ${vp.name} (${vp.width}x${vp.height})`, async ({ page }) => {
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      const mobileUser = `ntfm_${vp.width}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      await mockOAuthLogin(page, { e2eUser: mobileUser, path: "/name-the-fork" });
+      await expect(page.getByRole("heading", { name: "Name the Fork" })).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(page.getByRole("button", { name: "Return to consensus" })).toBeVisible();
+      await expect(page.getByRole("list", { name: "Ranked name candidates" })).toBeVisible();
+      await expect(page.getByRole("complementary", { name: "Voting controls" })).toBeVisible();
+
+      const overflow = await page.evaluate(() => {
+        const root = document.documentElement;
+        const body = document.body;
+        return {
+          scrollWidth: Math.max(root.scrollWidth, body.scrollWidth),
+          clientWidth: root.clientWidth,
+        };
+      });
+      expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
+
+      await page.getByRole("button", { name: "Suggest a name" }).click();
+      const input = page.getByLabel(/Custom name/i);
+      await expect(input).toBeVisible();
+      await input.scrollIntoViewIfNeeded();
+      await expect(input).toBeInViewport();
+      await expect(page.getByRole("button", { name: /Submit name/i })).toBeInViewport();
+      await expect(page.getByRole("button", { name: "Return to consensus" })).toBeInViewport();
+    });
+  }
+
+  test("popup login on /name-the-fork refreshes authenticated poll state", async ({ page }) => {
+    await mockOAuthLogin(page, { e2eUser: "ntf_login", path: "/name-the-fork" });
+    await expect(page).toHaveURL(/\/name-the-fork/);
+    await expect(page.getByRole("heading", { name: "Name the Fork" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByRole("button", { name: "Sign in with X" })).toHaveCount(0);
+    await expect(page.getByText(/Pick a candidate|You can change or remove/i)).toBeVisible();
+  });
+
+  test("authenticated vote, change, remove, and custom name", async ({ page }) => {
+    const voteUser = `ntfv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    await mockOAuthLogin(page, { e2eUser: voteUser, path: "/name-the-fork" });
+    await expect(page.getByRole("heading", { name: "Name the Fork" })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    await page.getByRole("button", { name: "Select Bdash" }).click();
+    await page.getByRole("button", { name: "Vote", exact: true }).click();
+    await expect(page.getByText("Vote recorded.")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/Current vote:\s*Bdash/i)).toBeVisible();
+
+    await page.getByRole("button", { name: "Select BcashJr" }).click();
+    await page.getByRole("button", { name: "Change vote" }).click();
+    await expect(page.getByText("Vote changed.")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/Current vote:\s*BcashJr/i)).toBeVisible();
+
+    await page.getByRole("button", { name: "Remove vote" }).click();
+    await page.getByRole("button", { name: "Confirm remove" }).click();
+    await expect(page.getByText("Vote removed.")).toBeVisible({ timeout: 15_000 });
+
+    await page.getByRole("button", { name: "Suggest a name" }).click();
+    const unique = `Ntf${Date.now().toString(36).slice(-6)}`;
+    await page.getByLabel(/Custom name/i).fill(unique);
+    await page.getByRole("button", { name: /Submit name/i }).click();
+    await expect(page.getByText("Custom name submitted.")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(unique)).toBeVisible();
+    await expect(page.getByText(/already used your custom-name slot/i)).toBeVisible();
+  });
+
+  test("Name the Fork is absent from Consensus Overview", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByText("Consensus Health").first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: "Discover a hidden galaxy" })).toHaveCount(0);
+  });
+
+  test("anonymous can read poll and write is rejected", async ({ page, request }) => {
+    await page.goto("/name-the-fork");
+    await expect(page.getByRole("heading", { name: "Name the Fork" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("BcashJr")).toBeVisible();
+    await expect(page.getByText("Bdash")).toBeVisible();
+    await expect(page.getByText("Bitcoin110")).toBeVisible();
+    const vote = await apiJson(request, "/api/name-the-fork/vote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      data: { candidate_id: "seed_bdash" },
+    });
+    expect(vote.res.status()).toBe(401);
   });
 });
 

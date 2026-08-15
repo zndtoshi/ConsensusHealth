@@ -121,7 +121,7 @@ test("ConsensusOverview UI distinguishes unique participants from stance selecti
 
 test("overview hides proposal-specific footer and statistics controls", () => {
   const appSrc = fs.readFileSync(path.join(here, "..", "App.jsx"), "utf8");
-  assert.match(appSrc, /!showOverview \? <div style=\{styles\.footerNote\}/);
-  assert.match(appSrc, /!showOverview \? \(\s*<>\s*<button[^>]+onClick=\{openStatsModal\}/);
+  assert.match(appSrc, /!showOverview && !showNameTheFork \? <div style=\{styles\.footerNote\}/);
+  assert.match(appSrc, /!showOverview && !showNameTheFork \? \(\s*<>\s*<button[^>]+onClick=\{openStatsModal\}/);
   assert.match(appSrc, /setShowStatsModal\(false\)/);
 });

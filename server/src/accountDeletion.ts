@@ -84,6 +84,14 @@ export async function deleteAuthenticatedAccount(
     await client.query(`DELETE FROM user_proposal_stances WHERE x_user_id = $1`, [xUserId]);
     await client.query(`DELETE FROM stance_history WHERE x_user_id = $1`, [xUserId]);
     await client.query(`DELETE FROM stance_events WHERE x_user_id = $1`, [xUserId]);
+    await client.query(`DELETE FROM name_the_fork_votes WHERE x_user_id = $1`, [xUserId]);
+    // Keep custom candidates that others voted for, but strip proposer identity.
+    await client.query(
+      `UPDATE name_the_fork_candidates
+       SET proposer_x_user_id = NULL, proposer_handle = NULL
+       WHERE proposer_x_user_id = $1`,
+      [xUserId]
+    );
     await client.query(`DELETE FROM sessions WHERE x_user_id = $1`, [xUserId]);
     // Admin moderation list is unrelated; clear any matching rows so they cannot
     // be confused with privacy tombstones. Privacy suppressions stay.
@@ -228,6 +236,7 @@ export const ACCOUNT_DELETION_SQL_TABLES = [
   "user_proposal_stances",
   "stance_history",
   "stance_events",
+  "name_the_fork_votes",
   "sessions",
   "removed_community_users",
   "community_users",

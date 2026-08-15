@@ -14,6 +14,8 @@ export function StatisticsModal({
   subtitle = "Current positions",
   onOpenInfoPage,
   onRetryHistory,
+  escapeEnabled = true,
+  inertWhileCovered = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -26,22 +28,28 @@ export function StatisticsModal({
   subtitle?: string;
   onOpenInfoPage?: (page: "privacy" | "terms" | "how-it-works") => void;
   onRetryHistory?: () => void;
+  /** When false (e.g. Privacy/Terms overlay open), Escape must not close Statistics. */
+  escapeEnabled?: boolean;
+  /** Hide from AT when a higher overlay owns focus. */
+  inertWhileCovered?: boolean;
 }) {
   useEffect(() => {
-    if (!open) return;
+    if (!open || !escapeEnabled) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose]);
+  }, [open, onClose, escapeEnabled]);
 
   if (!open) return null;
 
   return (
     <div
       role="dialog"
-      aria-modal="true"
+      aria-modal={inertWhileCovered ? undefined : true}
+      aria-hidden={inertWhileCovered ? true : undefined}
+      inert={inertWhileCovered ? true : undefined}
       style={{
         position: "fixed",
         inset: 0,
@@ -51,6 +59,7 @@ export function StatisticsModal({
         background: "rgba(0,0,0,0.55)",
       }}
       onMouseDown={(e) => {
+        if (inertWhileCovered) return;
         if (e.target === e.currentTarget) onClose();
       }}
     >

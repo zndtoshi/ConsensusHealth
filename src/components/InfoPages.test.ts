@@ -62,6 +62,9 @@ test("InfoPages uses glass overlay styling and Escape close; App wires history",
   assert.match(appSrc, /parseInfoPagePath/);
   assert.match(appSrc, /openInfoPage/);
   assert.match(appSrc, /InfoPages/);
+  assert.match(appSrc, /scheduleFocusRestore/);
+  assert.match(appSrc, /infoPageReturnFocusRef/);
+  assert.doesNotMatch(src, /prev\.focus/);
   assert.doesNotMatch(appSrc, /className="legalFooterLinks"/);
   assert.match(statsSrc, /legalFooterLinks statisticsModal__infoLinks/);
   assert.match(statsSrc, /onOpenInfoPage\("privacy"\)/);

@@ -143,7 +143,8 @@ const TITLES = {
 
 /**
  * Full-viewport glass panel for Privacy / Terms / How it works.
- * Parent owns history.pushState to the info path and back to the proposal route.
+ * Parent owns history.pushState and return-focus after close (so focus is not
+ * restored while a covered Statistics dialog is still inert).
  */
 export function InfoPages({
   page,
@@ -163,12 +164,12 @@ export function InfoPages({
 
   useEffect(() => {
     if (!resolved) return undefined;
-    const prev = document.activeElement;
     closeBtnRef.current?.focus?.();
 
     function onKeyDown(e) {
       if (e.key === "Escape") {
         e.preventDefault();
+        e.stopPropagation();
         onClose?.();
         return;
       }
@@ -192,13 +193,6 @@ export function InfoPages({
     window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      if (prev && typeof prev.focus === "function") {
-        try {
-          prev.focus();
-        } catch {
-          /* ignore */
-        }
-      }
     };
   }, [resolved, onClose]);
 

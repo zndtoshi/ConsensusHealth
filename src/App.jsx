@@ -72,8 +72,16 @@ import {
   listOverviewOngoingProposals,
   overviewHeading,
 } from "./utils/consensusOverview";
+import {
+  isNameTheForkPath,
+  NAME_THE_FORK_PATH,
+  NAME_THE_FORK_THEME,
+} from "./utils/nameTheFork";
+import { scheduleFocusRestore } from "./utils/scheduleFocusRestore";
 import { fetchAccessibleProposals } from "./api/proposals";
 import { ConsensusOverview } from "./components/ConsensusOverview";
+import { HiddenGalaxyStar } from "./components/HiddenGalaxyStar";
+import { NameTheForkGalaxy } from "./components/NameTheForkGalaxy";
 import { usePrefersReducedMotion } from "./hooks/usePrefersReducedMotion";
 import { layoutEqualSizeGrid } from "./utils/equalSizeGrid";
 import { followersForAvatarSize } from "./utils/avatarSize";
@@ -1001,6 +1009,13 @@ export default function App() {
   const searchInputRef = useRef(null);
   const [me, setMe] = useState(null);
   const [showOverview, setShowOverview] = useState(() => readShowOverviewFromLocation());
+  const [showNameTheFork, setShowNameTheFork] = useState(() =>
+    typeof window !== "undefined" ? isNameTheForkPath(window.location.pathname) : false
+  );
+  const nameTheForkTravelTimerRef = useRef(0);
+  const [nameTheForkTravel, setNameTheForkTravel] = useState(false);
+  const nameTheForkTravelLockRef = useRef(false);
+  const nameTheForkEnteredFromRef = useRef(null);
   const [activeProposalId, setActiveProposalId] = useState(() => {
     const fromPath = readProposalIdFromLocation();
     return fromPath || DEFAULT_PROPOSAL_ID;
@@ -1008,6 +1023,7 @@ export default function App() {
   const resumeAfterInfoRef = useRef(
     /** @type {{ kind: "overview" } | { kind: "proposal"; id: string }} */ ({ kind: "overview" })
   );
+  const infoPageReturnFocusRef = useRef(/** @type {Element | null} */ (null));
   const [galaxyTravel, setGalaxyTravel] = useState(null); // { from, to, progress } | null
   const galaxyTravelLockRef = useRef(false);
   const proposalReloadAbortRef = useRef(null);
@@ -1462,7 +1478,10 @@ export default function App() {
     [activeProposalId, proposalCatalog]
   );
   const canChooseOwnStance =
-    !showOverview && me?.authenticated === true && isOngoingProposal(activeProposal);
+    !showOverview &&
+    !showNameTheFork &&
+    me?.authenticated === true &&
+    isOngoingProposal(activeProposal);
   const canManageOwnExplanation =
     me?.authenticated === true &&
     (canChooseOwnStance || (isFinalProposal(activeProposal) && meHasStance));
@@ -1534,6 +1553,10 @@ export default function App() {
     resumeAfterInfoRef.current = showOverview
       ? { kind: "overview" }
       : { kind: "proposal", id: activeProposalId };
+    // Capture invoker before React re-renders; restore after inert clears on close.
+    if (typeof document !== "undefined") {
+      infoPageReturnFocusRef.current = document.activeElement;
+    }
     // Avoid two aria-modal dialogs: suspend stance choice while legal pages are open.
     setStanceChoiceOpen((wasOpen) => {
       if (wasOpen) stanceSuspendedForInfoRef.current = true;
@@ -1563,7 +1586,11 @@ export default function App() {
         setActiveProposalId(id);
       }
     }
+    const restoreEl = infoPageReturnFocusRef.current;
+    infoPageReturnFocusRef.current = null;
     setInfoPagePath(null);
+    // Wait until Statistics is no longer inert before focusing the invoker.
+    scheduleFocusRestore(restoreEl);
     if (stanceSuspendedForInfoRef.current) {
       stanceSuspendedForInfoRef.current = false;
       setStanceChoiceOpen(true);
@@ -1642,7 +1669,7 @@ export default function App() {
   // Auto-prompt once per visit to an ongoing galaxy with no persisted stance.
   // Declared after the close-on-proposal-change effect so open wins in the same commit.
   useEffect(() => {
-    if (showOverview) return;
+    if (showOverview || showNameTheFork) return;
     if (loading) return;
     if (galaxyTravel) return;
     if (!proposalAccessReady) return;
@@ -1664,6 +1691,7 @@ export default function App() {
     setStanceChoiceOpen(true);
   }, [
     showOverview,
+    showNameTheFork,
     loading,
     galaxyTravel,
     proposalAccessReady,
@@ -1719,6 +1747,13 @@ export default function App() {
 
   useEffect(() => {
     if (typeof document === "undefined") return;
+    if (showNameTheFork) {
+      document.documentElement.style.setProperty("--galaxy-nebula-from", NAME_THE_FORK_THEME.nebulaFrom);
+      document.documentElement.style.setProperty("--galaxy-nebula-to", NAME_THE_FORK_THEME.nebulaTo);
+      document.documentElement.style.setProperty("--galaxy-accent", NAME_THE_FORK_THEME.accent);
+      document.title = "Consensus Health · Name the Fork";
+      return;
+    }
     const theme = activeProposal?.visualTheme;
     if (!showOverview && adminGalaxiesEnabled && theme) {
       document.documentElement.style.setProperty("--galaxy-nebula-from", theme.nebulaFrom);
@@ -1731,7 +1766,7 @@ export default function App() {
       document.documentElement.style.removeProperty("--galaxy-accent");
       document.title = showOverview ? "Consensus Health · Overview" : "Consensus Health";
     }
-  }, [adminGalaxiesEnabled, activeProposal, showOverview]);
+  }, [adminGalaxiesEnabled, activeProposal, showOverview, showNameTheFork]);
 
   useEffect(() => {
     historyCacheRef.current?.clear?.();
@@ -2802,7 +2837,7 @@ export default function App() {
   // briefly show seed-only accounts and then expand to the full live set.
   useEffect(() => {
     if (!proposalAccessReady) return undefined;
-    if (showOverview) {
+    if (showOverview || showNameTheFork) {
       setLoading(false);
       setErr("");
       return undefined;
@@ -2858,13 +2893,20 @@ export default function App() {
       dead = true;
       controller.abort();
     };
-  }, [activeProposalId, adminGalaxiesEnabled, proposalAccessReady, proposalCatalog, dataReloadToken, showOverview]);
+  }, [activeProposalId, adminGalaxiesEnabled, proposalAccessReady, proposalCatalog, dataReloadToken, showOverview, showNameTheFork]);
 
   useEffect(() => {
     function onPopState() {
       const info = parseInfoPagePath(window.location.pathname);
       setInfoPagePath(info);
       if (info) return;
+      if (isNameTheForkPath(window.location.pathname)) {
+        setShowNameTheFork(true);
+        setShowOverview(false);
+        setStanceChoiceOpen(false);
+        return;
+      }
+      setShowNameTheFork(false);
       if (readShowOverviewFromLocation()) {
         setShowOverview(true);
         setStanceChoiceOpen(false);
@@ -2885,21 +2927,102 @@ export default function App() {
 
   const goToOverview = useCallback(() => {
     if (showOverview) return;
-    if (galaxyTravelLockRef.current) return;
+    if (galaxyTravelLockRef.current || nameTheForkTravelLockRef.current) return;
     setStanceChoiceOpen(false);
     setShowStatsModal(false);
     setSelectedHandle(null);
+    setShowNameTheFork(false);
     setShowOverview(true);
     writeOverviewToLocation(false);
   }, [showOverview]);
 
+  const returnFromNameTheFork = useCallback(() => {
+    if (nameTheForkTravelTimerRef.current) {
+      window.clearTimeout(nameTheForkTravelTimerRef.current);
+      nameTheForkTravelTimerRef.current = 0;
+    }
+    nameTheForkTravelLockRef.current = false;
+    setShowNameTheFork(false);
+    setNameTheForkTravel(false);
+    if (typeof window !== "undefined" && window.history.length > 1 && nameTheForkEnteredFromRef.current) {
+      window.history.back();
+      return;
+    }
+    setShowOverview(true);
+    writeOverviewToLocation(false);
+  }, []);
+
+  const travelToNameTheFork = useCallback(() => {
+    if (showNameTheFork || showOverview) return;
+    if (galaxyTravelLockRef.current || nameTheForkTravelLockRef.current) return;
+    if (
+      showStatsModal ||
+      showDonateModal ||
+      stanceChoiceOpen ||
+      infoPagePath ||
+      adminOptionsOpen ||
+      profileMenuOpen ||
+      historyPlaybackPlaying
+    ) {
+      return;
+    }
+    nameTheForkTravelLockRef.current = true;
+    nameTheForkEnteredFromRef.current = activeProposalId;
+    setStanceChoiceOpen(false);
+
+    const finish = () => {
+      nameTheForkTravelTimerRef.current = 0;
+      if (typeof window !== "undefined") {
+        const target = `${NAME_THE_FORK_PATH}${window.location.search}${window.location.hash}`;
+        window.history.pushState({ nameTheFork: true }, "", target);
+      }
+      setShowNameTheFork(true);
+      setShowOverview(false);
+      setNameTheForkTravel(false);
+      nameTheForkTravelLockRef.current = false;
+    };
+
+    if (prefersGalaxyReducedMotion) {
+      finish();
+      return;
+    }
+
+    setNameTheForkTravel(true);
+    if (nameTheForkTravelTimerRef.current) {
+      window.clearTimeout(nameTheForkTravelTimerRef.current);
+    }
+    nameTheForkTravelTimerRef.current = window.setTimeout(finish, 650);
+  }, [
+    activeProposalId,
+    adminOptionsOpen,
+    historyPlaybackPlaying,
+    infoPagePath,
+    prefersGalaxyReducedMotion,
+    profileMenuOpen,
+    showDonateModal,
+    showNameTheFork,
+    showOverview,
+    showStatsModal,
+    stanceChoiceOpen,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (nameTheForkTravelTimerRef.current) {
+        window.clearTimeout(nameTheForkTravelTimerRef.current);
+        nameTheForkTravelTimerRef.current = 0;
+      }
+      nameTheForkTravelLockRef.current = false;
+    };
+  }, []);
+
   const travelToGalaxy = useCallback((nextId) => {
-    if (!adminGalaxiesEnabled && !showOverview) return;
+    if (!adminGalaxiesEnabled && !showOverview && !showNameTheFork) return;
     const target = normalizeIncomingProposalId(nextId, true, proposalCatalog);
-    if (!showOverview && target === activeProposalId) return;
-    if (galaxyTravelLockRef.current) return;
+    if (!showOverview && !showNameTheFork && target === activeProposalId) return;
+    if (galaxyTravelLockRef.current || nameTheForkTravelLockRef.current) return;
     galaxyTravelLockRef.current = true;
-    const from = showOverview ? null : activeProposalId;
+    const from = showOverview || showNameTheFork ? null : activeProposalId;
     const duration = prefersGalaxyReducedMotion ? 280 : 700;
     const t0 = performance.now();
     setGalaxyTravel({ from, to: target, progress: 0 });
@@ -2911,6 +3034,7 @@ export default function App() {
       if (!midSwapped && p >= 0.45) {
         midSwapped = true;
         setShowOverview(false);
+        setShowNameTheFork(false);
         writeProposalIdToLocation(target, false, proposalCatalog);
         setActiveProposalId(target);
         setSelectedHandle(null);
@@ -2929,7 +3053,7 @@ export default function App() {
       galaxyTravelLockRef.current = false;
       setGalaxyTravel(null);
     };
-  }, [activeProposalId, adminGalaxiesEnabled, prefersGalaxyReducedMotion, proposalCatalog, showOverview]);
+  }, [activeProposalId, adminGalaxiesEnabled, prefersGalaxyReducedMotion, proposalCatalog, showNameTheFork, showOverview]);
 
   useEffect(() => () => {
     if (travelCleanupRef.current) travelCleanupRef.current();
@@ -6642,19 +6766,23 @@ export default function App() {
     <div
       style={{
         ...styles.page,
-        ...(showOverview
+        ...(showNameTheFork
           ? {
-              background:
-                "radial-gradient(ellipse 85% 38% at 50% -8%, rgba(30, 41, 59, 0.35) 0%, rgba(2, 6, 23, 0.85) 42%, #000 72%)",
+              background: `radial-gradient(ellipse 85% 38% at 50% -8%, ${NAME_THE_FORK_THEME.nebulaFrom} 0%, ${NAME_THE_FORK_THEME.nebulaTo} 42%, #000 72%)`,
             }
-          : adminGalaxiesEnabled && activeProposal?.visualTheme
+          : showOverview
             ? {
-                background: `radial-gradient(ellipse 85% 38% at 50% -8%, ${activeProposal.visualTheme.nebulaFrom} 0%, ${activeProposal.visualTheme.nebulaTo} 42%, #000 72%)`,
+                background:
+                  "radial-gradient(ellipse 85% 38% at 50% -8%, rgba(30, 41, 59, 0.35) 0%, rgba(2, 6, 23, 0.85) 42%, #000 72%)",
               }
-            : null),
+            : adminGalaxiesEnabled && activeProposal?.visualTheme
+              ? {
+                  background: `radial-gradient(ellipse 85% 38% at 50% -8%, ${activeProposal.visualTheme.nebulaFrom} 0%, ${activeProposal.visualTheme.nebulaTo} 42%, #000 72%)`,
+                }
+              : null),
       }}
       onPointerMove={
-        adminGalaxiesEnabled && !showOverview && !prefersGalaxyReducedMotion
+        adminGalaxiesEnabled && !showOverview && !showNameTheFork && !prefersGalaxyReducedMotion
           ? (e) => {
               if (e.pointerType === "touch") return;
               if (cameraInteractingRef.current) return;
@@ -6743,7 +6871,14 @@ export default function App() {
           )}
         </div>
         <div className="appHeader__center" style={styles.headerCenter}>
-          {showOverview ? (
+          {showNameTheFork ? (
+            <div className="consensusOverviewHeader">
+              <div className="consensusOverviewHeader__title" style={{ color: NAME_THE_FORK_THEME.accent }}>
+                Name the Fork
+              </div>
+              <div className="consensusOverviewHeader__meta">Hidden galaxy</div>
+            </div>
+          ) : showOverview ? (
             <div className="consensusOverviewHeader">
               <div className="consensusOverviewHeader__title">
                 {overviewHeading(listOverviewOngoingProposals(proposalCatalog).length)}
@@ -6762,7 +6897,7 @@ export default function App() {
               />
             </Suspense>
           ) : null}
-          {!showOverview && selectedHandle ? (
+          {!showOverview && !showNameTheFork && selectedHandle ? (
             <div
               className={`selectedUserCard${selectedHeaderExplanation ? " selectedUserCard--withExplanation" : ""}`}
               role="status"
@@ -7150,7 +7285,16 @@ export default function App() {
           ref={setCanvasWrapRef}
           style={styles.canvasWrap}
         >
-          {showOverview ? (
+          {showNameTheFork ? (
+            <NameTheForkGalaxy
+              apiBase={API_BASE}
+              reducedMotion={prefersGalaxyReducedMotion}
+              authenticated={me?.authenticated === true}
+              authBusy={authBusy}
+              onLogin={beginLogin}
+              onReturn={returnFromNameTheFork}
+            />
+          ) : showOverview ? (
             <>
               <ConsensusOverview
                 catalog={proposalCatalog}
@@ -7414,9 +7558,28 @@ export default function App() {
               })}
             </div>
           ) : null}
+          {!showOverview &&
+          !showNameTheFork &&
+          !showStatsModal &&
+          !showDonateModal &&
+          !stanceChoiceOpen &&
+          !infoPagePath &&
+          !adminOptionsOpen &&
+          !profileMenuOpen &&
+          !galaxyTravel &&
+          !nameTheForkTravel &&
+          !historyPlaybackPlaying &&
+          !(newStancesUi.headingOpacity > 0.01 || newStancesUi.bandActive) ? (
+            <HiddenGalaxyStar
+              reducedMotion={prefersGalaxyReducedMotion}
+              disabled={Boolean(galaxyTravel)}
+              onDiscover={travelToNameTheFork}
+            />
+          ) : null}
+          {nameTheForkTravel ? <div className="nameTheForkTravel is-active" aria-hidden="true" /> : null}
         </div>
       </div>
-      {!showOverview ? <div style={styles.footerNote}>
+      {!showOverview && !showNameTheFork ? <div style={styles.footerNote}>
         <div style={styles.footerNoteLine}>
           <span>
             {isFinalProposal(activeProposal)
@@ -7437,7 +7600,7 @@ export default function App() {
         )}
       </div> : null}
       <div style={styles.bottomControls}>
-        {!showOverview ? (
+        {!showOverview && !showNameTheFork ? (
           <>
             <button type="button" className="toolbarBtn" onClick={openStatsModal}>
               {statsActionLabel}
@@ -7448,7 +7611,7 @@ export default function App() {
         <button type="button" className="toolbarBtn" onClick={() => setShowDonateModal(true)}>
           Donate
         </button>
-        {!showOverview && stancePlaybackSequenceCount > 0 && !stanceListsViewEnabled ? (
+        {!showOverview && !showNameTheFork && stancePlaybackSequenceCount > 0 && !stanceListsViewEnabled ? (
           <>
             <div style={styles.barDivider} aria-hidden="true" />
             <button
@@ -7473,8 +7636,11 @@ export default function App() {
             proposalId={activeProposalId}
             heading={statsModalCopy.heading}
             subtitle={statsModalCopy.subtitle}
+            escapeEnabled={!infoPagePath}
+            inertWhileCovered={Boolean(infoPagePath)}
             onOpenInfoPage={(page) => {
-              setShowStatsModal(false);
+              // Keep Statistics open underneath so Escape restores focus to the
+              // Privacy/Terms invoker (InfoPages captures that active element).
               openInfoPage(page);
             }}
             onRetryHistory={() => {
@@ -7484,7 +7650,7 @@ export default function App() {
           />
         </Suspense>
       )}
-      {stanceChoiceOpen && canManageOwnExplanation && !showOverview ? (
+      {stanceChoiceOpen && canManageOwnExplanation && !showOverview && !showNameTheFork ? (
         <StanceChoiceCard
           key={`stance-card:${stanceChoiceSession}:${activeProposalId}`}
           open={stanceChoiceOpen}

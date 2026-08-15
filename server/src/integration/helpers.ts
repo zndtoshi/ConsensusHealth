@@ -5,6 +5,7 @@
 
 import { randomBytes } from "node:crypto";
 import { Pool, type PoolConfig } from "pg";
+import { ensureNameTheForkSchema } from "../nameTheFork.js";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
@@ -266,4 +267,7 @@ export async function ensureAccountDeletionSchema(pool: Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
+
+  // Account deletion touches Name the Fork tables; keep fixtures production-compatible.
+  await ensureNameTheForkSchema(pool);
 }
