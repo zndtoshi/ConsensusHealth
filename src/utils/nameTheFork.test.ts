@@ -314,6 +314,7 @@ test("App mounts discovery star and one-click Name the PoW change fork UI", () =
   assert.match(appSrc, /NAME_THE_FORK_TITLE/);
   assert.match(appSrc, /clearPendingNameTheForkVote/);
   assert.match(appSrc, /Hidden galaxy/);
+  assert.doesNotMatch(appSrc, />Easter egg</);
   assert.doesNotMatch(appSrc, /consensusOverviewHeader__title[\s\S]{0,80}Name the PoW change fork/);
 
   const stanceBranch = appSrc.indexOf("!stanceListsViewEnabled ?");

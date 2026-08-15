@@ -6888,7 +6888,6 @@ export default function App() {
               <div className="consensusOverviewHeader__title" style={{ color: NAME_THE_FORK_THEME.accent }}>
                 Hidden galaxy
               </div>
-              <div className="consensusOverviewHeader__meta">Easter egg</div>
             </div>
           ) : showOverview ? (
             <div className="consensusOverviewHeader">
