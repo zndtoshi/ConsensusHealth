@@ -2848,6 +2848,7 @@ html[data-browser="firefox"] .stanceGlow {
   box-shadow:
     0 0 6px rgba(226, 232, 240, 0.45),
     0 0 14px rgba(52, 211, 153, 0.25);
+  animation: hiddenGalaxyCorePulse 3.6s ease-in-out infinite;
 }
 
 .hiddenGalaxyStar__ray {
@@ -2866,6 +2867,7 @@ html[data-browser="firefox"] .stanceGlow {
   box-shadow: 0 0 6px rgba(52, 211, 153, 0.28);
   transform-origin: center bottom;
   pointer-events: none;
+  animation: hiddenGalaxyRayPulse 3.6s ease-in-out infinite;
 }
 
 .hiddenGalaxyStar__ray--n {
@@ -2912,7 +2914,9 @@ html[data-browser="firefox"] .stanceGlow {
   cursor: default;
 }
 
-.hiddenGalaxyStar.is-static .hiddenGalaxyStar__glyph {
+.hiddenGalaxyStar.is-static .hiddenGalaxyStar__glyph,
+.hiddenGalaxyStar.is-static .hiddenGalaxyStar__core,
+.hiddenGalaxyStar.is-static .hiddenGalaxyStar__ray {
   animation: none;
 }
 
@@ -2921,12 +2925,36 @@ html[data-browser="firefox"] .stanceGlow {
 }
 
 @keyframes hiddenGalaxyTwinkle {
-  0%, 100% { opacity: 0.55; transform: scale(0.92); }
-  50% { opacity: 1; transform: scale(1.08); }
+  0%, 100% { opacity: 0.68; transform: scale(0.92); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+@keyframes hiddenGalaxyCorePulse {
+  0%, 100% {
+    background: rgba(226, 232, 240, 0.78);
+    box-shadow: 0 0 5px rgba(226, 232, 240, 0.35), 0 0 11px rgba(52, 211, 153, 0.2);
+  }
+  50% {
+    background: rgba(240, 253, 250, 1);
+    box-shadow: 0 0 9px rgba(240, 253, 250, 0.8), 0 0 20px rgba(52, 211, 153, 0.55);
+  }
+}
+
+@keyframes hiddenGalaxyRayPulse {
+  0%, 100% {
+    opacity: 0.5;
+    filter: brightness(0.85);
+  }
+  50% {
+    opacity: 1;
+    filter: brightness(1.35);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hiddenGalaxyStar__glyph {
+  .hiddenGalaxyStar__glyph,
+  .hiddenGalaxyStar__core,
+  .hiddenGalaxyStar__ray {
     animation: none;
   }
 }
