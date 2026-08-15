@@ -303,6 +303,9 @@ test("discovery star has exactly four decorative rays and reduced-motion static 
   assert.match(cssSrc, /animation:\s*hiddenGalaxyRayPulse/);
   assert.match(cssSrc, /@keyframes hiddenGalaxyCorePulse/);
   assert.match(cssSrc, /@keyframes hiddenGalaxyRayPulse/);
+  assert.match(cssSrc, /\.hiddenGalaxyStar__core[\s\S]*?clip-path:\s*polygon\(50% 0, 100% 50%, 50% 100%, 0 50%\)/);
+  assert.match(cssSrc, /\.hiddenGalaxyStar__ray[\s\S]*?clip-path:\s*polygon\(50% 0, 100% 100%, 0 100%\)/);
+  assert.match(cssSrc, /@keyframes hiddenGalaxyTwinkle[\s\S]*?scale\(0\.76\)[\s\S]*?scale\(1\.18\)/);
   assert.match(cssSrc, /\.hiddenGalaxyStar \{[\s\S]*?position:\s*fixed[\s\S]*?z-index:\s*30/);
   assert.match(cssSrc, /@media \(max-width:\s*860px\)[\s\S]*?\.hiddenGalaxyStar \{[\s\S]*?width:\s*40px[\s\S]*?height:\s*40px/);
 });

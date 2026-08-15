@@ -2831,43 +2831,47 @@ html[data-browser="firefox"] .stanceGlow {
 
 .hiddenGalaxyStar__glyph {
   position: relative;
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
-  animation: hiddenGalaxyTwinkle 3.6s ease-in-out infinite;
+  transform-origin: center;
+  animation: hiddenGalaxyTwinkle 2.4s ease-in-out infinite;
 }
 
 .hiddenGalaxyStar__core {
   position: relative;
   z-index: 1;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: rgba(226, 232, 240, 0.85);
+  width: 9px;
+  height: 9px;
+  border-radius: 1px;
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  background: rgba(240, 253, 250, 0.94);
   box-shadow:
     0 0 6px rgba(226, 232, 240, 0.45),
     0 0 14px rgba(52, 211, 153, 0.25);
-  animation: hiddenGalaxyCorePulse 3.6s ease-in-out infinite;
+  animation: hiddenGalaxyCorePulse 2.4s ease-in-out infinite;
 }
 
 .hiddenGalaxyStar__ray {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 1.5px;
-  height: 7px;
-  margin-left: -0.75px;
-  border-radius: 999px;
+  width: 6px;
+  height: 11px;
+  margin-left: -3px;
+  border-radius: 50% 50% 1px 1px;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
   background: linear-gradient(
-    to top,
-    rgba(226, 232, 240, 0.15),
-    rgba(226, 232, 240, 0.88)
+    to bottom,
+    rgba(240, 253, 250, 0.98),
+    rgba(167, 243, 208, 0.5) 72%,
+    rgba(52, 211, 153, 0.12)
   );
-  box-shadow: 0 0 6px rgba(52, 211, 153, 0.28);
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.38);
   transform-origin: center bottom;
   pointer-events: none;
-  animation: hiddenGalaxyRayPulse 3.6s ease-in-out infinite;
+  animation: hiddenGalaxyRayPulse 2.4s ease-in-out infinite;
 }
 
 .hiddenGalaxyStar__ray--n {
@@ -2925,29 +2929,29 @@ html[data-browser="firefox"] .stanceGlow {
 }
 
 @keyframes hiddenGalaxyTwinkle {
-  0%, 100% { opacity: 0.68; transform: scale(0.92); }
-  50% { opacity: 1; transform: scale(1.1); }
+  0%, 100% { opacity: 0.48; transform: scale(0.76); }
+  50% { opacity: 1; transform: scale(1.18); }
 }
 
 @keyframes hiddenGalaxyCorePulse {
   0%, 100% {
-    background: rgba(226, 232, 240, 0.78);
-    box-shadow: 0 0 5px rgba(226, 232, 240, 0.35), 0 0 11px rgba(52, 211, 153, 0.2);
+    background: rgba(226, 232, 240, 0.72);
+    box-shadow: 0 0 4px rgba(226, 232, 240, 0.3), 0 0 9px rgba(52, 211, 153, 0.18);
   }
   50% {
     background: rgba(240, 253, 250, 1);
-    box-shadow: 0 0 9px rgba(240, 253, 250, 0.8), 0 0 20px rgba(52, 211, 153, 0.55);
+    box-shadow: 0 0 11px rgba(240, 253, 250, 0.95), 0 0 24px rgba(52, 211, 153, 0.7);
   }
 }
 
 @keyframes hiddenGalaxyRayPulse {
   0%, 100% {
-    opacity: 0.5;
-    filter: brightness(0.85);
+    opacity: 0.38;
+    filter: brightness(0.72);
   }
   50% {
     opacity: 1;
-    filter: brightness(1.35);
+    filter: brightness(1.6) drop-shadow(0 0 3px rgba(167, 243, 208, 0.8));
   }
 }
 
@@ -3492,13 +3496,8 @@ html[data-browser="firefox"] .stanceGlow {
   }
 
   .hiddenGalaxyStar__glyph {
-    width: 22px;
-    height: 22px;
-    filter: brightness(1.28);
-  }
-
-  .hiddenGalaxyStar__core {
-    width: 8px;
-    height: 8px;
+    width: 26px;
+    height: 26px;
+    filter: brightness(1.2);
   }
 }
