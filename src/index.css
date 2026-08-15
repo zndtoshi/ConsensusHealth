@@ -2710,6 +2710,23 @@ html[data-browser="firefox"] .stanceGlow {
   color: rgba(248, 250, 252, 0.92);
 }
 
+.consensusOverviewCard__yourStance {
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(226, 232, 240, 0.9);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.consensusOverviewCard__yourStance.is-empty {
+  color: rgba(148, 163, 184, 0.88);
+}
+
+.consensusOverviewCard__yourStanceValue {
+  font-weight: 700;
+}
+
 .consensusOverviewCard__cta {
   font-size: 12px;
   font-weight: 700;

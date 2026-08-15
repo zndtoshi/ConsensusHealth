@@ -7128,55 +7128,59 @@ export default function App() {
             </>
           ) : (
             <>
-              <div style={styles.barDivider} aria-hidden="true" />
-              {canChooseOwnStance ? (
-                <div
-                  style={{ ...styles.stanceSegment, gridTemplateColumns: "1fr" }}
-                  aria-label={
-                    meHasStance && meStanceToolbar
-                      ? `Your ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}`
-                      : `Choose your ${activeProposal?.title || "proposal"} position`
-                  }
-                >
-                  <button
-                    type="button"
-                    className={`stanceSeg stanceSeg--solo ${meStanceToolbar?.className || ""} ${
-                      meHasStance ? "is-active" : ""
-                    }`}
-                    title={meHasStance ? "Change your position" : "Choose your position"}
-                    onClick={openOwnStanceChoice}
-                  >
-                    {meHasStance && meStanceToolbar ? meStanceToolbar.label : "Choose position"}
-                  </button>
-                </div>
-              ) : meHasStance && meStanceToolbar ? (
-                <div
-                  style={{ ...styles.stanceSegment, gridTemplateColumns: "1fr" }}
-                  aria-label={`Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}`}
-                >
-                  <button
-                    type="button"
-                    className={`stanceSeg stanceSeg--solo stanceSeg--locked ${meStanceToolbar.className} is-active`}
-                    title={
-                      isFinalProposal(activeProposal)
-                        ? `Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}. Manage your stance explanation.`
-                        : `Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}.`
-                    }
-                    onClick={canManageOwnExplanation ? openOwnStanceChoice : undefined}
-                    disabled={!canManageOwnExplanation}
-                  >
-                    <span aria-hidden="true">🔒</span>
-                    {meStanceToolbar.label}
-                  </button>
-                </div>
-              ) : (
-                <span
-                  className="stanceArchiveEmpty"
-                  title={`No ${activeProposal?.title || "proposal"} position was recorded for this account.`}
-                >
-                  No position recorded
-                </span>
-              )}
+              {!showOverview ? (
+                <>
+                  <div style={styles.barDivider} aria-hidden="true" />
+                  {canChooseOwnStance ? (
+                    <div
+                      style={{ ...styles.stanceSegment, gridTemplateColumns: "1fr" }}
+                      aria-label={
+                        meHasStance && meStanceToolbar
+                          ? `Your ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}`
+                          : `Choose your ${activeProposal?.title || "proposal"} position`
+                      }
+                    >
+                      <button
+                        type="button"
+                        className={`stanceSeg stanceSeg--solo ${meStanceToolbar?.className || ""} ${
+                          meHasStance ? "is-active" : ""
+                        }`}
+                        title={meHasStance ? "Change your position" : "Choose your position"}
+                        onClick={openOwnStanceChoice}
+                      >
+                        {meHasStance && meStanceToolbar ? meStanceToolbar.label : "Choose position"}
+                      </button>
+                    </div>
+                  ) : meHasStance && meStanceToolbar ? (
+                    <div
+                      style={{ ...styles.stanceSegment, gridTemplateColumns: "1fr" }}
+                      aria-label={`Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}`}
+                    >
+                      <button
+                        type="button"
+                        className={`stanceSeg stanceSeg--solo stanceSeg--locked ${meStanceToolbar.className} is-active`}
+                        title={
+                          isFinalProposal(activeProposal)
+                            ? `Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}. Manage your stance explanation.`
+                            : `Your recorded ${activeProposal?.title || "proposal"} position: ${meStanceToolbar.label}.`
+                        }
+                        onClick={canManageOwnExplanation ? openOwnStanceChoice : undefined}
+                        disabled={!canManageOwnExplanation}
+                      >
+                        <span aria-hidden="true">🔒</span>
+                        {meStanceToolbar.label}
+                      </button>
+                    </div>
+                  ) : (
+                    <span
+                      className="stanceArchiveEmpty"
+                      title={`No ${activeProposal?.title || "proposal"} position was recorded for this account.`}
+                    >
+                      No position recorded
+                    </span>
+                  )}
+                </>
+              ) : null}
               <div style={styles.barDivider} aria-hidden="true" />
               <div ref={profileMenuRef} style={styles.profileWrap}>
                 <button
@@ -7312,6 +7316,8 @@ export default function App() {
                 apiBase={API_BASE}
                 reducedMotion={prefersGalaxyReducedMotion}
                 onEnterProposal={travelToGalaxy}
+                authenticated={me?.authenticated === true}
+                proposalStances={me?.authenticated === true ? me?.proposal_stances || null : null}
               />
               {galaxyTravel ? (
                 <Suspense fallback={null}>

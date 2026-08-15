@@ -9,6 +9,8 @@ import {
   type ProposalConfig,
   type ProposalId,
 } from "../config/proposals";
+import { strictNormalizedStance } from "./stanceChoice";
+import { STANCE_COLORS, STANCE_LABELS, type StanceKey } from "./stanceColors";
 
 export const OVERVIEW_PATH = "/";
 
@@ -125,4 +127,77 @@ export function overviewHeading(ongoingCount: number): string {
   const n = Math.max(0, Math.trunc(Number(ongoingCount) || 0));
   const noun = n === 1 ? "proposal" : "proposals";
   return `ACTIVE CONSENSUS — ${n} ongoing ${noun}`;
+}
+
+export type OverviewPersonalStanceView = {
+  kind: "hidden" | "chosen" | "not_chosen" | "no_recorded";
+  /** Full line for visible + accessible text; null when logged out. */
+  text: string | null;
+  stance: StanceKey | null;
+  /** Colored value word when kind === "chosen". */
+  valueLabel: string | null;
+  valueColor: string | null;
+};
+
+/**
+ * Personalized "Your stance" row for an overview card from `/api/me` proposal_stances.
+ * Does not affect public aggregates. Malformed values are treated as no stance.
+ */
+export function resolveOverviewPersonalStance(input: {
+  authenticated: boolean;
+  completed: boolean;
+  rawStance: unknown;
+}): OverviewPersonalStanceView {
+  if (!input.authenticated) {
+    return {
+      kind: "hidden",
+      text: null,
+      stance: null,
+      valueLabel: null,
+      valueColor: null,
+    };
+  }
+  const stance = strictNormalizedStance(input.rawStance);
+  if (stance) {
+    const valueLabel = STANCE_LABELS[stance];
+    const valueColor =
+      stance === "neutral" ? "rgba(226, 232, 240, 0.92)" : STANCE_COLORS[stance];
+    return {
+      kind: "chosen",
+      text: `Your stance: ${valueLabel}`,
+      stance,
+      valueLabel,
+      valueColor,
+    };
+  }
+  if (input.completed) {
+    return {
+      kind: "no_recorded",
+      text: "Your stance: No recorded stance",
+      stance: null,
+      valueLabel: "No recorded stance",
+      valueColor: null,
+    };
+  }
+  return {
+    kind: "not_chosen",
+    text: "Your stance: Not chosen",
+    stance: null,
+    valueLabel: "Not chosen",
+    valueColor: null,
+  };
+}
+
+/** Read a single proposal stance from the `/api/me` proposal_stances map. */
+export function readMeProposalStance(
+  proposalStances: Record<string, unknown> | null | undefined,
+  proposalId: string
+): unknown {
+  if (!proposalStances || typeof proposalStances !== "object") return null;
+  const id = String(proposalId || "").trim();
+  if (!id) return null;
+  if (Object.prototype.hasOwnProperty.call(proposalStances, id)) {
+    return proposalStances[id];
+  }
+  return null;
 }

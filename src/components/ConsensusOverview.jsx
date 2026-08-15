@@ -8,6 +8,8 @@ import {
   buildStanceStarKeys,
   mapOverviewPayloadToStats,
   overviewHeading,
+  readMeProposalStance,
+  resolveOverviewPersonalStance,
 } from "../utils/consensusOverview";
 
 function hashSeed(text) {
@@ -117,6 +119,8 @@ function OverviewCard({
   onEnter,
   reducedMotion = false,
   completed = false,
+  authenticated = false,
+  proposalStances = null,
 }) {
   const theme = proposal.visualTheme;
   const total = stats?.totalUsersWithStance || 0;
@@ -128,9 +132,19 @@ function OverviewCard({
         ? "FINAL SNAPSHOT"
         : "";
   const name = completed ? `${proposal.shortName} — FINAL SNAPSHOT` : proposal.title;
-  const ariaName = completed
-    ? `Enter ${proposal.shortName} final snapshot galaxy`
-    : `Enter ${proposal.shortName} galaxy`;
+  const personal = resolveOverviewPersonalStance({
+    authenticated,
+    completed,
+    rawStance: readMeProposalStance(proposalStances, proposal.id),
+  });
+  const ariaName = [
+    completed
+      ? `Enter ${proposal.shortName} final snapshot galaxy`
+      : `Enter ${proposal.shortName} galaxy`,
+    personal.text,
+  ]
+    .filter(Boolean)
+    .join(". ");
 
   const activate = useCallback(() => {
     onEnter(proposal.id);
@@ -177,6 +191,21 @@ function OverviewCard({
           )}
         </span>
         {!completed ? <StanceBreakdown stats={stats} /> : null}
+        {personal.text ? (
+          <span
+            className={`consensusOverviewCard__yourStance${
+              personal.kind === "chosen" ? "" : " is-empty"
+            }`}
+          >
+            Your stance:{" "}
+            <span
+              className="consensusOverviewCard__yourStanceValue"
+              style={personal.valueColor ? { color: personal.valueColor } : undefined}
+            >
+              {personal.valueLabel}
+            </span>
+          </span>
+        ) : null}
         <span className="consensusOverviewCard__cta">{completed ? "Open snapshot" : "Enter galaxy"}</span>
       </span>
     </button>
@@ -188,6 +217,8 @@ export function ConsensusOverview({
   apiBase = "",
   reducedMotion = false,
   onEnterProposal,
+  authenticated = false,
+  proposalStances = null,
 }) {
   const ongoing = useMemo(() => listOverviewOngoingProposals(catalog), [catalog]);
   const completed = useMemo(() => listOverviewCompletedProposals(catalog), [catalog]);
@@ -253,6 +284,7 @@ export function ConsensusOverview({
   const uniqueParticipants = payload?.aggregates?.unique_participants ?? 0;
   const stanceSelections = payload?.aggregates?.stance_selections ?? 0;
   const heading = overviewHeading(ongoing.length);
+  const showPersonal = Boolean(authenticated);
 
   return (
     <section className="consensusOverview" aria-label="Consensus Overview">
@@ -292,6 +324,8 @@ export function ConsensusOverview({
               stats={statsById.get(p.id) || null}
               onEnter={onEnterProposal}
               reducedMotion={reducedMotion}
+              authenticated={showPersonal}
+              proposalStances={showPersonal ? proposalStances : null}
             />
           </div>
         ))}
@@ -309,6 +343,8 @@ export function ConsensusOverview({
                   onEnter={onEnterProposal}
                   reducedMotion={reducedMotion}
                   completed
+                  authenticated={showPersonal}
+                  proposalStances={showPersonal ? proposalStances : null}
                 />
               </div>
             ))}

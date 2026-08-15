@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { FALLBACK_PROPOSALS } from "../config/proposals.js";
+import { STANCE_COLORS } from "./stanceColors.js";
 import {
   isOverviewPath,
   buildStanceStarKeys,
@@ -11,6 +12,8 @@ import {
   listOverviewOngoingProposals,
   mapOverviewPayloadToStats,
   overviewHeading,
+  readMeProposalStance,
+  resolveOverviewPersonalStance,
   sumStanceSelections,
 } from "./consensusOverview.js";
 
@@ -95,7 +98,134 @@ test("mini-galaxy stance samples never invent a zero-count stance", () => {
   assert.deepEqual(new Set(mixed), new Set(["against", "neutral", "approve"]));
 });
 
-test("App wires overview as default landing without stance auto-open", () => {
+test("resolveOverviewPersonalStance maps distinct me.proposal_stances per proposal", () => {
+  const stances = {
+    bip54: "approve",
+    bip448: "against",
+    bip460: "support",
+    bip110: "neutral",
+  };
+  assert.equal(
+    resolveOverviewPersonalStance({
+      authenticated: true,
+      completed: false,
+      rawStance: readMeProposalStance(stances, "bip54"),
+    }).text,
+    "Your stance: Approve"
+  );
+  assert.equal(
+    resolveOverviewPersonalStance({
+      authenticated: true,
+      completed: false,
+      rawStance: readMeProposalStance(stances, "bip448"),
+    }).text,
+    "Your stance: Against"
+  );
+  assert.equal(
+    resolveOverviewPersonalStance({
+      authenticated: true,
+      completed: false,
+      rawStance: readMeProposalStance(stances, "bip460"),
+    }).stance,
+    "approve"
+  );
+  assert.equal(
+    resolveOverviewPersonalStance({
+      authenticated: true,
+      completed: true,
+      rawStance: readMeProposalStance(stances, "bip110"),
+    }).text,
+    "Your stance: Neutral"
+  );
+  assert.equal(
+    resolveOverviewPersonalStance({
+      authenticated: true,
+      completed: false,
+      rawStance: readMeProposalStance(stances, "bip54"),
+    }).valueColor,
+    STANCE_COLORS.approve
+  );
+  assert.equal(
+    resolveOverviewPersonalStance({
+      authenticated: true,
+      completed: false,
+      rawStance: readMeProposalStance(stances, "bip448"),
+    }).valueColor,
+    STANCE_COLORS.against
+  );
+});
+
+test("resolveOverviewPersonalStance empty and malformed wording", () => {
+  assert.equal(
+    resolveOverviewPersonalStance({
+      authenticated: true,
+      completed: false,
+      rawStance: null,
+    }).text,
+    "Your stance: Not chosen"
+  );
+  assert.equal(
+    resolveOverviewPersonalStance({
+      authenticated: true,
+      completed: true,
+      rawStance: null,
+    }).text,
+    "Your stance: No recorded stance"
+  );
+  assert.equal(
+    resolveOverviewPersonalStance({
+      authenticated: true,
+      completed: false,
+      rawStance: "maybe",
+    }).kind,
+    "not_chosen"
+  );
+  assert.equal(
+    resolveOverviewPersonalStance({
+      authenticated: true,
+      completed: true,
+      rawStance: "lol",
+    }).kind,
+    "no_recorded"
+  );
+  assert.equal(
+    resolveOverviewPersonalStance({
+      authenticated: false,
+      completed: false,
+      rawStance: "approve",
+    }).kind,
+    "hidden"
+  );
+  assert.equal(
+    resolveOverviewPersonalStance({
+      authenticated: false,
+      completed: false,
+      rawStance: "approve",
+    }).text,
+    null
+  );
+});
+
+test("personal stance rows do not change public aggregate helpers", () => {
+  const cards = [
+    {
+      proposalId: "bip54",
+      totalUsersWithStance: 10,
+      counts: { against: 1, neutral: 2, approve: 7 },
+      status: "ok",
+    },
+  ];
+  const before = sumStanceSelections(cards);
+  resolveOverviewPersonalStance({
+    authenticated: true,
+    completed: false,
+    rawStance: "against",
+  });
+  assert.equal(sumStanceSelections(cards), before);
+  assert.equal(cards[0].counts.approve, 7);
+});
+
+test("App wires overview personal stances from me and hides toolbar stance on overview", () => {
   const appSrc = fs.readFileSync(path.join(here, "..", "App.jsx"), "utf8");
   assert.match(appSrc, /showOverview/);
   assert.match(appSrc, /readShowOverviewFromLocation/);
@@ -105,10 +235,29 @@ test("App wires overview as default landing without stance auto-open", () => {
   assert.match(appSrc, /if \(showOverview\) return;/);
   assert.match(appSrc, /stanceChoiceOpen && canManageOwnExplanation && !showOverview/);
   assert.match(appSrc, /onOverview=\{goToOverview\}/);
+  assert.match(appSrc, /proposalStances=\{me\?\.authenticated === true \? me\?\.proposal_stances/);
+  assert.match(appSrc, /authenticated=\{me\?\.authenticated === true\}/);
+  // Toolbar stance / choose-position hidden on overview; Options + avatar remain.
+  assert.match(appSrc, /\{!showOverview \? \(/);
+  assert.match(appSrc, /Choose position/);
+  assert.match(appSrc, /canChooseOwnStance/);
+  assert.match(appSrc, /stanceSeg--solo/);
+  // Galaxy path still uses canChooseOwnStance (not overview-only wipe).
+  assert.match(
+    appSrc,
+    /canChooseOwnStance =\s*\n?\s*!showOverview &&\s*\n?\s*!showNameTheFork &&\s*\n?\s*me\?\.authenticated === true/
+  );
+  // Overview branch wraps toolbar stance; avatar menu still mounts for authenticated users.
+  const overviewHide = appSrc.indexOf("{!showOverview ? (");
+  const choosePos = appSrc.indexOf("Choose position");
+  const avatarMenu = appSrc.indexOf("Account menu for");
+  assert.ok(overviewHide >= 0 && choosePos > overviewHide, "Choose position stays inside !showOverview guard");
+  assert.ok(avatarMenu > choosePos, "account avatar remains after stance toolbar");
 });
 
 test("ConsensusOverview UI distinguishes unique participants from stance selections", () => {
   const src = fs.readFileSync(path.join(here, "..", "components", "ConsensusOverview.jsx"), "utf8");
+  const cssSrc = fs.readFileSync(path.join(here, "..", "index.css"), "utf8");
   assert.match(src, /unique participants/);
   assert.match(src, /stance selections/);
   assert.match(src, /Enter galaxy/);
@@ -117,6 +266,16 @@ test("ConsensusOverview UI distinguishes unique participants from stance selecti
   assert.match(src, /aria-label/);
   assert.match(src, /prefers-reduced-motion|reducedMotion/);
   assert.doesNotMatch(src, /followers_count/);
+  assert.match(src, /resolveOverviewPersonalStance/);
+  assert.match(src, /Your stance:/);
+  assert.match(src, /consensusOverviewCard__yourStance/);
+  assert.match(src, /proposalStances/);
+  assert.match(src, /personal\.text/);
+  // No nested stance button inside the card button.
+  assert.doesNotMatch(src, /consensusOverviewCard[\s\S]*?<button[^>]*stance/i);
+  assert.match(cssSrc, /\.consensusOverviewCard__yourStance/);
+  assert.match(cssSrc, /overflow-wrap:\s*anywhere/);
+  assert.match(cssSrc, /\.consensusOverviewCard__yourStance\.is-empty/);
 });
 
 test("overview hides proposal-specific footer and statistics controls", () => {
