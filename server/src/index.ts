@@ -596,9 +596,14 @@ async function initDb(): Promise<void> {
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS bio TEXT;`);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS account_created_at TIMESTAMPTZ;`);
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS equal_avatar_size BOOLEAN DEFAULT FALSE;`);
-  // Permanent local avatar file path (e.g. "/avatars/<x_user_id>.jpg"). Immutable
-  // once set: see ensureLocalAvatar in avatarStorage.ts.
+  // Locally hosted avatar file path (e.g. "/avatars/<x_user_id>-<rev>.jpg").
+  // Refreshed with a new path when X reports a different profile image URL:
+  // see ensureLocalAvatar in avatarStorage.ts.
   await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS avatar_path TEXT;`);
+  // Remote profile image URL the current avatar_path was downloaded from. Left
+  // NULL for files captured before refresh-on-change existed, which makes those
+  // refresh once on the owner's next login rather than being assumed current.
+  await pool.query(`ALTER TABLE community_users ADD COLUMN IF NOT EXISTS avatar_source_url TEXT;`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS stance_events (
       id SERIAL PRIMARY KEY,
@@ -1131,8 +1136,10 @@ app.get("/auth/x/callback", async (req, res, next) => {
       client.release();
     }
 
-    // One-time permanent avatar capture. Fire-and-forget so a slow/failed
-    // download never blocks login; ensureLocalAvatar is idempotent + never throws.
+    // Capture the avatar locally, and refresh it when X reports a new profile
+    // image URL. Fire-and-forget so a slow/failed download never blocks login;
+    // ensureLocalAvatar is idempotent, never throws, and keeps the existing
+    // local avatar when a refresh fails.
     void ensureLocalAvatar({ x_user_id: xUserId, avatar_url: avatarUrl }).catch(() => {});
 
     const sessionPayload: DevCookieUser = {
@@ -1486,8 +1493,10 @@ for (const route of STANCE_CSV_EXPORT_ROUTES) {
   });
 }
 
-// Serve stored avatars (seed files + one-time downloaded profile images) from
-// the configured avatars directory. Immutable: filenames are content-stable.
+// Serve stored avatars (seed files + downloaded profile images) from the
+// configured avatars directory. Safe to mark immutable because filenames are
+// content-stable: a refreshed profile image is written under a new
+// content-hashed name rather than replacing the bytes at an existing URL.
 app.use(
   "/avatars",
   express.static(AVATARS_DIR, {
@@ -1749,7 +1758,7 @@ app.post(
       });
     }
 
-    // One-time permanent avatar capture for new users choosing a stance.
+    // Local avatar capture for new users choosing a stance.
     // Fire-and-forget: never block or fail stance submission.
     void ensureLocalAvatar({
       x_user_id: user.x_user_id,

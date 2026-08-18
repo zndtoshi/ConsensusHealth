@@ -1,22 +1,36 @@
 /**
- * Permanent, one-time avatar storage.
+ * Locally hosted avatar storage with refresh-on-change.
  *
- * Downloads a user's X/Twitter profile image exactly once, stores the actual
- * image bytes in the local avatars directory, records the local `avatar_path`
- * in the database, and never fetches again once a valid local file exists.
+ * Downloads a user's X/Twitter profile image, stores the actual image bytes in
+ * the local avatars directory, and records the local `avatar_path` plus the
+ * remote `avatar_source_url` it was derived from. A stored avatar is refreshed
+ * only when X reports a different profile image URL than the one that produced
+ * the current local file.
  *
  * The core `createEnsureLocalAvatar` is dependency-injected so it can be unit
  * tested without a filesystem, database, or network. `createNodeAvatarDeps`
  * provides the real Node wiring (fs atomic writes, Postgres, fetch w/ timeout).
  *
  * Design rules (see requirements):
- * - A non-empty valid local `avatar_path` is immutable; never overwritten.
- * - Only fetch when `avatar_path` is null/empty/missing OR the file is gone.
- * - Store downloaded bytes, never the remote URL, as the permanent avatar.
- * - Deterministic filename from the stable x_user_id (handles can change).
+ * - Fetch when `avatar_path` is null/empty/missing OR the file is gone.
+ * - Also fetch when the incoming remote URL differs from `avatar_source_url`
+ *   (the URL the stored file came from). Same URL + present file => no request.
+ * - `avatar_source_url` is unknown for files captured before this behavior
+ *   existed, so those refresh once on the owner's next login and then settle.
+ * - A refreshed image gets a NEW public path (`<x_user_id>-<rev>.<ext>`) because
+ *   `/avatars` is served `immutable` with a one-year max-age; reusing the path
+ *   would leave stale bytes in browser/CDN caches. `rev` is a content hash, so
+ *   byte-identical images keep their path and cannot thrash.
+ * - Store downloaded bytes, never the remote URL, as the local avatar. The
+ *   public filename is derived from the stable x_user_id + content hash only,
+ *   so the remote URL never leaks into it.
+ * - Deterministic ownership prefix from the stable x_user_id (handles change).
  * - Validate content type + enforce a size limit; atomic temp-then-rename write.
+ * - Update the DB only after the new file is safely written, then best-effort
+ *   delete the superseded file. Cleanup failure is non-fatal.
  * - Deduplicate concurrent downloads for the same user.
- * - Never throw: failures return null so login/stance/page-load are unaffected.
+ * - Never throw. A failed refresh returns the existing path so the current
+ *   avatar stays usable; a failed first capture returns null (placeholder).
  */
 
 import crypto from "node:crypto";
@@ -43,9 +57,43 @@ export function avatarExtForContentType(contentType: string | null | undefined):
   return CONTENT_TYPE_EXT[ct] ?? null;
 }
 
-/** Public URL path for a stored avatar, keyed by the stable x_user_id. */
-export function avatarPublicPath(xUserId: string, ext: string): string {
-  return `/avatars/${xUserId}.${ext}`;
+/**
+ * Short content revision used to give refreshed avatars a new public path.
+ * Derived from the image bytes only — never from the remote URL — so the same
+ * picture keeps the same filename and a changed picture always gets a new one.
+ */
+export function avatarRevisionFromBytes(bytes: Uint8Array): string {
+  return crypto.createHash("sha256").update(bytes).digest("hex").slice(0, 10);
+}
+
+/**
+ * Whether a public avatar path is a file this user's own capture produced,
+ * i.e. named `<x_user_id>.<ext>` or `<x_user_id>-<rev>.<ext>`.
+ *
+ * Superseded-file cleanup is gated on this. Seed avatars are handle-named and
+ * checked into the repo, and a user whose `avatar_path` still points at one
+ * must not have it deleted out from under the static seed graph.
+ */
+export function isOwnedAvatarPath(publicPath: string, xUserId: string): boolean {
+  const id = String(xUserId ?? "").trim();
+  const clean = String(publicPath ?? "").trim();
+  if (!id || !clean) return false;
+  const m = clean.match(/^\/avatars\/([^/\\?#]+)$/);
+  if (!m) return false;
+  const base = m[1];
+  const dot = base.lastIndexOf(".");
+  const stem = dot > 0 ? base.slice(0, dot) : base;
+  return stem === id || stem.startsWith(`${id}-`);
+}
+
+/**
+ * Public URL path for a stored avatar, keyed by the stable x_user_id.
+ * Without `rev` this is the legacy immutable-name form, still produced for
+ * files already on disk; with `rev` it is the cache-busting refresh form.
+ */
+export function avatarPublicPath(xUserId: string, ext: string, rev?: string | null): string {
+  const suffix = String(rev ?? "").trim();
+  return suffix ? `/avatars/${xUserId}-${suffix}.${ext}` : `/avatars/${xUserId}.${ext}`;
 }
 
 /**
@@ -85,28 +133,35 @@ export type AvatarStorageLogger = {
 };
 
 export type AvatarStorageDeps = {
-  /** DB truth for a user's current avatar_path/avatar_url (source of immutability). */
-  getUser: (
-    xUserId: string
-  ) => Promise<{ avatar_path: string | null; avatar_url: string | null } | null>;
+  /** DB truth for a user's stored avatar and the remote URL it was derived from. */
+  getUser: (xUserId: string) => Promise<{
+    avatar_path: string | null;
+    avatar_url: string | null;
+    avatar_source_url?: string | null;
+  } | null>;
   /** Whether the file backing a public path (e.g. "/avatars/x.jpg") exists locally. */
   fileExists: (publicPath: string) => boolean;
   /** Atomically persist bytes as <filename> in the avatars dir (temp then rename). */
   writeAtomic: (filename: string, bytes: Uint8Array) => Promise<void>;
   /** Fetch remote image bytes (with timeout); returns null on network error/blocked host. */
   fetchImage: (url: string) => Promise<FetchedAvatar | null>;
-  /** Persist the new avatar_path in the DB. */
-  setAvatarPath: (xUserId: string, avatarPath: string) => Promise<void>;
+  /** Persist the new avatar_path plus the remote URL it came from, in the DB. */
+  setAvatarPath: (xUserId: string, avatarPath: string, sourceUrl: string) => Promise<void>;
+  /** Best-effort removal of a superseded local file. Optional; must never throw. */
+  deleteFile?: (publicPath: string) => Promise<void>;
   logger?: AvatarStorageLogger;
 };
 
 export type EnsureLocalAvatar = (user: EnsureLocalAvatarUser) => Promise<string | null>;
 
 /**
- * Build the reusable `ensureLocalAvatar(user)` function. Returns the existing
- * local path immediately when a valid file is present; otherwise fetches once,
- * stores it, updates the DB, and returns the new path. Returns null (never
- * throws) when there is nothing to fetch or the fetch/validation fails.
+ * Build the reusable `ensureLocalAvatar(user)` function.
+ *
+ * Returns the existing local path when a valid file is present and X still
+ * reports the same profile image URL. When the URL changed (or nothing is
+ * stored yet) it downloads, validates, writes, updates the DB, and returns the
+ * new path. Never throws: a failed refresh falls back to the existing path and
+ * a failed first capture returns null.
  */
 export function createEnsureLocalAvatar(deps: AvatarStorageDeps): EnsureLocalAvatar {
   const inFlight = new Map<string, Promise<string | null>>();
@@ -115,19 +170,26 @@ export function createEnsureLocalAvatar(deps: AvatarStorageDeps): EnsureLocalAva
   async function run(user: EnsureLocalAvatarUser): Promise<string | null> {
     const xUserId = String(user?.x_user_id ?? "").trim();
     if (!xUserId) return null;
+    let existingPath = "";
     try {
       const dbUser = await deps.getUser(xUserId);
-      const existingPath = String(dbUser?.avatar_path ?? user.avatar_path ?? "").trim();
-      // Immutable: a valid, existing local avatar is never refetched or replaced.
-      if (existingPath && deps.fileExists(existingPath)) return existingPath;
+      existingPath = String(dbUser?.avatar_path ?? user.avatar_path ?? "").trim();
+      const hasLocalFile = Boolean(existingPath) && deps.fileExists(existingPath);
 
       const remoteUrl = String(user.avatar_url ?? dbUser?.avatar_url ?? "").trim();
-      if (!remoteUrl) return null; // nothing to fetch -> placeholder stays
+      if (!remoteUrl) return hasLocalFile ? existingPath : null; // nothing to fetch
+
+      if (hasLocalFile) {
+        // Only the URL that produced the stored file decides staleness. An
+        // unknown source (pre-refresh capture) refreshes once, then settles.
+        const storedSourceUrl = String(dbUser?.avatar_source_url ?? "").trim();
+        if (storedSourceUrl && storedSourceUrl === remoteUrl) return existingPath;
+      }
 
       const fetched = await deps.fetchImage(remoteUrl);
       if (!fetched || !fetched.ok) {
         log.warn?.("[avatar-storage] fetch failed", { xUserId, status: fetched?.status ?? 0 });
-        return null;
+        return hasLocalFile ? existingPath : null;
       }
       const ext = avatarExtForContentType(fetched.contentType);
       if (!ext) {
@@ -135,23 +197,53 @@ export function createEnsureLocalAvatar(deps: AvatarStorageDeps): EnsureLocalAva
           xUserId,
           contentType: fetched.contentType,
         });
-        return null;
+        return hasLocalFile ? existingPath : null;
       }
       const size = fetched.bytes.length;
       if (size === 0 || size > MAX_AVATAR_BYTES) {
         log.warn?.("[avatar-storage] invalid size", { xUserId, bytes: size });
-        return null;
+        return hasLocalFile ? existingPath : null;
       }
 
-      const filename = `${xUserId}.${ext}`;
+      // Content-hashed name: refreshed bytes get a new immutable-cacheable URL.
+      const rev = avatarRevisionFromBytes(fetched.bytes);
+      const publicPath = avatarPublicPath(xUserId, ext, rev);
+      const filename = `${xUserId}-${rev}.${ext}`;
       await deps.writeAtomic(filename, fetched.bytes);
-      const publicPath = avatarPublicPath(xUserId, ext);
-      await deps.setAvatarPath(xUserId, publicPath);
-      log.info?.("[avatar-storage] stored avatar", { xUserId, publicPath, bytes: size });
+      await deps.setAvatarPath(xUserId, publicPath, remoteUrl);
+      log.info?.("[avatar-storage] stored avatar", {
+        xUserId,
+        publicPath,
+        bytes: size,
+        refreshed: hasLocalFile,
+      });
+
+      // Only after the DB points at the new file. Never fatal. Restricted to
+      // files this user's own capture wrote, so seed avatars survive.
+      if (
+        hasLocalFile &&
+        existingPath !== publicPath &&
+        isOwnedAvatarPath(existingPath, xUserId)
+      ) {
+        try {
+          await deps.deleteFile?.(existingPath);
+        } catch (err) {
+          log.warn?.("[avatar-storage] superseded cleanup failed", {
+            xUserId,
+            existingPath,
+            err: String(err),
+          });
+        }
+      }
       return publicPath;
     } catch (err) {
       log.warn?.("[avatar-storage] ensureLocalAvatar error", { xUserId, err: String(err) });
-      return null;
+      // Preserve a usable existing avatar even when the refresh path threw.
+      try {
+        return existingPath && deps.fileExists(existingPath) ? existingPath : null;
+      } catch {
+        return null;
+      }
     }
   }
 
@@ -192,14 +284,17 @@ export function createNodeAvatarDeps(opts: {
   return {
     async getUser(xUserId) {
       const { rows } = await pool.query(
-        "SELECT avatar_path, avatar_url FROM community_users WHERE x_user_id = $1 LIMIT 1",
+        "SELECT avatar_path, avatar_url, avatar_source_url FROM community_users WHERE x_user_id = $1 LIMIT 1",
         [xUserId]
       );
-      const r = rows[0] as { avatar_path?: unknown; avatar_url?: unknown } | undefined;
+      const r = rows[0] as
+        | { avatar_path?: unknown; avatar_url?: unknown; avatar_source_url?: unknown }
+        | undefined;
       if (!r) return null;
       return {
         avatar_path: r.avatar_path != null ? String(r.avatar_path) : null,
         avatar_url: r.avatar_url != null ? String(r.avatar_url) : null,
+        avatar_source_url: r.avatar_source_url != null ? String(r.avatar_source_url) : null,
       };
     },
     fileExists(publicPath) {
@@ -259,11 +354,18 @@ export function createNodeAvatarDeps(opts: {
         clearTimeout(timer);
       }
     },
-    async setAvatarPath(xUserId, avatarPath) {
+    async setAvatarPath(xUserId, avatarPath, sourceUrl) {
       await pool.query(
-        "UPDATE community_users SET avatar_path = $2, updated_at = now() WHERE x_user_id = $1",
-        [xUserId, avatarPath]
+        `UPDATE community_users
+         SET avatar_path = $2, avatar_source_url = NULLIF($3, ''), updated_at = now()
+         WHERE x_user_id = $1`,
+        [xUserId, avatarPath, sourceUrl ?? ""]
       );
+    },
+    async deleteFile(publicPath) {
+      const fsPath = toLocalFsPath(publicPath);
+      if (!fsPath) return;
+      await fs.promises.rm(fsPath, { force: true }).catch(() => {});
     },
     logger: opts.logger,
   };
