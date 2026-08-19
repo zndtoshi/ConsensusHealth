@@ -26,6 +26,15 @@ function PrivacyBody({ contactLine, sessionTtlDays, backupRetentionDays }) {
         description, and join date when the API provides it. We use a signed session cookie so you
         stay logged in for {sessionDaysLabel}.
       </p>
+      <h3>Why X asks for broad read access</h3>
+      <p>
+        X requires the <code>tweet.read</code> permission together with <code>users.read</code> for
+        the profile endpoint we use to identify your account. Because X describes that permission
+        broadly, its login screen may say Consensus Health can read all posts your account can see.
+        Consensus Health does not read your timeline, protected posts, bookmarks, likes, or direct
+        messages. During login we use your X access token only to request your profile identity and
+        details, and we do not retain that access token after the login callback finishes.
+      </p>
       <h3>Public stances and explanations</h3>
       <p>
         Positions you save on a proposal are shown on the public galaxy for that BIP. Optional

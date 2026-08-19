@@ -107,3 +107,9 @@ Typical Render settings:
 - Set `CONTACT_EMAIL` and build-time `VITE_CONTACT_EMAIL`
 
 After deploy, opening the service URL should load the frontend app, and API routes remain available under the same origin.
+
+## License and forks
+
+ConsensusHealth's source code is open source under the [MIT License](LICENSE). Anyone may fork, use, modify, and redistribute the code, including for commercial purposes, provided the license and copyright notice are retained.
+
+The MIT license applies to the project-authored source code and documentation. Third-party material—such as X profile images, public social-content datasets, linked Bitcoin proposal material, and trademarks—is not relicensed and remains subject to its original owners' rights. The license also does not provide ConsensusHealth deployment secrets, X API credentials, private user data, production database contents, or permission to impersonate the official `consensus.health` service.

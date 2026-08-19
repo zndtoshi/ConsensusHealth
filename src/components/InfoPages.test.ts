@@ -24,6 +24,9 @@ test("parseInfoPagePath recognizes privacy, terms, how-it-works", () => {
 test("InfoPages covers privacy topics from the launch brief", () => {
   assert.match(src, /X \(OAuth\)|sign in with X/i);
   assert.match(src, /bio\s*\/\s*description|X bio/i);
+  assert.match(src, /tweet\.read/);
+  assert.match(src, /does not read your timeline/i);
+  assert.match(src, /do not retain that access token/i);
   assert.match(src, /sessionDaysLabel|sessionTtlDays/);
   assert.match(src, /session/i);
   assert.match(src, /[Cc]urated/);
